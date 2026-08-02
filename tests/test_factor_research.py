@@ -88,6 +88,17 @@ class FactorResearchTest(unittest.TestCase):
         self.assertTrue(np.isfinite(result.predictions["up_probability"]).all())
         self.assertAlmostEqual(float(result.feature_importance.sum()), 1.0, places=6)
         self.assertIn("auc", result.metrics)
+        self.assertTrue(np.isfinite(result.metrics["auc"]))
+        self.assertEqual(
+            list(result.daily_accuracy_trend.columns),
+            ["target_date", "samples", "accuracy", "accuracy_change"],
+        )
+        self.assertEqual(
+            len(result.daily_accuracy_trend),
+            result.predictions["target_date"].nunique(),
+        )
+        self.assertTrue(result.daily_accuracy_trend["accuracy"].between(0.0, 1.0).all())
+        self.assertTrue(pd.isna(result.daily_accuracy_trend["accuracy_change"].iloc[0]))
 
     def test_walk_forward_training_precedes_each_prediction_date(self):
         cutoff = self.dataset["target_date"].drop_duplicates().sort_values().iloc[48]

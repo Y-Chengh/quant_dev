@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 
 
 def classification_metrics(y_true: np.ndarray, probability: np.ndarray) -> dict[str, float]:
@@ -41,3 +42,24 @@ def classification_metrics(y_true: np.ndarray, probability: np.ndarray) -> dict[
         "brier_score": float(np.mean((probability - y) ** 2)),
         "log_loss": float(-np.mean(y * np.log(probability) + (1 - y) * np.log(1 - probability))),
     }
+
+
+def daily_accuracy_trend(predictions: pd.DataFrame) -> pd.DataFrame:
+    """Summarize out-of-sample prediction accuracy for each target date."""
+    required_columns = {"target_date", "label", "up_probability"}
+    missing_columns = required_columns.difference(predictions.columns)
+    if missing_columns:
+        raise ValueError(f"Missing columns for daily accuracy trend: {sorted(missing_columns)}")
+
+    frame = predictions.loc[:, ["target_date", "label", "up_probability"]].copy()
+    frame["correct"] = (
+        (frame["up_probability"].to_numpy(dtype=float) >= 0.5)
+        == frame["label"].to_numpy(dtype=int)
+    )
+    trend = (
+        frame.groupby("target_date", as_index=False, sort=True)
+        .agg(samples=("correct", "size"), accuracy=("correct", "mean"))
+    )
+    trend["accuracy"] = trend["accuracy"].astype(float)
+    trend["accuracy_change"] = trend["accuracy"].diff()
+    return trend

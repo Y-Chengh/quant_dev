@@ -9,7 +9,7 @@ import pandas as pd
 
 from .dataset import split_by_date
 from .factors import DEFAULT_FEATURES
-from .metrics import classification_metrics
+from .metrics import classification_metrics, daily_accuracy_trend
 from .tree import SimpleDecisionTreeClassifier
 from .timing import ElapsedRecorder, log_elapsed
 
@@ -24,6 +24,7 @@ class ExperimentResult:
     metrics: dict[str, float]
     predictions: pd.DataFrame
     feature_importance: pd.Series
+    daily_accuracy_trend: pd.DataFrame
 
 
 class DirectionExperiment:
@@ -59,6 +60,7 @@ class DirectionExperiment:
             metrics=classification_metrics(predictions["label"], predictions["up_probability"]),
             predictions=predictions,
             feature_importance=pd.Series(importance, index=self.feature_columns).sort_values(ascending=False),
+            daily_accuracy_trend=daily_accuracy_trend(predictions),
         )
 
     def _walk_forward(

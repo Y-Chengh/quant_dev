@@ -75,8 +75,12 @@ dataset = build_direction_dataset(daily)
 result = DirectionExperiment(validation_start="2024-01-01", max_depth=3, min_samples_leaf=20).run(dataset)
 
 print(result.metrics)
+print(result.daily_accuracy_trend)
 print(result.feature_importance)
 print(result.predictions.head())
 ```
+
+`result.metrics["auc"]` 是全部滚动验证样本的 ROC AUC；`result.daily_accuracy_trend` 按
+`target_date` 给出每日样本数、预估准度以及较前一交易日的准度变化。
 
 `feature_date` 是特征截止日，`target_date` 是被预测日。框架按 `target_date` 整日切分，确保同一天的不同股票不会同时出现在训练集与测试集中；缺失值填充中位数也只使用训练集拟合。

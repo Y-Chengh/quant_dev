@@ -173,6 +173,7 @@ def main() -> None:
         args=args,
     ).run(dataset)
     logger.info("滚动验证指标: %s", result.metrics)
+    logger.info("日级预估准度变化趋势:\n%s", result.daily_accuracy_trend.to_string(index=False))
     logger.info("因子重要性:\n%s", result.feature_importance.to_string())
 
 
