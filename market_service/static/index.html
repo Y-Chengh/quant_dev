@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>本地行情研究台</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div><span class="brand-mark">Q</span><strong>本地行情研究台</strong></div>
+    <div id="datasetStatus" class="status">数据库连接中…</div>
+  </header>
+  <main>
+    <nav class="tabs">
+      <button class="tab active" data-tab="chartPanel">K线图</button>
+      <button class="tab" data-tab="rawPanel">5分钟原始数据</button>
+    </nav>
+
+    <section id="chartPanel" class="panel active">
+      <form id="chartForm" class="toolbar">
+        <label>股票代码<input id="chartCode" value="600000.SH" list="symbols"></label>
+        <label>开始日期<input id="chartStart" type="date" value="2025-01-01"></label>
+        <label>结束日期<input id="chartEnd" type="date" value="2026-04-17"></label>
+        <div class="periods" role="group" aria-label="K线周期">
+          <button type="button" data-period="5m">5分</button>
+          <button type="button" data-period="15m">15分</button>
+          <button type="button" data-period="30m">30分</button>
+          <button type="button" data-period="60m">60分</button>
+          <button type="button" data-period="1d" class="selected">日K</button>
+          <button type="button" data-period="1w">周K</button>
+          <button type="button" data-period="1mo">月K</button>
+        </div>
+        <button class="primary" type="submit">查询</button>
+      </form>
+      <div class="chart-meta"><span id="chartTitle">600000.SH · 日K</span><span id="chartCount"></span></div>
+      <div id="chart" aria-label="K线图"></div>
+      <div class="hint">鼠标悬停查看OHLC · 滚轮缩放 · 按住拖动平移</div>
+    </section>
+
+    <section id="rawPanel" class="panel">
+      <form id="rawForm" class="filters">
+        <label>股票代码<input id="rawCode" value="600000.SH" list="symbols"></label>
+        <label>交易日<input id="rawDate" type="date" value="2026-04-17"></label>
+        <label>开始时间<input id="startTime" type="time" step="300"></label>
+        <label>结束时间<input id="endTime" type="time" step="300"></label>
+        <label>最低收盘价<input id="minClose" type="number" step="0.01"></label>
+        <label>最高收盘价<input id="maxClose" type="number" step="0.01"></label>
+        <label>最小成交量<input id="minVolume" type="number" step="1"></label>
+        <label>最大成交量<input id="maxVolume" type="number" step="1"></label>
+        <label>最小成交额<input id="minAmount" type="number" step="0.01"></label>
+        <label>最大成交额<input id="maxAmount" type="number" step="0.01"></label>
+        <div class="filter-actions">
+          <button class="primary" type="submit">筛选</button>
+          <button id="resetFilters" type="button">重置条件</button>
+          <button id="downloadCsv" type="button">下载CSV</button>
+        </div>
+      </form>
+      <div class="table-summary"><span id="rawSummary">等待查询</span><span id="pageInfo"></span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>代码</th><th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th><th>成交量</th><th>成交额</th><th>前收</th><th>涨跌</th><th>涨跌幅%</th></tr></thead>
+          <tbody id="rawBody"></tbody>
+        </table>
+      </div>
+      <div class="pagination"><button id="prevPage">上一页</button><button id="nextPage">下一页</button></div>
+    </section>
+    <datalist id="symbols"></datalist>
+    <div id="toast" role="status"></div>
+  </main>
+  <script src="/static/echarts.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
