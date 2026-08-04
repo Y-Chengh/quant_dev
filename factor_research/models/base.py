@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -22,9 +23,18 @@ class DirectionModel(ABC):
 
 
 class DirectionModelFactory(ABC):
-    """为每个滚动预测日期创建一个全新模型。"""
+    """定义模型的 CLI 配置方式，并为每个预测日期创建全新模型。"""
 
     name: str
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        """向主程序注册该模型专属的命令行参数。"""
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "DirectionModelFactory":
+        """读取命令行参数；无专属配置的工厂默认使用无参构造。"""
+        return cls()
 
     @abstractmethod
     def create(self) -> DirectionModel:

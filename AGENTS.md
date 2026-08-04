@@ -55,6 +55,11 @@
   - `predict_proba(X)`
   - 训练后可用的 `feature_importances_`
 - 模型工厂继承 `DirectionModelFactory`，定义唯一的 `name` 并实现 `create()`。
+- 模型工厂使用 `@register_model_factory` 注册，并负责通过 `add_arguments()` 声明
+  自身 CLI 参数、通过 `from_args()` 从命令行参数构建工厂。主程序不得为具体
+  模型增加选择分支。
+- CLI 必须先解析 `--model`，再只注册所选模型的专属参数；不得把所有模型参数
+  同时添加到一个解析器，以免不同模型的同名参数发生冲突。
 - `create()` 每次必须返回一个无历史训练状态的新模型，以保证逐日滚动验证相互
   独立。
 - `DirectionExperiment` 只能依赖模型抽象和模型工厂，不应直接实例化具体算法。
@@ -81,6 +86,9 @@ python -m compileall -q factor_research tests
 python -m unittest discover -s tests -v
 git diff --check
 ```
+
+- 如果代码改动不涉及模型或数据的修改，修改完成后必须自动运行一次
+  `run_factor_demo.py`，并确认本次运行的各项指标与上一次运行完全一致。
 
 如果本地 Python、依赖或虚拟环境不可用，应至少执行 `git diff --check` 和静态
 引用检查，并在交付说明中明确指出未运行的验证及原因。

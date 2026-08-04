@@ -1,6 +1,15 @@
 """方向预测模型的公共接口及内置实现。"""
 
 from .base import DirectionModel, DirectionModelFactory
+from .registry import (
+    DEFAULT_MODEL,
+    MODEL_FACTORY_TYPES,
+    add_model_selection_argument,
+    add_selected_model_arguments,
+    available_models,
+    model_factory_from_args,
+    register_model_factory,
+)
 from .simple_decision_tree import (
     SimpleDecisionTreeClassifier,
     SimpleDecisionTreeModelFactory,
@@ -11,4 +20,11 @@ __all__ = [
     "DirectionModelFactory",
     "SimpleDecisionTreeClassifier",
     "SimpleDecisionTreeModelFactory",
+    "DEFAULT_MODEL",
+    "MODEL_FACTORY_TYPES",
+    "add_model_selection_argument",
+    "add_selected_model_arguments",
+    "available_models",
+    "model_factory_from_args",
+    "register_model_factory",
 ]

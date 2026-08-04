@@ -15,6 +15,11 @@ from factor_research.data import load_market_service
 from factor_research.dataset import build_direction_dataset
 from factor_research.experiment import DirectionExperiment
 from factor_research.factors import DEFAULT_FEATURES, available_factors, build_daily_features
+from factor_research.models.registry import (
+    add_model_selection_argument,
+    add_selected_model_arguments,
+    model_factory_from_args,
+)
 from factor_research.reporting import write_evaluation_report
 from factor_research.timing import log_elapsed
 
@@ -60,7 +65,12 @@ def resolve_run_output_paths(
     )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    # 第一阶段只识别模型名称；第二阶段只加载该模型自己的参数定义。
+    model_parser = argparse.ArgumentParser(add_help=False)
+    add_model_selection_argument(model_parser)
+    selected, _ = model_parser.parse_known_args(argv)
+
     parser = argparse.ArgumentParser(description="通过market service预测下一交易日涨跌")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE, help="market.duckdb路径")
     parser.add_argument("--start", help="研究开始时间，默认数据末端向前3年")
@@ -71,13 +81,8 @@ def parse_args() -> argparse.Namespace:
         "--validation-start",
         help="滚动验证开始日期；默认从研究结束日期往前1年，例如 2024-01-01",
     )
-    parser.add_argument("--max-depth", type=int, default=3)
-    parser.add_argument(
-        "--min-samples-leaf",
-        type=int,
-        default=20,
-        help="决策树每个叶节点所需的最少训练样本数；值越大越不易过拟合，默认 20",
-    )
+    add_model_selection_argument(parser)
+    add_selected_model_arguments(parser, selected.model)
     parser.add_argument(
         "--factors",
         nargs="+",
@@ -105,7 +110,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LOG_DIR,
         help="日志目录，默认 logs；文件名由时间戳和随机ID自动生成",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 @log_elapsed(logger, "程序运行")
@@ -184,9 +189,8 @@ def main() -> None:
     result = DirectionExperiment(
         validation_start=validation_start,
         feature_columns=args.factors,
-        max_depth=args.max_depth,
-        min_samples_leaf=args.min_samples_leaf,
         args=args,
+        model_factory=model_factory_from_args(args),
     ).run(dataset)
     logger.info("滚动验证指标: %s", result.metrics)
     logger.info("日级预估准度变化趋势:\n%s", result.daily_accuracy_trend.to_string(index=False))

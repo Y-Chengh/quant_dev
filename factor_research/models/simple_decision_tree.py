@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from typing import ClassVar
 
 import numpy as np
 
 from .base import DirectionModel, DirectionModelFactory
+from .registry import register_model_factory
 
 
 @dataclass
@@ -127,6 +129,7 @@ class SimpleDecisionTreeClassifier(DirectionModel):
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
 
 
+@register_model_factory
 @dataclass(frozen=True)
 class SimpleDecisionTreeModelFactory(DirectionModelFactory):
     """使用指定树参数创建相互独立的二分类决策树。"""
@@ -135,6 +138,30 @@ class SimpleDecisionTreeModelFactory(DirectionModelFactory):
     min_samples_leaf: int = 20
     max_thresholds: int = 32
     name: ClassVar[str] = "simple_decision_tree"
+
+    @classmethod
+    def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--max-depth", type=int, default=3)
+        parser.add_argument(
+            "--min-samples-leaf",
+            type=int,
+            default=20,
+            help="决策树每个叶节点所需的最少训练样本数；默认 20",
+        )
+        parser.add_argument(
+            "--max-thresholds",
+            type=int,
+            default=32,
+            help="决策树每个因子最多尝试的候选切分阈值数；默认 32",
+        )
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "SimpleDecisionTreeModelFactory":
+        return cls(
+            max_depth=args.max_depth,
+            min_samples_leaf=args.min_samples_leaf,
+            max_thresholds=args.max_thresholds,
+        )
 
     def create(self) -> SimpleDecisionTreeClassifier:
         return SimpleDecisionTreeClassifier(

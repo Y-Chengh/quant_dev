@@ -8,6 +8,7 @@ from .models.simple_decision_tree import (
     SimpleDecisionTreeClassifier,
     SimpleDecisionTreeModelFactory,
 )
+from .models.registry import available_models, model_factory_from_args
 
 __all__ = [
     "DirectionExperiment",
@@ -16,6 +17,8 @@ __all__ = [
     "DirectionModelFactory",
     "SimpleDecisionTreeModelFactory",
     "SimpleDecisionTreeClassifier",
+    "available_models",
+    "model_factory_from_args",
     "build_daily_features",
     "available_factors",
     "build_direction_dataset",

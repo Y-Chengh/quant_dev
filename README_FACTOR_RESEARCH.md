@@ -16,6 +16,17 @@ python run_factor_demo.py
 python run_factor_demo.py --factors return_1d return_5d realized_vol --factor-cache-dir .factor_cache
 ```
 
+模型通过 `--model` 选择。当前默认模型为 `simple_decision_tree`，其参数由模型
+模块自行注册：
+
+```powershell
+python run_factor_demo.py --model simple_decision_tree --max-depth 3 --min-samples-leaf 20
+```
+
+新增模型时，在 `factor_research/models/` 中增加具体模型和工厂，并使用
+`@register_model_factory` 注册。工厂通过 `add_arguments()` 声明自己的命令行
+参数，通过 `from_args()` 从 `args` 构建实例；无需修改 `run_factor_demo.py`。
+
 使用 `--log-level` 控制日志详细程度，默认是 `INFO`：
 
 ```powershell
