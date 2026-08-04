@@ -10,7 +10,8 @@ import pandas as pd
 from .dataset import split_by_date
 from .factors import DEFAULT_FEATURES
 from .metrics import classification_metrics, daily_accuracy_trend
-from .tree import SimpleDecisionTreeClassifier
+from .models.base import DirectionModel, DirectionModelFactory
+from .models.simple_decision_tree import SimpleDecisionTreeModelFactory
 from .timing import ElapsedRecorder, log_elapsed
 
 
@@ -19,7 +20,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ExperimentResult:
-    model: SimpleDecisionTreeClassifier
+    model: DirectionModel
+    model_name: str
     feature_columns: list[str]
     metrics: dict[str, float]
     predictions: pd.DataFrame
@@ -35,12 +37,22 @@ class DirectionExperiment:
         max_depth: int = 3,
         min_samples_leaf: int = 20,
         args: argparse.Namespace | None = None,
+        model_factory: DirectionModelFactory | None = None,
     ):
         self.validation_start = pd.Timestamp(validation_start)
         self.feature_columns = feature_columns or DEFAULT_FEATURES
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.args = args
+        # 保留原有树参数作为默认配置；注入工厂后，实验流程不再关心具体算法。
+        self.model_factory = (
+            model_factory
+            if model_factory is not None
+            else SimpleDecisionTreeModelFactory(
+                max_depth=max_depth,
+                min_samples_leaf=min_samples_leaf,
+            )
+        )
 
     @log_elapsed(logger, "滚动训练验证")
     def run(self, dataset: pd.DataFrame) -> ExperimentResult:
@@ -56,6 +68,7 @@ class DirectionExperiment:
 
         return ExperimentResult(
             model=model,
+            model_name=self.model_factory.name,
             feature_columns=self.feature_columns,
             metrics=classification_metrics(predictions["label"], predictions["up_probability"]),
             predictions=predictions,
@@ -67,9 +80,9 @@ class DirectionExperiment:
         self,
         dataset: pd.DataFrame,
         prediction_dates: pd.Index,
-    ) -> tuple[pd.DataFrame, SimpleDecisionTreeClassifier, np.ndarray]:
+    ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray]:
         predictions: list[pd.DataFrame] = []
-        model: SimpleDecisionTreeClassifier | None = None
+        model: DirectionModel | None = None
         importance = np.zeros(len(self.feature_columns), dtype=float)
         total_dates = len(prediction_dates)
         progress_interval = max(1, total_dates // 10)
@@ -79,9 +92,9 @@ class DirectionExperiment:
         def preprocess(
             train_frame: pd.DataFrame,
             predict_frame: pd.DataFrame,
-        ) -> tuple[SimpleDecisionTreeClassifier, np.ndarray, np.ndarray]:
+        ) -> tuple[DirectionModel, np.ndarray, np.ndarray]:
             medians = train_frame[self.feature_columns].median().fillna(0.0)
-            current_model = SimpleDecisionTreeClassifier(self.max_depth, self.min_samples_leaf)
+            current_model = self.model_factory.create()
             return (
                 current_model,
                 self._matrix(train_frame, medians),

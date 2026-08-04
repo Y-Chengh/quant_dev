@@ -15,6 +15,7 @@ from factor_research.data import load_market_service
 from factor_research.dataset import build_direction_dataset
 from factor_research.experiment import DirectionExperiment
 from factor_research.factors import DEFAULT_FEATURES, available_factors, build_daily_features
+from factor_research.reporting import write_evaluation_report
 from factor_research.timing import log_elapsed
 
 
@@ -42,6 +43,21 @@ def resolve_window(
     if start_time >= end_time:
         raise ValueError(f"无效研究窗口: {start_time} 至 {end_time}")
     return start_time.to_pydatetime(), end_time.to_pydatetime()
+
+
+def resolve_run_output_paths(
+    log_dir: Path,
+    started_at: datetime,
+    run_id: str,
+) -> tuple[Path, Path, Path]:
+    """Place all artifacts from one run in its start-date archive directory."""
+    archive_dir = log_dir / started_at.strftime("%Y-%m-%d")
+    stem = f"factor_demo_{started_at:%Y%m%d_%H%M%S}_{run_id}"
+    return (
+        archive_dir / f"{stem}.log",
+        archive_dir / f"{stem}.md",
+        archive_dir / f"{stem}_accuracy.svg",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,10 +123,10 @@ def main() -> None:
     args = parse_args()
     if args.debug:
         args.log_level = "DEBUG"
-    args.log_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid4().hex[:8]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = args.log_dir / f"factor_demo_{timestamp}_{run_id}.log"
+    run_started_at = datetime.now()
+    log_file, report_file, chart_file = resolve_run_output_paths(args.log_dir, run_started_at, run_id)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
     log_formatter = logging.Formatter(
         "%(asctime)s %(levelname)-8s %(name)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -175,6 +191,8 @@ def main() -> None:
     logger.info("滚动验证指标: %s", result.metrics)
     logger.info("日级预估准度变化趋势:\n%s", result.daily_accuracy_trend.to_string(index=False))
     logger.info("因子重要性:\n%s", result.feature_importance.to_string())
+    write_evaluation_report(result, report_file, chart_file, run_id, run_arguments)
+    logger.info("评估报告: %s，准确率趋势图: %s", report_file.resolve(), chart_file.resolve())
 
 
 if __name__ == "__main__":

@@ -1,3 +1,9 @@
+"""因子工厂的注册表与自动发现机制。
+
+具体因子类通过 ``@register_factor`` 以其 ``name`` 注册实例；模块加载结束时，
+本文件会扫描同包下除 base、registry 外的模块，从而自动导入全部因子文件。
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -12,7 +18,7 @@ FACTOR_FACTORIES: dict[str, FactorFactory] = {}
 
 
 def register_factor(factory_type: FactoryType) -> FactoryType:
-    """Register a factor factory class while preserving the decorated class."""
+    """校验并注册因子工厂类，同时原样返回类以支持装饰器语法。"""
     if not isinstance(factory_type, type) or not issubclass(factory_type, FactorFactory):
         raise TypeError("register_factor 只能装饰 FactorFactory 子类")
     name = getattr(factory_type, "name", None)
@@ -29,6 +35,7 @@ def register_factor(factory_type: FactoryType) -> FactoryType:
 
 
 def _discover_factories() -> None:
+    """按模块名顺序导入包内因子模块，触发各类的注册装饰器。"""
     package_name = __package__
     package = importlib.import_module(package_name)
     ignored = {"base", "registry"}
@@ -39,10 +46,12 @@ def _discover_factories() -> None:
 
 
 def get_factor_factory(name: str) -> FactorFactory:
+    """按唯一因子名称返回已实例化的工厂，不存在时给出可选名称。"""
     try:
         return FACTOR_FACTORIES[name]
     except KeyError as exc:
         raise ValueError(f"未知因子 {name!r}；可选因子: {sorted(FACTOR_FACTORIES)}") from exc
 
 
+# 导入 registry 即完成因子发现，调用方不需要手动维护因子模块列表。
 _discover_factories()

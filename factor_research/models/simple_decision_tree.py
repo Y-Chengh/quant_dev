@@ -1,12 +1,19 @@
+"""项目内置的轻量级 CART 二分类决策树及其模型工厂。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import ClassVar
 
 import numpy as np
+
+from .base import DirectionModel, DirectionModelFactory
 
 
 @dataclass
 class _Node:
+    """保存决策树节点的预测概率、分裂条件和子节点。"""
+
     probability: float
     samples: int
     feature: int | None = None
@@ -15,10 +22,15 @@ class _Node:
     right: "_Node | None" = None
 
 
-class SimpleDecisionTreeClassifier:
-    """仅支持数值特征的轻量二分类CART树，适合框架冒烟测试。"""
+class SimpleDecisionTreeClassifier(DirectionModel):
+    """仅支持数值特征的轻量二分类 CART 树，适合框架基准测试。"""
 
-    def __init__(self, max_depth: int = 3, min_samples_leaf: int = 20, max_thresholds: int = 32):
+    def __init__(
+        self,
+        max_depth: int = 3,
+        min_samples_leaf: int = 20,
+        max_thresholds: int = 32,
+    ):
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.max_thresholds = max_thresholds
@@ -29,8 +41,8 @@ class SimpleDecisionTreeClassifier:
     def _gini(y: np.ndarray) -> float:
         if len(y) == 0:
             return 0.0
-        p = float(y.mean())
-        return 2 * p * (1 - p)
+        probability = float(y.mean())
+        return 2 * probability * (1 - probability)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "SimpleDecisionTreeClassifier":
         X = np.asarray(X, dtype=float)
@@ -39,6 +51,7 @@ class SimpleDecisionTreeClassifier:
             raise ValueError("X和y的形状不合法")
         if not np.isin(y, [0, 1]).all():
             raise ValueError("y必须是0/1标签")
+
         self.feature_importances_ = np.zeros(X.shape[1], dtype=float)
         self.root_ = self._grow(X, y, depth=0)
         total = self.feature_importances_.sum()
@@ -48,8 +61,13 @@ class SimpleDecisionTreeClassifier:
 
     def _grow(self, X: np.ndarray, y: np.ndarray, depth: int) -> _Node:
         node = _Node(probability=float(y.mean()), samples=len(y))
-        if depth >= self.max_depth or len(y) < 2 * self.min_samples_leaf or len(np.unique(y)) == 1:
+        if (
+            depth >= self.max_depth
+            or len(y) < 2 * self.min_samples_leaf
+            or len(np.unique(y)) == 1
+        ):
             return node
+
         parent_impurity = self._gini(y)
         best: tuple[float, int, float, np.ndarray] | None = None
         for feature in range(X.shape[1]):
@@ -62,16 +80,24 @@ class SimpleDecisionTreeClassifier:
                 thresholds = np.unique(np.quantile(values, quantiles))
             else:
                 thresholds = (unique[:-1] + unique[1:]) / 2
+
             for threshold in thresholds:
                 left = values <= threshold
                 left_n = int(left.sum())
                 right_n = len(y) - left_n
-                if left_n < self.min_samples_leaf or right_n < self.min_samples_leaf:
+                if (
+                    left_n < self.min_samples_leaf
+                    or right_n < self.min_samples_leaf
+                ):
                     continue
-                impurity = (left_n * self._gini(y[left]) + right_n * self._gini(y[~left])) / len(y)
+                impurity = (
+                    left_n * self._gini(y[left])
+                    + right_n * self._gini(y[~left])
+                ) / len(y)
                 gain = parent_impurity - impurity
                 if best is None or gain > best[0]:
                     best = (gain, feature, float(threshold), left)
+
         if best is None or best[0] <= 0:
             return node
         gain, feature, threshold, left = best
@@ -90,8 +116,29 @@ class SimpleDecisionTreeClassifier:
 
     def _predict_row(self, row: np.ndarray, node: _Node) -> float:
         while node.feature is not None:
-            node = node.left if row[node.feature] <= node.threshold else node.right  # type: ignore[assignment]
+            node = (
+                node.left
+                if row[node.feature] <= node.threshold
+                else node.right
+            )  # type: ignore[assignment]
         return node.probability
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         return (self.predict_proba(X)[:, 1] >= 0.5).astype(int)
+
+
+@dataclass(frozen=True)
+class SimpleDecisionTreeModelFactory(DirectionModelFactory):
+    """使用指定树参数创建相互独立的二分类决策树。"""
+
+    max_depth: int = 3
+    min_samples_leaf: int = 20
+    max_thresholds: int = 32
+    name: ClassVar[str] = "simple_decision_tree"
+
+    def create(self) -> SimpleDecisionTreeClassifier:
+        return SimpleDecisionTreeClassifier(
+            max_depth=self.max_depth,
+            min_samples_leaf=self.min_samples_leaf,
+            max_thresholds=self.max_thresholds,
+        )
