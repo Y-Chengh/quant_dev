@@ -193,7 +193,6 @@ def main() -> None:
         model_factory=model_factory_from_args(args),
     ).run(dataset)
     logger.info("滚动验证指标: %s", result.metrics)
-    logger.info("日级预估准度变化趋势:\n%s", result.daily_accuracy_trend.to_string(index=False))
     logger.info("因子重要性:\n%s", result.feature_importance.to_string())
     write_evaluation_report(result, report_file, chart_file, run_id, run_arguments)
     logger.info("评估报告: %s，准确率趋势图: %s", report_file.resolve(), chart_file.resolve())
