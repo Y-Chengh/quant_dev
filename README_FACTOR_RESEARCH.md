@@ -29,6 +29,12 @@ python run_factor_demo.py --model simple_decision_tree --max-depth 3 --min-sampl
 python run_factor_demo.py --model gradient_boosting_tree --n-estimators 100 --learning-rate 0.1 --max-depth 3
 ```
 
+使用支持多线程的 LightGBM（`--n-jobs -1` 表示使用全部可用 CPU）：
+
+```powershell
+python run_factor_demo.py --model lightgbm --n-estimators 300 --learning-rate 0.03 --num-leaves 15 --n-jobs -1
+```
+
 新增模型时，在 `factor_research/models/` 中增加具体模型和工厂，并使用
 `@register_model_factory` 注册。工厂通过 `add_arguments()` 声明自己的命令行
 参数，通过 `from_args()` 从 `args` 构建实例；无需修改 `run_factor_demo.py`。
