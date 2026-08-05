@@ -10,6 +10,17 @@
 python run_factor_demo.py
 ```
 
+常态化配置可以放入 YAML，并在命令行按需覆盖其中的值：
+
+```powershell
+python run_factor_demo.py --config experiment.yaml --log-level DEBUG
+```
+
+YAML 使用与命令行参数对应的扁平 `snake_case` 键；列表和布尔参数分别使用
+YAML 列表和 `true`/`false`。未知参数或无效值会直接报错。完整配置示例见
+`factor_config.example.yaml`。如果命令行切换了 YAML 中配置的模型，原模型独有的
+配置项会被忽略，共用配置项仍会应用到新模型。
+
 运行时可以只选择部分因子，并指定缓存目录：
 
 ```powershell

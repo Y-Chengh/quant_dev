@@ -5,11 +5,14 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import re
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pandas as pd
+import yaml
 
 from factor_research.data import load_market_service
 from factor_research.dataset import build_direction_dataset
@@ -18,6 +21,7 @@ from factor_research.factors import DEFAULT_FEATURES, available_factors, build_d
 from factor_research.models.registry import (
     add_model_selection_argument,
     add_selected_model_arguments,
+    available_models,
     model_factory_from_args,
 )
 from factor_research.reporting import write_evaluation_report
@@ -31,6 +35,100 @@ DEFAULT_SYMBOL_LIMIT = 20
 DEFAULT_FACTOR_CACHE = Path(".factor_cache")
 DEFAULT_LOG_DIR = Path("logs")
 logger = logging.getLogger(__name__)
+
+
+def _load_yaml_config(path: Path, parser: argparse.ArgumentParser) -> dict[str, Any]:
+    """读取 YAML 配置，并要求顶层为参数名到参数值的映射。"""
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            loaded = yaml.safe_load(stream)
+    except OSError as exc:
+        parser.error(f"无法读取配置文件 {path}: {exc}")
+    except yaml.YAMLError as exc:
+        parser.error(f"YAML 配置文件格式错误 {path}: {exc}")
+
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict) or not all(isinstance(key, str) for key in loaded):
+        parser.error("YAML 配置的顶层必须是参数名到参数值的映射")
+    invalid_keys = sorted(
+        key for key in loaded if re.fullmatch(r"[a-z][a-z0-9_]*", key) is None
+    )
+    if invalid_keys:
+        parser.error(
+            "YAML 参数名必须使用 snake_case: " + ", ".join(invalid_keys)
+        )
+    return loaded
+
+
+def _config_defaults(
+    parser: argparse.ArgumentParser,
+    config: dict[str, Any],
+    ignored_unknown: set[str] | None = None,
+) -> dict[str, Any]:
+    """按 argparse action 校验并转换 YAML 配置值。"""
+    actions = {action.dest: action for action in parser._actions if action.dest != "help"}
+    ignored_unknown = ignored_unknown or set()
+    unknown = sorted(set(config) - set(actions) - ignored_unknown)
+    if unknown:
+        parser.error(f"YAML 配置包含未知参数: {', '.join(unknown)}")
+
+    defaults: dict[str, Any] = {}
+    for name, value in config.items():
+        if name in ignored_unknown and name not in actions:
+            continue
+        action = actions[name]
+        if name == "config":
+            parser.error("YAML 配置中不能再次指定 config")
+        if value is None:
+            continue
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            if not isinstance(value, bool):
+                parser.error(f"YAML 参数 {name} 必须是布尔值")
+            defaults[name] = value
+            continue
+
+        is_sequence = action.nargs in ("+", "*") or isinstance(action.nargs, int)
+        if is_sequence:
+            if not isinstance(value, list):
+                parser.error(f"YAML 参数 {name} 必须是列表")
+            if action.nargs == "+" and not value:
+                parser.error(f"YAML 参数 {name} 不能为空列表")
+            if isinstance(action.nargs, int) and len(value) != action.nargs:
+                parser.error(
+                    f"YAML 参数 {name} 必须包含 {action.nargs} 个值，"
+                    f"实际为 {len(value)} 个"
+                )
+            values = value
+        else:
+            if isinstance(value, (list, dict)):
+                parser.error(f"YAML 参数 {name} 必须是单个值")
+            values = [value]
+
+        converted: list[Any] = []
+        for item in values:
+            try:
+                # YAML 原生数字、日期等先还原为命令行文本，再走 argparse 的类型转换。
+                # 例如 int("True") 会报错，避免把 YAML true 静默转换成整数 1。
+                token = str(item)
+                converted_item = action.type(token) if action.type else token
+            except (argparse.ArgumentTypeError, TypeError, ValueError) as exc:
+                parser.error(f"YAML 参数 {name} 的值 {item!r} 无效: {exc}")
+            if action.choices is not None and converted_item not in action.choices:
+                parser.error(
+                    f"YAML 参数 {name} 的值 {converted_item!r} 不在可选范围 "
+                    f"{list(action.choices)} 内"
+                )
+            converted.append(converted_item)
+        defaults[name] = converted if is_sequence else converted[0]
+    return defaults
+
+
+def _model_argument_names(model_name: str) -> set[str]:
+    """返回指定模型声明的参数名，用于识别切换模型后的失效配置。"""
+    parser = argparse.ArgumentParser(add_help=False)
+    add_selected_model_arguments(parser, model_name)
+    return {action.dest for action in parser._actions}
 
 
 def resolve_window(
@@ -66,12 +164,30 @@ def resolve_run_output_paths(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    # 第一阶段只识别模型名称；第二阶段只加载该模型自己的参数定义。
+    # 第一阶段读取配置文件和模型名称；第二阶段只加载该模型自己的参数定义。
     model_parser = argparse.ArgumentParser(add_help=False)
+    model_parser.add_argument("--config", type=Path)
     add_model_selection_argument(model_parser)
+    preliminary, _ = model_parser.parse_known_args(argv)
+    config = (
+        _load_yaml_config(preliminary.config, model_parser)
+        if preliminary.config is not None
+        else {}
+    )
+    configured_model = config.get("model")
+    if configured_model is not None:
+        if not isinstance(configured_model, str):
+            model_parser.error("YAML 参数 model 必须是字符串")
+        if configured_model not in available_models():
+            model_parser.error(
+                f"YAML 参数 model 的值 {configured_model!r} 不在可选范围 "
+                f"{available_models()} 内"
+            )
+        model_parser.set_defaults(model=configured_model)
     selected, _ = model_parser.parse_known_args(argv)
 
     parser = argparse.ArgumentParser(description="通过market service预测下一交易日涨跌")
+    parser.add_argument("--config", type=Path, help="YAML 配置文件；命令行参数优先")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE, help="market.duckdb路径")
     parser.add_argument("--start", help="研究开始时间，默认数据末端向前3年")
     parser.add_argument("--end", help="研究结束时间，默认数据库最后时间")
@@ -114,6 +230,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         default=DEFAULT_LOG_DIR,
         help="日志目录，默认 logs；文件名由时间戳和随机ID自动生成",
+    )
+    ignored_model_arguments: set[str] = set()
+    if configured_model is not None and configured_model != selected.model:
+        ignored_model_arguments = _model_argument_names(configured_model)
+    parser.set_defaults(
+        **_config_defaults(
+            parser,
+            config,
+            ignored_unknown=ignored_model_arguments,
+        )
     )
     return parser.parse_args(argv)
 

@@ -1,0 +1,16 @@
+# 命令行参数会覆盖本文件中的同名配置。
+database: D:/量化/market.duckdb
+start: "2024-01-01"
+end: "2026-01-01"
+validation_start: "2025-06-01"
+codes:
+  - 000001.SZ
+  - 600000.SH
+factors:
+  - return_1d
+  - return_5d
+model: gradient_boosting_tree
+n_estimators: 100
+learning_rate: 0.05
+no_factor_cache: false
+log_level: INFO

@@ -18,7 +18,7 @@ from factor_research.models.simple_decision_tree import (
     SimpleDecisionTreeClassifier,
     SimpleDecisionTreeModelFactory,
 )
-from run_factor_demo import parse_args
+from run_factor_demo import _config_defaults, parse_args
 
 
 class ModelRegistryTest(unittest.TestCase):
@@ -54,6 +54,123 @@ class ModelRegistryTest(unittest.TestCase):
         self.assertIn("simple_decision_tree", available_models())
         args = parse_args([])
         self.assertEqual(args.model, "simple_decision_tree")
+
+    def test_yaml_config_selects_model_and_converts_values(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text(
+                """
+model: gradient_boosting_tree
+database: data/market.duckdb
+codes:
+  - 000001.SZ
+  - 600000.SH
+factors:
+  - return_1d
+  - return_5d
+no_factor_cache: true
+n_estimators: 25
+learning_rate: 0.2
+""".strip(),
+                encoding="utf-8",
+            )
+
+            args = parse_args(["--config", str(config_path)])
+
+        self.assertEqual(args.model, "gradient_boosting_tree")
+        self.assertEqual(args.database, Path("data/market.duckdb"))
+        self.assertEqual(args.codes, ["000001.SZ", "600000.SH"])
+        self.assertEqual(args.factors, ["return_1d", "return_5d"])
+        self.assertTrue(args.no_factor_cache)
+        self.assertEqual(args.n_estimators, 25)
+        self.assertEqual(args.learning_rate, 0.2)
+
+    def test_command_line_overrides_yaml_config(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text(
+                "model: simple_decision_tree\nmax_depth: 4\nlog_level: WARNING\n",
+                encoding="utf-8",
+            )
+
+            args = parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--max-depth",
+                    "9",
+                    "--log-level",
+                    "DEBUG",
+                ]
+            )
+
+        self.assertEqual(args.max_depth, 9)
+        self.assertEqual(args.log_level, "DEBUG")
+
+    def test_command_line_model_ignores_previous_model_only_options(self):
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text(
+                """
+model: gradient_boosting_tree
+n_estimators: 25
+learning_rate: 0.2
+max_depth: 4
+""".strip(),
+                encoding="utf-8",
+            )
+
+            args = parse_args(
+                ["--config", str(config_path), "--model", "simple_decision_tree"]
+            )
+
+        self.assertEqual(args.model, "simple_decision_tree")
+        self.assertEqual(args.max_depth, 4)
+        self.assertFalse(hasattr(args, "n_estimators"))
+        self.assertFalse(hasattr(args, "learning_rate"))
+
+    def test_yaml_config_rejects_unknown_and_invalid_values(self):
+        invalid_configs = [
+            "unknown_option: 1\n",
+            "log-level: DEBUG\n",
+            "model: unknown_model\n",
+            "model: simple_decision_tree\nfactors: not-a-list\n",
+            "model: simple_decision_tree\nfactors: []\n",
+            "model: simple_decision_tree\nfactors: [unknown_factor]\n",
+            "model: simple_decision_tree\nlog_level: VERBOSE\n",
+            'model: simple_decision_tree\ndebug: "true"\n',
+            "model: simple_decision_tree\nsymbol_limit: true\n",
+            "- not-a-mapping\n",
+            "[invalid yaml\n",
+        ]
+        for content in invalid_configs:
+            with self.subTest(content=content), TemporaryDirectory() as temp_dir:
+                config_path = Path(temp_dir) / "invalid.yaml"
+                config_path.write_text(content, encoding="utf-8")
+                with self.assertRaises(SystemExit):
+                    parse_args(["--config", str(config_path)])
+
+    def test_yaml_config_validates_fixed_length_nargs(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--pair", nargs=2, type=int)
+
+        with self.assertRaises(SystemExit):
+            _config_defaults(parser, {"pair": [1]})
+        self.assertEqual(_config_defaults(parser, {"pair": [1, 2]}), {"pair": [1, 2]})
+
+    def test_yaml_config_converts_argument_type_error_to_parser_error(self):
+        def positive_integer(value: str) -> int:
+            converted = int(value)
+            if converted <= 0:
+                raise argparse.ArgumentTypeError("必须是正整数")
+            return converted
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--count", type=positive_integer)
+
+        with self.assertRaises(SystemExit):
+            _config_defaults(parser, {"count": -1})
+        self.assertEqual(_config_defaults(parser, {"count": 2}), {"count": 2})
 
     def test_selected_model_arguments_are_isolated(self):
         @register_model_factory
