@@ -153,46 +153,39 @@ def build_daily_features(
 
     factories = [get_factor_factory(name) for name in selected]
     logger.info("开始构建日频因子: factors=%d bars=%d cache=%s", len(factories), len(bars), cache_dir or "disabled")
-    stage_started = perf_counter()
     daily = _build_daily_bars(bars)
     logger.info(
-        "基础日线聚合完成: rows=%d symbols=%d elapsed=%.3fs",
-        len(daily), daily["code"].nunique(), perf_counter() - stage_started,
+        "基础日线聚合完成: rows=%d symbols=%d",
+        len(daily),
+        daily["code"].nunique(),
     )
     cache = FactorCache(cache_dir) if cache_dir is not None else None
-    stage_started = perf_counter()
     input_fingerprint = _input_fingerprint(bars) if cache is not None else ""
     if cache is not None:
-        logger.debug("输入行情指纹: %s elapsed=%.3fs", input_fingerprint, perf_counter() - stage_started)
+        logger.debug("输入行情指纹: %s", input_fingerprint)
 
     timings: list[tuple[str, str, float]] = []
     for position, factory in enumerate(factories, start=1):
         factor_started = perf_counter()
         logger.info("[%d/%d] 处理因子 %s", position, len(factories), factory.name)
-        cache_started = perf_counter()
         values = cache.load(factory, input_fingerprint, daily) if cache is not None else None
-        cache_elapsed = perf_counter() - cache_started
         if values is None:
             logger.info("[%d/%d] 计算因子 %s", position, len(factories), factory.name)
-            compute_started = perf_counter()
             try:
                 values = factory.compute(bars, daily)
             except Exception:
                 logger.exception("[%d/%d] 因子 %s 计算失败", position, len(factories), factory.name)
                 raise
-            compute_elapsed = perf_counter() - compute_started
             if len(values) != len(daily):
                 raise ValueError(f"因子 {factory.name} 返回了错误的行数")
             values = pd.Series(values.to_numpy(), index=daily.index, name=factory.name)
             if cache is not None:
-                save_started = perf_counter()
                 cache.save(factory, input_fingerprint, daily, values)
-                logger.debug("因子 %s 缓存写入耗时 %.3fs", factory.name, perf_counter() - save_started)
             mode = "computed"
-            logger.info("[%d/%d] 因子 %s 计算完成 elapsed=%.3fs", position, len(factories), factory.name, compute_elapsed)
+            logger.info("[%d/%d] 因子 %s 计算完成", position, len(factories), factory.name)
         else:
             mode = "cached"
-            logger.info("[%d/%d] 因子 %s 命中缓存 load=%.3fs", position, len(factories), factory.name, cache_elapsed)
+            logger.info("[%d/%d] 因子 %s 命中缓存", position, len(factories), factory.name)
         daily[factory.name] = values
         timings.append((factory.name, mode, perf_counter() - factor_started))
 
