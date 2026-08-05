@@ -76,7 +76,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start", help="研究开始时间，默认数据末端向前3年")
     parser.add_argument("--end", help="研究结束时间，默认数据库最后时间")
     parser.add_argument("--codes", nargs="+", help="股票代码列表，默认取代码表前20只")
-    parser.add_argument("--symbol-limit", type=int, default=DEFAULT_SYMBOL_LIMIT)
+    parser.add_argument(
+        "--symbol-limit",
+        type=int,
+        default=DEFAULT_SYMBOL_LIMIT,
+        help="股票数量，默认取20只",
+    )
     parser.add_argument(
         "--validation-start",
         help="滚动验证开始日期；默认从研究结束日期往前1年，例如 2024-01-01",
