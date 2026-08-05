@@ -75,6 +75,9 @@ class FactorResearchTest(unittest.TestCase):
                 "ma_spread_5d_20d", "ma_spread_change_5d_20d", "return_10d",
                 "return_20d", "momentum_acceleration_5d_20d",
                 "up_days_ratio_5d", "breakout_strength_20d",
+                "signed_volume_imbalance", "close_to_vwap", "overnight_gap",
+                "intraday_path_efficiency", "downside_semivol",
+                "channel_position_20d",
             },
         )
 
