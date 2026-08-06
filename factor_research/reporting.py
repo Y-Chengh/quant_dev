@@ -132,19 +132,8 @@ def write_evaluation_report(
             f"![日级预估准确率趋势]({chart_path.name})",
             "",
             "浅色线为每日准确率，深色线为 20 日移动平均。",
-            "",
-            "## 每日预估汇总",
-            "",
-            "| 目标日期 | 样本数 | 实际上涨比例 | 预测上涨比例 | 准确率 | 较前日变化 |",
-            "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
-    for row in daily_summary.itertuples(index=False):
-        change = "-" if pd.isna(row.accuracy_change) else f"{row.accuracy_change:+.2%}"
-        lines.append(
-            f"| {pd.Timestamp(row.target_date).date()} | {row.samples} | {row.actual_up_rate:.2%} | "
-            f"{row.predicted_up_rate:.2%} | {row.accuracy:.2%} | {change} |"
-        )
 
     lines.extend(
         [
@@ -160,5 +149,22 @@ def write_evaluation_report(
 
     lines.extend(["", "## 运行参数", "", "```text"])
     lines.extend(f"{key}={value}" for key, value in sorted(run_arguments.items()))
-    lines.extend(["```", ""])
+    lines.extend(
+        [
+            "```",
+            "",
+            "## 每日预估汇总",
+            "",
+            "| 目标日期 | 样本数 | 实际上涨比例 | 预测上涨比例 | 准确率 | 较前日变化 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row in daily_summary.itertuples(index=False):
+        change = "-" if pd.isna(row.accuracy_change) else f"{row.accuracy_change:+.2%}"
+        lines.append(
+            f"| {pd.Timestamp(row.target_date).date()} | {row.samples} | {row.actual_up_rate:.2%} | "
+            f"{row.predicted_up_rate:.2%} | {row.accuracy:.2%} | {change} |"
+        )
+
+    lines.append("")
     report_path.write_text("\n".join(lines), encoding="utf-8")

@@ -164,8 +164,11 @@ class FactorResearchTest(unittest.TestCase):
             report_path = Path(report_dir) / "evaluation.md"
             chart_path = Path(report_dir) / "evaluation_accuracy.svg"
             write_evaluation_report(result, report_path, chart_path, "test-run", {"max_depth": 2})
-            self.assertIn("ROC AUC", report_path.read_text(encoding="utf-8"))
-            self.assertIn(chart_path.name, report_path.read_text(encoding="utf-8"))
+            report = report_path.read_text(encoding="utf-8")
+            self.assertIn("ROC AUC", report)
+            self.assertIn(chart_path.name, report)
+            self.assertGreater(report.index("## 每日预估汇总"), report.index("## 运行参数"))
+            self.assertEqual(report.rfind("## "), report.index("## 每日预估汇总"))
             self.assertIn("<polyline", chart_path.read_text(encoding="utf-8"))
 
     def test_experiment_accepts_an_injected_model_factory(self):
