@@ -69,7 +69,8 @@ class FactorResearchTest(unittest.TestCase):
             set(FACTOR_FACTORIES),
             {
                 "return_1d", "return_5d", "volatility_5d", "volume_ratio_5d",
-                "amplitude", "close_position", "intraday_return", "realized_vol",
+                "amplitude", "candle_body_ratio", "close_position",
+                "intraday_return", "realized_vol",
                 "positive_bar_ratio", "last_30m_return", "last_30m_volume_ratio",
                 "close_to_ma_5d", "ma_distance_change_5d", "ma_5d_slope",
                 "ma_spread_5d_20d", "ma_spread_change_5d_20d", "return_10d",
