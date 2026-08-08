@@ -38,7 +38,7 @@ class SearchContext:
         holdout_start: str | pd.Timestamp | None = None,
         holdout_end: str | pd.Timestamp | None = None,
     ) -> "SearchContext":
-        """校验并规范化日频表，一次性构建目标、行映射和日期区间掩码。"""
+        """校验日频表的数据契约，一次性构建目标、行映射和日期区间掩码。"""
 
         required = {"code", "trade_date", "open", "close"}
         missing = required.difference(daily.columns)
@@ -51,27 +51,26 @@ class SearchContext:
         if missing_features:
             raise ValueError(f"搜索日频数据缺少固定因子: {sorted(missing_features)}")
 
-        normalized = daily.copy()
-        normalized["code"] = normalized["code"].astype(str)
-        normalized["trade_date"] = pd.to_datetime(
-            normalized["trade_date"], errors="raise"
-        ).dt.normalize()
-        # SearchContext 后续使用规范化主键建立 MultiIndex 映射，因此必须在同一
-        # 口径下验证唯一性。否则 1/"1" 或同日不同时刻会在规范化后碰撞，轻则
-        # 重复计算一个交易日，重则让 get_indexer 因非唯一索引直接失败。
-        if normalized.duplicated(["code", "trade_date"]).any():
-            raise ValueError("搜索日频数据规范化后存在重复的 (code, trade_date)")
-        targets = build_forward_targets(normalized)
+        if not daily["code"].map(lambda value: isinstance(value, str)).all():
+            raise TypeError("搜索日频数据 code 列必须全部为字符串")
+        if not pd.api.types.is_datetime64_any_dtype(daily["trade_date"].dtype):
+            raise TypeError("搜索日频数据 trade_date 列必须为 datetime64 类型")
+        if not daily["trade_date"].eq(daily["trade_date"].dt.normalize()).all():
+            raise ValueError("搜索日频数据 trade_date 必须为归零后的交易日")
 
-        daily_keys = pd.MultiIndex.from_frame(normalized[["code", "trade_date"]])
-        target_keys = pd.MultiIndex.from_arrays(
-            [targets["code"].astype(str), pd.to_datetime(targets["feature_date"])]
-        )
+        prepared = daily.copy()
+        # (code, trade_date) 是后续 MultiIndex 映射的唯一业务主键。
+        if prepared.duplicated(["code", "trade_date"]).any():
+            raise ValueError("搜索日频数据存在重复的 (code, trade_date)")
+        targets = build_forward_targets(prepared)
+
+        daily_keys = pd.MultiIndex.from_frame(prepared[["code", "trade_date"]])
+        target_keys = pd.MultiIndex.from_frame(targets[["code", "feature_date"]])
         target_positions = daily_keys.get_indexer(target_keys)
         if (target_positions < 0).any():
             raise RuntimeError("目标行无法映射回日频特征行")
 
-        target_dates = pd.to_datetime(targets["target_date"])
+        target_dates = targets["target_date"]
         selection = np.ones(len(targets), dtype=bool)
         if selection_start is not None:
             selection &= (target_dates >= pd.Timestamp(selection_start)).to_numpy(
@@ -101,7 +100,7 @@ class SearchContext:
             raise ValueError("holdout 区间没有可评价样本")
 
         return cls(
-            daily=normalized,
+            daily=prepared,
             targets=targets,
             target_positions=target_positions,
             fixed_features=fixed,

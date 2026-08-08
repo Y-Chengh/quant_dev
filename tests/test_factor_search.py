@@ -150,29 +150,38 @@ class FactorSearchSpaceTest(unittest.TestCase):
 class FactorSearchExecutionTest(unittest.TestCase):
     """验证上下文准备、评价隔离、并行执行、模型复验和结果物化。"""
 
-    def test_context_rejects_keys_that_collide_after_normalization(self):
-        """搜索上下文必须拒绝规范化后发生日期或代码主键碰撞的数据。"""
+    def test_context_rejects_invalid_key_types_and_values(self):
+        """搜索上下文只校验上游主键契约，不在内部静默转换。"""
 
         daily = _search_daily(days=3)
-        first = daily.iloc[[0]]
 
-        time_collision = pd.concat(
-            [
-                first,
-                first.assign(
-                    trade_date=first.iloc[0]["trade_date"] + pd.Timedelta(hours=6)
-                ),
-            ],
-            ignore_index=True,
+        invalid_code = daily.copy()
+        invalid_code["code"] = pd.Series(
+            invalid_code["code"].tolist(), dtype=object
         )
-        with self.assertRaisesRegex(ValueError, "规范化后存在重复"):
-            SearchContext.from_daily(time_collision)
+        invalid_code.loc[0, "code"] = 1
+        with self.assertRaisesRegex(TypeError, "code 列必须全部为字符串"):
+            SearchContext.from_daily(invalid_code)
 
-        code_collision = pd.concat(
-            [first.assign(code=1), first.assign(code="1")], ignore_index=True
+        string_dates = daily.assign(
+            trade_date=daily["trade_date"].dt.strftime("%Y-%m-%d")
         )
-        with self.assertRaisesRegex(ValueError, "规范化后存在重复"):
-            SearchContext.from_daily(code_collision)
+        with self.assertRaisesRegex(TypeError, "trade_date 列必须为 datetime64"):
+            SearchContext.from_daily(string_dates)
+
+        intraday_dates = daily.copy()
+        intraday_dates.loc[0, "trade_date"] += pd.Timedelta(hours=6)
+        with self.assertRaisesRegex(ValueError, "trade_date 必须为归零后的交易日"):
+            SearchContext.from_daily(intraday_dates)
+
+    def test_context_rejects_duplicate_daily_keys(self):
+        """同一证券同一交易日只能存在一行。"""
+
+        daily = _search_daily(days=3)
+        duplicate = pd.concat([daily, daily.iloc[[0]]], ignore_index=True)
+
+        with self.assertRaisesRegex(ValueError, "存在重复的.*code, trade_date"):
+            SearchContext.from_daily(duplicate)
 
     def test_forward_targets_match_existing_dataset_target_semantics(self):
         """搜索目标必须与现有方向数据集的下一交易日目标口径一致。"""
