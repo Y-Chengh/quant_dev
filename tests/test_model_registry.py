@@ -54,6 +54,21 @@ class ModelRegistryTest(unittest.TestCase):
         self.assertIn("simple_decision_tree", available_models())
         args = parse_args([])
         self.assertEqual(args.model, "simple_decision_tree")
+        self.assertEqual(args.training_mode, "rolling")
+
+    def test_training_mode_supports_cli_and_yaml(self):
+        self.assertEqual(
+            parse_args(["--training-mode", "single"]).training_mode,
+            "single",
+        )
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text("training_mode: single\n", encoding="utf-8")
+            args = parse_args(["--config", str(config_path)])
+        self.assertEqual(args.training_mode, "single")
+
+        with self.assertRaises(SystemExit):
+            parse_args(["--training-mode", "unknown"])
 
     def test_yaml_config_selects_model_and_converts_values(self):
         with TemporaryDirectory() as temp_dir:
@@ -138,6 +153,7 @@ max_depth: 4
             "model: simple_decision_tree\nfactors: []\n",
             "model: simple_decision_tree\nfactors: [unknown_factor]\n",
             "model: simple_decision_tree\nlog_level: VERBOSE\n",
+            "model: simple_decision_tree\ntraining_mode: unknown\n",
             'model: simple_decision_tree\ndebug: "true"\n',
             "model: simple_decision_tree\nsymbol_limit: true\n",
             "- not-a-mapping\n",

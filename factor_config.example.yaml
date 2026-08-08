@@ -3,6 +3,7 @@ database: D:/量化/market.duckdb
 start: "2024-01-01"
 end: "2026-01-01"
 validation_start: "2025-06-01"
+training_mode: rolling  # rolling: 逐日扩展训练；single: 固定训练集只训练一次
 codes:
   - 000001.SZ
   - 600000.SH

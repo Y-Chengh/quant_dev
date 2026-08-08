@@ -16,6 +16,7 @@ from .timing import ElapsedRecorder, log_elapsed
 
 
 logger = logging.getLogger(__name__)
+TRAINING_MODES = ("rolling", "single")
 
 
 @dataclass
@@ -38,12 +39,18 @@ class DirectionExperiment:
         min_samples_leaf: int = 20,
         args: argparse.Namespace | None = None,
         model_factory: DirectionModelFactory | None = None,
+        training_mode: str = "rolling",
     ):
+        if training_mode not in TRAINING_MODES:
+            raise ValueError(
+                f"training_mode 必须是 {TRAINING_MODES} 之一，实际为 {training_mode!r}"
+            )
         self.validation_start = pd.Timestamp(validation_start)
         self.feature_columns = feature_columns or DEFAULT_FEATURES
         self.max_depth = max_depth
         self.min_samples_leaf = min_samples_leaf
         self.args = args
+        self.training_mode = training_mode
         # 保留原有树参数作为默认配置；注入工厂后，实验流程不再关心具体算法。
         self.model_factory = (
             model_factory
@@ -54,17 +61,24 @@ class DirectionExperiment:
             )
         )
 
-    @log_elapsed(logger, "滚动训练验证")
+    @log_elapsed(logger, "模型训练验证")
     def run(self, dataset: pd.DataFrame) -> ExperimentResult:
-        """Run expanding-window validation without using labels from the prediction date.
+        """按配置执行扩展窗口滚动验证或固定训练集验证。
 
-        Dates before validation_start form the initial history. For every target
-        date T on or after it, a fresh model is fitted with target_date < T and
-        then used to predict all symbols for T.
+        ``validation_start`` 之前的日期构成固定训练集。滚动模式会在每个预测日
+        使用 ``target_date < T`` 的全部样本重新训练；单次模式仅使用固定训练集
+        拟合一次，并预测整个验证集。
         """
         split = split_by_date(dataset, self.validation_start)
         validation_dates = pd.Index(split.validation["target_date"].drop_duplicates().sort_values())
-        predictions, model, importance = self._walk_forward(dataset, validation_dates)
+        if self.training_mode == "rolling":
+            predictions, model, importance = self._walk_forward(
+                dataset, validation_dates
+            )
+        else:
+            predictions, model, importance = self._single_fit(
+                split.train, split.validation
+            )
 
         return ExperimentResult(
             model=model,
@@ -79,6 +93,52 @@ class DirectionExperiment:
             feature_importance=pd.Series(importance, index=self.feature_columns).sort_values(ascending=False),
             daily_accuracy_trend=daily_accuracy_trend(predictions),
         )
+
+    def _single_fit(
+        self,
+        train_frame: pd.DataFrame,
+        validation_frame: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray]:
+        """只使用验证起始日前的训练集拟合一次，并预测完整验证集。"""
+        timings = ElapsedRecorder()
+        medians = train_frame[self.feature_columns].median().fillna(0.0)
+        model = self.model_factory.create()
+        train_matrix = timings.track("preprocessing")(self._matrix)(
+            train_frame, medians
+        )
+        validation_matrix = timings.track("preprocessing")(self._matrix)(
+            validation_frame, medians
+        )
+        timings.track("fit")(model.fit)(
+            train_matrix,
+            train_frame["label"].to_numpy(dtype=int),
+        )
+        probability = timings.track("predict")(model.predict_proba)(
+            validation_matrix
+        )[:, 1]
+
+        predictions = validation_frame[
+            ["feature_date", "target_date", "code", "label", "target_return"]
+        ].copy()
+        predictions["up_probability"] = probability
+        predictions["prediction"] = (probability >= 0.5).astype(int)
+        predictions["training_samples"] = len(train_frame)
+        predictions["training_end_date"] = train_frame["target_date"].max()
+        importance = np.asarray(model.feature_importances_, dtype=float)
+        total_importance = importance.sum()
+        if total_importance > 0:
+            importance /= total_importance
+        logger.info(
+            "单次训练验证耗时汇总: train_samples=%d validation_samples=%d "
+            "total=%.3fs preprocessing=%.3fs fit=%.3fs predict=%.3fs",
+            len(train_frame),
+            len(validation_frame),
+            timings.total,
+            timings.elapsed("preprocessing"),
+            timings.elapsed("fit"),
+            timings.elapsed("predict"),
+        )
+        return predictions.reset_index(drop=True), model, importance
 
     def _walk_forward(
         self,

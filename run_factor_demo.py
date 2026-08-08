@@ -16,7 +16,7 @@ import yaml
 
 from factor_research.data import load_market_service
 from factor_research.dataset import build_direction_dataset
-from factor_research.experiment import DirectionExperiment
+from factor_research.experiment import DirectionExperiment, TRAINING_MODES
 from factor_research.factors import DEFAULT_FEATURES, available_factors, build_daily_features
 from factor_research.models.registry import (
     add_model_selection_argument,
@@ -200,7 +200,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--validation-start",
-        help="滚动验证开始日期；默认从研究结束日期往前1年，例如 2024-01-01",
+        help="验证集开始日期；默认从研究结束日期往前1年，例如 2024-01-01",
+    )
+    parser.add_argument(
+        "--training-mode",
+        choices=TRAINING_MODES,
+        default="rolling",
+        help="训练方式：rolling 为逐日扩展窗口训练，single 为训练集仅拟合一次",
     )
     add_model_selection_argument(parser)
     add_selected_model_arguments(parser, selected.model)
@@ -305,7 +311,8 @@ def main() -> None:
         raise RuntimeError("market service未返回可研究的股票代码")
 
     logger.info("数据窗口: %s 至 %s", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
-    logger.info("滚动验证开始: %s", validation_start.strftime("%Y-%m-%d"))
+    logger.info("验证集开始: %s", validation_start.strftime("%Y-%m-%d"))
+    logger.info("训练方式: %s", args.training_mode)
     logger.info("股票数量: %d", len(codes))
     bars = load_market_service(client, codes, start, end)
     logger.info("分钟行情行数: %d", len(bars))
@@ -316,14 +323,15 @@ def main() -> None:
     daily = build_daily_features(bars, feature_columns=args.factors, cache_dir=cache_dir)
     logger.info("开始构建方向预测数据集")
     dataset = build_direction_dataset(daily, feature_columns=args.factors, args=args)
-    logger.info("方向预测数据集行数: %d，开始滚动训练验证", len(dataset))
+    logger.info("方向预测数据集行数: %d，开始模型训练验证", len(dataset))
     result = DirectionExperiment(
         validation_start=validation_start,
         feature_columns=args.factors,
         args=args,
         model_factory=model_factory_from_args(args),
+        training_mode=args.training_mode,
     ).run(dataset)
-    logger.info("滚动验证指标: %s", result.metrics)
+    logger.info("验证指标: %s", result.metrics)
     logger.info("因子重要性:\n%s", result.feature_importance.to_string())
     write_evaluation_report(result, report_file, chart_file, run_id, run_arguments)
     logger.info("评估报告: %s，准确率趋势图: %s", report_file.resolve(), chart_file.resolve())

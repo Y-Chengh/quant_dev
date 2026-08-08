@@ -219,6 +219,67 @@ class FactorResearchTest(unittest.TestCase):
         samples_by_date = result.predictions.groupby("target_date")["training_samples"].first()
         self.assertTrue(samples_by_date.is_monotonic_increasing)
 
+    def test_single_training_fits_once_on_training_split_only(self):
+        class RecordingModel(DirectionModel):
+            def __init__(self):
+                self.fit_labels: np.ndarray | None = None
+                self.feature_importances_ = np.array([], dtype=float)
+
+            def fit(self, X: np.ndarray, y: np.ndarray):
+                self.fit_labels = y.copy()
+                self.feature_importances_ = np.full(X.shape[1], 1 / X.shape[1])
+                return self
+
+            def predict_proba(self, X: np.ndarray) -> np.ndarray:
+                positive = np.full(len(X), 0.6)
+                return np.column_stack([1 - positive, positive])
+
+        class RecordingFactory(DirectionModelFactory):
+            name = "recording"
+
+            def __init__(self):
+                self.created: list[RecordingModel] = []
+
+            def create(self):
+                model = RecordingModel()
+                self.created.append(model)
+                return model
+
+        cutoff = self.dataset["target_date"].drop_duplicates().sort_values().iloc[48]
+        split = split_by_date(self.dataset, cutoff)
+        factory = RecordingFactory()
+        result = DirectionExperiment(
+            cutoff,
+            model_factory=factory,
+            training_mode="single",
+        ).run(self.dataset)
+
+        self.assertEqual(len(factory.created), 1)
+        np.testing.assert_array_equal(
+            factory.created[0].fit_labels,
+            split.train["label"].to_numpy(dtype=int),
+        )
+        self.assertEqual(len(result.predictions), len(split.validation))
+        self.assertEqual(set(result.predictions["target_date"]), set(split.validation["target_date"]))
+        self.assertTrue((result.predictions["training_samples"] == len(split.train)).all())
+        self.assertTrue(
+            (
+                result.predictions["training_end_date"]
+                == split.train["target_date"].max()
+            ).all()
+        )
+        self.assertTrue(
+            (
+                result.predictions["training_end_date"]
+                < result.predictions["target_date"]
+            ).all()
+        )
+
+    def test_unknown_training_mode_is_rejected(self):
+        cutoff = self.dataset["target_date"].min()
+        with self.assertRaisesRegex(ValueError, "training_mode"):
+            DirectionExperiment(cutoff, training_mode="unknown")
+
     def test_default_window_uses_last_three_years(self):
         start, end = resolve_window(
             {"first_time": "2018-01-01 09:35:00", "last_time": "2025-06-30 15:00:00"}
