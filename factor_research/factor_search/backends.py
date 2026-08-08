@@ -35,7 +35,14 @@ class ExecutionBackend(Protocol):
         evaluator: CandidateEvaluator,
         batch_size: int,
     ) -> list[CandidateTaskResult]:
-        """计算并评价候选，返回顺序必须与 candidates 一致。"""
+        """计算并评价候选，返回顺序必须与 candidates 一致。
+
+        参数：
+            candidates: 按期望输出顺序排列的候选因子。
+            context: 全部候选共享的只读数据和日期切分。
+            evaluator: 把候选值转换为排行指标的评价器。
+            batch_size: 每个计算批次包含的最大候选数。
+        """
 
 
 def _evaluate_batch(
@@ -44,7 +51,14 @@ def _evaluate_batch(
     context: SearchContext,
     evaluator: CandidateEvaluator,
 ) -> list[CandidateTaskResult]:
-    """在共享 Frame 上依次计算一批候选，并隔离每个候选的异常。"""
+    """在共享 Frame 上依次计算一批候选，并隔离每个候选的异常。
+
+    参数：
+        candidates: 当前批次要执行的候选因子。
+        frame: 批次内复用节点缓存的日频执行上下文。
+        context: 目标、固定特征及日期掩码的只读容器。
+        evaluator: 计算每个候选指标的评价器。
+    """
 
     results: list[CandidateTaskResult] = []
     for candidate in candidates:
@@ -84,7 +98,14 @@ class SequentialBackend:
         evaluator: CandidateEvaluator,
         batch_size: int,
     ) -> list[CandidateTaskResult]:
-        """在当前进程中按批次计算候选，供调试和确定性基准使用。"""
+        """在当前进程中按批次计算候选，供调试和确定性基准使用。
+
+        参数：
+            candidates: 按生成顺序排列的候选因子。
+            context: 候选共享的搜索数据上下文。
+            evaluator: 为候选计算数值指标的评价器。
+            batch_size: 一次复用节点缓存的候选数量上限。
+        """
 
         frame = DailyFactorFrame(context.daily)
         results: list[CandidateTaskResult] = []
@@ -103,7 +124,12 @@ _WORKER_EVALUATOR: CandidateEvaluator | None = None
 
 
 def _initialize_worker(context: SearchContext, evaluator: CandidateEvaluator) -> None:
-    """每个进程只反序列化一次日频上下文，而不是为每个候选重复传输。"""
+    """每个进程只反序列化一次日频上下文，而不是为每个候选重复传输。
+
+    参数：
+        context: 当前 worker 后续批次共享的搜索上下文。
+        evaluator: 当前 worker 后续批次共享的评价器。
+    """
 
     global _WORKER_FRAME, _WORKER_CONTEXT, _WORKER_EVALUATOR
     _WORKER_CONTEXT = context
@@ -112,7 +138,11 @@ def _initialize_worker(context: SearchContext, evaluator: CandidateEvaluator) ->
 
 
 def _worker_batch(candidates: Sequence[FactorCandidate]) -> list[CandidateTaskResult]:
-    """使用进程初始化器保存的只读上下文评价一个候选批次。"""
+    """使用进程初始化器保存的只读上下文评价一个候选批次。
+
+    参数：
+        candidates: 分配给当前 worker 的候选因子批次。
+    """
 
     if _WORKER_FRAME is None or _WORKER_CONTEXT is None or _WORKER_EVALUATOR is None:
         raise RuntimeError("搜索 worker 尚未初始化")
@@ -128,7 +158,11 @@ class ProcessBackend:
     n_jobs: int = -1
 
     def _workers(self, candidate_count: int) -> int:
-        """根据用户配置、CPU 数和批次数计算实际 worker 数量。"""
+        """根据用户配置、CPU 数和批次数计算实际 worker 数量。
+
+        参数：
+            candidate_count: 待分配的候选批次数，同时是 worker 数上限。
+        """
 
         if self.n_jobs == 0 or self.n_jobs < -1:
             raise ValueError("n_jobs 必须是 -1 或正整数")
@@ -142,7 +176,14 @@ class ProcessBackend:
         evaluator: CandidateEvaluator,
         batch_size: int,
     ) -> list[CandidateTaskResult]:
-        """把候选批次分派给进程池，并恢复为与输入候选一致的顺序。"""
+        """把候选批次分派给进程池，并恢复为与输入候选一致的顺序。
+
+        参数：
+            candidates: 按期望输出顺序排列的候选因子。
+            context: 传入每个 worker 一次的搜索数据上下文。
+            evaluator: 传入每个 worker 一次的候选评价器。
+            batch_size: 每个进程任务包含的最大候选数。
+        """
 
         if not candidates:
             return []

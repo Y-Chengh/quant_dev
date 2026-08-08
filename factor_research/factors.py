@@ -27,7 +27,11 @@ def available_factors() -> list[str]:
 
 
 def _normalized_keys(frame: pd.DataFrame) -> pd.DataFrame:
-    """统一代码和日期类型，避免 Parquet 类型差异干扰逻辑主键比较。"""
+    """统一代码和日期类型，避免 Parquet 类型差异干扰逻辑主键比较。
+
+    参数：
+        frame: 含证券代码和交易日键列的日频表或缓存表。
+    """
 
     keys = frame[KEY_COLUMNS].copy().reset_index(drop=True)
     keys["code"] = keys["code"].astype(str)
@@ -36,7 +40,11 @@ def _normalized_keys(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
-    """按证券和交易日把已校验分钟行情聚合为排序后的日频 OHLCV。"""
+    """按证券和交易日把已校验分钟行情聚合为排序后的日频 OHLCV。
+
+    参数：
+        bars: 已通过行情契约校验的分钟 OHLCV 表。
+    """
 
     return (
         bars.groupby(KEY_COLUMNS, sort=True)
@@ -58,6 +66,9 @@ def aggregate_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
 
     网格搜索在没有固定因子时使用该入口。原有 ``build_daily_features`` 仍走
     原来的内部聚合函数，因此既不改变默认因子集合，也不改变既有缓存指纹。
+
+    参数：
+        bars: 待校验并按证券与交易日聚合的分钟行情表。
     """
 
     validated = validate_bars(bars)
@@ -67,7 +78,11 @@ def aggregate_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
 
 
 def _input_fingerprint(bars: pd.DataFrame) -> str:
-    """根据分钟行情列类型和全部值生成稳定的缓存输入指纹。"""
+    """根据分钟行情列类型和全部值生成稳定的缓存输入指纹。
+
+    参数：
+        bars: 要标识版本的已校验分钟行情表。
+    """
 
     columns = ["code", "trade_time", "open", "high", "low", "close", "volume"]
     digest = hashlib.sha256()
@@ -77,7 +92,11 @@ def _input_fingerprint(bars: pd.DataFrame) -> str:
 
 
 def _implementation_fingerprint(factory: FactorFactory) -> str:
-    """根据具体工厂、公共基类和日频聚合实现生成代码版本指纹。"""
+    """根据具体工厂、公共基类和日频聚合实现生成代码版本指纹。
+
+    参数：
+        factory: 要计算实现版本的具体正式因子工厂实例。
+    """
 
     digest = hashlib.sha256()
     # Include the concrete factory, shared helpers, and base daily aggregation.
@@ -93,7 +112,11 @@ class FactorCache:
     """按因子实现版本和行情输入版本安全读写独立的 Parquet 缓存。"""
 
     def __init__(self, root: str | Path):
-        """保存缓存根目录，具体因子目录在首次写入时创建。"""
+        """保存缓存根目录，具体因子目录在首次写入时创建。
+
+        参数：
+            root: 所有因子版本化 Parquet 缓存的根目录。
+        """
 
         self.root = Path(root)
 
@@ -103,7 +126,13 @@ class FactorCache:
         input_fingerprint: str,
         daily: pd.DataFrame,
     ) -> pd.Series | None:
-        """读取并严格校验缓存列、行数和日频主键，失效时返回 ``None``。"""
+        """读取并严格校验缓存列、行数和日频主键，失效时返回 ``None``。
+
+        参数：
+            factory: 决定因子名和实现版本的工厂实例。
+            input_fingerprint: 当前分钟行情内容的稳定短指纹。
+            daily: 用于校验缓存行数和主键的当前日频表。
+        """
 
         path = self._path(factory, input_fingerprint)
         if not path.exists():
@@ -150,7 +179,14 @@ class FactorCache:
         daily: pd.DataFrame,
         values: pd.Series,
     ) -> Path:
-        """先写临时 Parquet 再原子替换目标文件，并返回最终缓存路径。"""
+        """先写临时 Parquet 再原子替换目标文件，并返回最终缓存路径。
+
+        参数：
+            factory: 决定因子名和实现版本的工厂实例。
+            input_fingerprint: 当前分钟行情内容的稳定短指纹。
+            daily: 要与缓存因子值共同写入的日频主键表。
+            values: 与 ``daily`` 逐行对齐的因子值序列。
+        """
 
         path = self._path(factory, input_fingerprint)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +199,12 @@ class FactorCache:
         return path
 
     def _path(self, factory: FactorFactory, input_fingerprint: str) -> Path:
-        """组合因子名称、实现指纹和输入指纹得到唯一缓存文件路径。"""
+        """组合因子名称、实现指纹和输入指纹得到唯一缓存文件路径。
+
+        参数：
+            factory: 提供因子名和实现指纹的工厂实例。
+            input_fingerprint: 用于区分行情版本的稳定短指纹。
+        """
 
         implementation = _implementation_fingerprint(factory)
         return self.root / factory.name / f"{implementation}-{input_fingerprint}.parquet"
@@ -175,7 +216,13 @@ def build_daily_features(
     feature_columns: Sequence[str] | None = None,
     cache_dir: str | Path | None = None,
 ) -> pd.DataFrame:
-    """按运行时选择构建因子，并按实现和输入版本安全地复用缓存。"""
+    """按运行时选择构建因子，并按实现和输入版本安全地复用缓存。
+
+    参数：
+        bars: 待校验、聚合并传给因子工厂的分钟行情表。
+        feature_columns: 按顺序要计算的注册因子名；为 ``None`` 时使用默认集合，显式空序列非法。
+        cache_dir: 可选因子缓存根目录；为空时不读写缓存。
+    """
     bars = validate_bars(bars)
     selected = list(feature_columns) if feature_columns is not None else DEFAULT_FEATURES.copy()
     if not selected:

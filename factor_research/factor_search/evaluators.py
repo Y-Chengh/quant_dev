@@ -25,11 +25,21 @@ class CandidateEvaluator(Protocol):
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
-        """返回可直接合并进排行榜的纯数值指标。"""
+        """返回可直接合并进排行榜的纯数值指标。
+
+        参数：
+            candidate: 当前指标所属的候选因子及其表达式。
+            values: 与上下文日频表逐行对齐的候选值。
+            context: 目标值、日期掩码和行位置映射。
+        """
 
 
 def _finite_std(values: pd.Series) -> float:
-    """计算有限值的样本标准差，不足两个观测时返回缺失值。"""
+    """计算有限值的样本标准差，不足两个观测时返回缺失值。
+
+    参数：
+        values: 要过滤非有限值并计算样本标准差的序列。
+    """
 
     finite = values[np.isfinite(values.to_numpy(dtype=float))]
     return float(finite.std(ddof=1)) if len(finite) >= 2 else float("nan")
@@ -42,7 +52,15 @@ def _period_ic_metrics(
     prefix: str,
     min_daily_samples: int,
 ) -> dict[str, float]:
-    """在指定日期掩码上汇总逐日横截面 IC、覆盖率和稳定性指标。"""
+    """在指定日期掩码上汇总逐日横截面 IC、覆盖率和稳定性指标。
+
+    参数：
+        context: 提供目标收益和目标日期的搜索上下文。
+        aligned_scores: 已对齐到目标样本顺序的候选得分。
+        mask: 指定本次统计使用哪些目标样本的布尔掩码。
+        prefix: 写入指标字典时区分时间区间的键前缀。
+        min_daily_samples: 单日横截面 IC 有效所需的最小样本数。
+    """
 
     rows = int(mask.sum())
     if rows == 0:
@@ -124,7 +142,13 @@ class IcEvaluator:
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
-        """评价 selection 指标，并只用 selection Rank IC 锁定因子方向。"""
+        """评价 selection 指标，并只用 selection Rank IC 锁定因子方向。
+
+        参数：
+            candidate: 当前评价的候选因子。
+            values: 与日频上下文等长的未对齐候选值。
+            context: 包含 selection 掩码和目标的搜索上下文。
+        """
 
         aligned = context.align_factor_values(values)
         metrics = _period_ic_metrics(
@@ -162,7 +186,13 @@ class HoldoutIcEvaluator:
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
-        """仅在预先划定的 holdout 区间计算候选 IC 汇总指标。"""
+        """仅在预先划定的 holdout 区间计算候选 IC 汇总指标。
+
+        参数：
+            candidate: 最终入选并要进行样本外评价的候选因子。
+            values: 与日频上下文等长的未对齐候选值。
+            context: 包含 holdout 掩码和目标的搜索上下文。
+        """
 
         aligned = context.align_factor_values(values)
         return _period_ic_metrics(

@@ -19,6 +19,12 @@ class CandleBodyRatioFactory(FactorFactory):
     name = "candle_body_ratio"
 
     def compute(self, bars: pd.DataFrame, daily: pd.DataFrame) -> pd.Series:
+        """计算每个交易日 K 线实体绝对长度占当日振幅的比例。
+
+        参数：
+            bars: 原始分钟行情；本日频因子不直接使用。
+            daily: 含当日开盘、最高、最低和收盘价的日频表。
+        """
         # 零振幅或高低价倒置时比例没有金融含义，保留为缺失值。
         valid_range = (daily["high"] - daily["low"]).where(
             daily["high"] > daily["low"]

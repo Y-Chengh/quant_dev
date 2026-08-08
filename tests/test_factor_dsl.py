@@ -10,7 +10,12 @@ from factor_research.factor_factories import FACTOR_FACTORIES
 
 
 def _daily_frame(days: int = 8, codes: tuple[str, ...] = ("A", "B")) -> pd.DataFrame:
-    """生成价格单调递增、可精确推导滚动结果的多证券日频样本。"""
+    """生成价格单调递增、可精确推导滚动结果的多证券日频样本。
+
+    参数：
+        days: 每个证券生成的连续工作日数，缺省为 8。
+        codes: 要生成的证券代码及其排列顺序，缺省为 ``("A", "B")``。
+    """
 
     dates = pd.bdate_range("2024-01-02", periods=days)
     rows = []
@@ -32,7 +37,11 @@ def _daily_frame(days: int = 8, codes: tuple[str, ...] = ("A", "B")) -> pd.DataF
 
 
 def _alpha_002_frame(days: int = 8) -> pd.DataFrame:
-    """生成可独立控制量价横截面顺序的 Alpha 002 精确值样本。"""
+    """生成可独立控制量价横截面顺序的 Alpha 002 精确值样本。
+
+    参数：
+        days: 每个证券生成的连续工作日数，缺省且当前控制模式支持的最大值为 8。
+    """
 
     dates = pd.bdate_range("2024-01-02", periods=days)
     volume_a_high = [True, False, True, False, True, False]

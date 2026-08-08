@@ -38,7 +38,15 @@ class SearchContext:
         holdout_start: str | pd.Timestamp | None = None,
         holdout_end: str | pd.Timestamp | None = None,
     ) -> "SearchContext":
-        """校验日频表的数据契约，一次性构建目标、行映射和日期区间掩码。"""
+        """校验日频表的数据契约，一次性构建目标、行映射和日期区间掩码。
+
+        参数：
+            daily: 键列已规范化且每个证券交易日唯一的日频表。
+            fixed_features: 日频表中要与搜索候选联合建模的固定因子列；缺省为空。
+            selection_start: 筛选区间首个目标日期；为空时从最早目标开始。
+            holdout_start: 样本外区间首个目标日期，也是筛选区间的排他上界；为空时不划分 holdout。
+            holdout_end: 样本外区间最后一个目标日期，包含该日；为空时不限制结束日。
+        """
 
         required = {"code", "trade_date", "open", "close"}
         missing = required.difference(daily.columns)
@@ -111,7 +119,11 @@ class SearchContext:
         )
 
     def align_factor_values(self, values: pd.Series | np.ndarray) -> np.ndarray:
-        """把与 daily 等长的候选值对齐到目标样本顺序。"""
+        """把与 daily 等长的候选值对齐到目标样本顺序。
+
+        参数：
+            values: 与 ``daily`` 每行一一对应的候选因子值。
+        """
 
         array = np.asarray(values, dtype=float)
         if array.shape != (len(self.daily),):

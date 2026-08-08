@@ -25,6 +25,14 @@ def prepare_search_context(
 
     有固定因子时只调用一次现有 ``build_daily_features``；没有固定因子时只聚合
     OHLCV。候选 worker 只接收返回的上下文，因此不会再次访问因子工厂。
+
+    参数：
+        bars: 已标准化的分钟行情表。
+        fixed_features: 在搜索中与候选因子共同使用的正式因子名；缺省为空。
+        cache_dir: 固定因子缓存根目录；为空时不持久化缓存。
+        selection_start: 候选筛选区间的首个目标日期；为空时不限制起点。
+        holdout_start: 样本外报告区间的首个目标日期；为空时不划分 holdout。
+        holdout_end: 样本外报告区间的最后一个目标日期，包含该日；为空时不限制结束日。
     """
 
     fixed = tuple(fixed_features)

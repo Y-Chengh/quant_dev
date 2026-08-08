@@ -59,7 +59,11 @@ class FactorGridSearch:
     def _validate_candidates(
         self, candidates: Sequence[FactorCandidate]
     ) -> None:
-        """在执行前校验候选非空、实际数量、表达式深度和历史长度。"""
+        """在执行前校验候选非空、实际数量、表达式深度和历史长度。
+
+        参数：
+            candidates: 已生成并完成去重的全部候选因子。
+        """
 
         if not candidates:
             raise ValueError("搜索空间没有生成任何候选")
@@ -89,7 +93,12 @@ class FactorGridSearch:
         candidates: Sequence[FactorCandidate],
         results: Sequence[CandidateTaskResult],
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """合并候选身份与初筛结果，隔离错误并按 selection 目标稳定排序。"""
+        """合并候选身份与初筛结果，隔离错误并按 selection 目标稳定排序。
+
+        参数：
+            candidates: 用于补充表达式、深度和回看长度的候选集。
+            results: 与候选 ID 对应的初筛指标或隔离错误。
+        """
 
         candidates_by_id = {candidate.factor_id: candidate for candidate in candidates}
         rows: list[dict[str, object]] = []
@@ -150,6 +159,15 @@ class FactorGridSearch:
         初筛使用调用方注入的 ``evaluator``，未注入时才默认计算横截面 IC；候选
         始终只按 selection 指标排序。holdout 仅评价 selection 预先入选的 Top K，
         不参与候选方向或名次确定；模型评价同样只作用于预先入选的 Top K。
+
+        参数：
+            context: 一次性准备的日频数据、目标和日期切分。
+            space: 按确定顺序估算并生成候选的搜索空间。
+            evaluator: 全量 selection 候选的初筛评价器；缺省使用 IC。
+            holdout_evaluator: 预先入选候选的 holdout 评价器；缺省使用 IC。
+            holdout_top_k: 要报告 holdout 指标的 selection 前 K 名数量，缺省为 1。
+            model_evaluator: 可选的现有模型实验评价器；为空时跳过模型复验。
+            model_top_k: 要进行模型复验的 selection 前 K 名数量，缺省为 0，即不复验。
         """
 
         if holdout_top_k < 0:

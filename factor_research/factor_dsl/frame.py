@@ -15,7 +15,11 @@ class DailyFactorFrame(ExpressionNamespace):
     REQUIRED_COLUMNS = {"code", "trade_date"}
 
     def __init__(self, daily: pd.DataFrame):
-        """复制并规范化日频表，建立稳定排序、原序恢复和节点缓存。"""
+        """复制并规范化日频表，建立稳定排序、原序恢复和节点缓存。
+
+        参数：
+            daily: 每行唯一对应一个证券交易日的日频数据表。
+        """
 
         missing = self.REQUIRED_COLUMNS.difference(daily.columns)
         if missing:
@@ -56,7 +60,11 @@ class DailyFactorFrame(ExpressionNamespace):
         return restored
 
     def bind(self, node: ExpressionNode) -> FactorExpression:
-        """把搜索生成的纯符号节点绑定到当前日频执行上下文。"""
+        """把搜索生成的纯符号节点绑定到当前日频执行上下文。
+
+        参数：
+            node: 不携带实际数据的不可变因子表达式节点。
+        """
 
         return FactorExpression(node=node, frame=self)
 
@@ -65,7 +73,12 @@ class DailyFactorFrame(ExpressionNamespace):
         expression: FactorExpression | ExpressionNode,
         name: str | None = None,
     ) -> pd.Series:
-        """计算一个因果表达式，并按调用方原始行顺序和索引返回结果。"""
+        """计算一个因果表达式，并按调用方原始行顺序和索引返回结果。
+
+        参数：
+            expression: 要执行的已绑定表达式或纯符号节点。
+            name: 返回序列名；缺省时使用稳定因子 ID。
+        """
 
         node = expression.node if isinstance(expression, FactorExpression) else expression
         if isinstance(expression, FactorExpression) and expression.frame not in {None, self}:
@@ -85,7 +98,11 @@ class DailyFactorFrame(ExpressionNamespace):
         self._cache.clear()
 
     def _evaluate_node(self, node: ExpressionNode) -> pd.Series:
-        """递归计算单个节点，并复用当前批次已得到的公共子表达式。"""
+        """递归计算单个节点，并复用当前批次已得到的公共子表达式。
+
+        参数：
+            node: 当前要计算或从缓存读取的表达式节点。
+        """
 
         cached = self._cache.get(node)
         if cached is not None:
@@ -130,7 +147,11 @@ class DailyFactorFrame(ExpressionNamespace):
         return values
 
     def _restore_frame_order(self, frame: pd.DataFrame) -> pd.DataFrame:
-        """使用构造时保存的位置映射把内部排序表恢复为调用方行顺序。"""
+        """使用构造时保存的位置映射把内部排序表恢复为调用方行顺序。
+
+        参数：
+            frame: 当前按内部证券与日期顺序排列的表。
+        """
 
         result = frame.iloc[np.argsort(self._order)].copy()
         return result.reset_index(drop=True)

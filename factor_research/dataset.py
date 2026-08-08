@@ -22,7 +22,11 @@ class DatasetSplit:
 
 
 def _with_forward_targets(daily: pd.DataFrame) -> pd.DataFrame:
-    """在按证券排序的副本上附加下一有效交易日目标列。"""
+    """在按证券排序的副本上附加下一有效交易日目标列。
+
+    参数：
+        daily: 每行为一个证券交易日的日频行情表。
+    """
 
     required = {"code", "trade_date", "open", "close"}
     missing = required.difference(daily.columns)
@@ -43,6 +47,9 @@ def build_forward_targets(daily: pd.DataFrame) -> pd.DataFrame:
 
     返回结果不包含任何特征列，供因子搜索一次性复用。特征日期为 D，目标日期
     是同一证券 D 之后实际存在行情的下一天；最后一个交易日因为没有目标而丢弃。
+
+    参数：
+        daily: 含证券、交易日及开收盘价的日频行情表。
     """
 
     data = _with_forward_targets(daily)
@@ -61,7 +68,13 @@ def build_direction_dataset(
     feature_columns: list[str] | None = None,
     args: argparse.Namespace | None = None,
 ) -> pd.DataFrame:
-    """用 D 日收盘后的特征预测下一有效交易日从开盘到收盘的方向。"""
+    """用 D 日收盘后的特征预测下一有效交易日从开盘到收盘的方向。
+
+    参数：
+        daily_features: 已合并日频行情和因子列的特征表。
+        feature_columns: 要输出的因子列名；缺省时使用默认因子集。
+        args: 为兼容调用链保留的命令行命名空间，不参与目标计算。
+    """
     feature_columns = feature_columns or DEFAULT_FEATURES
     missing = set(feature_columns).difference(daily_features.columns)
     if missing:
@@ -77,7 +90,12 @@ def build_direction_dataset(
 
 
 def split_by_date(dataset: pd.DataFrame, validation_start: str | pd.Timestamp) -> DatasetSplit:
-    """按配置日期切分；validation_start 当天属于验证区间。"""
+    """按配置日期切分；validation_start 当天属于验证区间。
+
+    参数：
+        dataset: 含 ``target_date`` 的已建模样本表。
+        validation_start: 验证集首个目标日期，该日期包含在验证集内。
+    """
     cutoff = pd.Timestamp(validation_start)
     train = dataset.loc[dataset["target_date"] < cutoff].copy()
     validation = dataset.loc[dataset["target_date"] >= cutoff].copy()

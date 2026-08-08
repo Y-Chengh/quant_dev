@@ -90,7 +90,12 @@ class OperatorGrid:
 
 
 def op(name: str, **parameters: Sequence[object] | object) -> OperatorGrid:
-    """构造算子网格；标量会自动转换为只有一个取值的网格。"""
+    """构造算子网格；标量会自动转换为只有一个取值的网格。
+
+    参数：
+        name: 每组参数将调用的已注册单输入算子名。
+        **parameters: 参数名到候选取值序列或单一取值的映射。
+    """
 
     normalized: list[tuple[str, tuple[object, ...]]] = []
     for parameter_name, values in sorted(parameters.items()):
@@ -109,7 +114,11 @@ def identity() -> OperatorGrid:
 
 
 def _deduplicate(nodes: Sequence[ExpressionNode]) -> list[FactorCandidate]:
-    """按规范表达式去重，并额外防御极低概率的短哈希碰撞。"""
+    """按规范表达式去重，并额外防御极低概率的短哈希碰撞。
+
+    参数：
+        nodes: 待去重的表达式节点，首次出现顺序会被保留。
+    """
 
     by_canonical: dict[str, FactorCandidate] = {}
     ids: dict[str, str] = {}

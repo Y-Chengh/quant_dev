@@ -33,7 +33,11 @@ class FactorSearchResult:
         return self.get_candidate(str(eligible.iloc[0]["factor_id"]))
 
     def get_candidate(self, factor_id: str) -> FactorCandidate:
-        """按稳定因子 ID 查找原始候选表达式，未知 ID 时明确报错。"""
+        """按稳定因子 ID 查找原始候选表达式，未知 ID 时明确报错。
+
+        参数：
+            factor_id: 要查找的稳定候选因子 ID。
+        """
 
         for candidate in self.candidates:
             if candidate.factor_id == factor_id:
@@ -47,7 +51,13 @@ class FactorSearchResult:
         *,
         oriented: bool = False,
     ) -> pd.DataFrame:
-        """把选定表达式计算为普通日频列，供现有数据集和实验流程直接使用。"""
+        """把选定表达式计算为普通日频列，供现有数据集和实验流程直接使用。
+
+        参数：
+            context: 提供物化所需日频数据的搜索上下文。
+            factor_id: 要物化的候选 ID；为空时使用最优合格候选。
+            oriented: 是否乘以 selection Rank IC 确定的方向，缺省为 ``False``。
+        """
 
         candidate = self.best_candidate if factor_id is None else self.get_candidate(factor_id)
         if candidate.factor_id in context.daily.columns:

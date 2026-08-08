@@ -29,7 +29,13 @@ class ModelCandidateEvaluator:
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
-        """把当前候选与固定因子合并，运行既有实验并返回带前缀的模型指标。"""
+        """把当前候选与固定因子合并，运行既有实验并返回带前缀的模型指标。
+
+        参数：
+            candidate: 要追加到固定因子集的 Top K 候选。
+            values: 与 ``context.daily`` 逐行对齐的候选因子值。
+            context: 提供日频数据、固定因子和验证日期边界的上下文。
+        """
 
         validation_start = (
             pd.Timestamp(self.validation_start)

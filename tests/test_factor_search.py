@@ -23,7 +23,11 @@ from factor_research.models.simple_decision_tree import SimpleDecisionTreeModelF
 
 
 def _search_daily(days: int = 12) -> pd.DataFrame:
-    """生成横截面收益顺序稳定且包含固定因子的日频搜索样本。"""
+    """生成横截面收益顺序稳定且包含固定因子的日频搜索样本。
+
+    参数：
+        days: 每个证券生成的连续工作日数，缺省为 12。
+    """
 
     dates = pd.bdate_range("2024-01-02", periods=days)
     returns = {"A": -0.02, "B": -0.005, "C": 0.01, "D": 0.025}
@@ -46,7 +50,11 @@ def _search_daily(days: int = 12) -> pd.DataFrame:
 
 
 def _minute_bars(days: int = 8) -> pd.DataFrame:
-    """生成可供真实聚合和固定因子工厂使用的多证券五分钟样本。"""
+    """生成可供真实聚合和固定因子工厂使用的多证券五分钟样本。
+
+    参数：
+        days: 每个证券生成分钟行情的连续工作日数，缺省为 8。
+    """
 
     rows = []
     for date in pd.bdate_range("2024-01-02", periods=days):
