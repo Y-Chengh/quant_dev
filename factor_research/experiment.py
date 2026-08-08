@@ -70,7 +70,11 @@ class DirectionExperiment:
             model=model,
             model_name=self.model_factory.name,
             feature_columns=self.feature_columns,
-            metrics=classification_metrics(predictions["label"], predictions["up_probability"]),
+            metrics=classification_metrics(
+                predictions["label"],
+                predictions["up_probability"],
+                predictions["target_return"],
+            ),
             predictions=predictions,
             feature_importance=pd.Series(importance, index=self.feature_columns).sort_values(ascending=False),
             daily_accuracy_trend=daily_accuracy_trend(predictions),

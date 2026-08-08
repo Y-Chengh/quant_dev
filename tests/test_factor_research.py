@@ -151,6 +151,14 @@ class FactorResearchTest(unittest.TestCase):
         self.assertAlmostEqual(float(result.feature_importance.sum()), 1.0, places=6)
         self.assertIn("auc", result.metrics)
         self.assertTrue(np.isfinite(result.metrics["auc"]))
+        self.assertIn("ic", result.metrics)
+        self.assertTrue(np.isfinite(result.metrics["ic"]))
+        self.assertAlmostEqual(
+            result.metrics["ic"],
+            result.predictions["up_probability"].corr(
+                result.predictions["target_return"]
+            ),
+        )
         self.assertEqual(
             list(result.daily_accuracy_trend.columns),
             ["target_date", "samples", "accuracy", "accuracy_change"],
@@ -167,6 +175,7 @@ class FactorResearchTest(unittest.TestCase):
             write_evaluation_report(result, report_path, chart_path, "test-run", {"max_depth": 2})
             report = report_path.read_text(encoding="utf-8")
             self.assertIn("ROC AUC", report)
+            self.assertIn("| IC |", report)
             self.assertIn(chart_path.name, report)
             self.assertGreater(report.index("## 每日预估汇总"), report.index("## 运行参数"))
             self.assertEqual(report.rfind("## "), report.index("## 每日预估汇总"))

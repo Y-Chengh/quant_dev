@@ -4,9 +4,48 @@ import numpy as np
 import pandas as pd
 
 
-def classification_metrics(y_true: np.ndarray, probability: np.ndarray) -> dict[str, float]:
+def information_coefficient(
+    probability: np.ndarray,
+    target_return: np.ndarray,
+) -> float:
+    """计算预测上涨概率与目标收益率之间的 Pearson 相关系数。
+
+    仅使用两组数据中都为有限值的样本；有效样本少于两个，或任一序列没有
+    波动时，IC 不可定义并返回 NaN。
+    """
+    score = np.asarray(probability, dtype=float)
+    returns = np.asarray(target_return, dtype=float)
+    if score.shape != returns.shape:
+        raise ValueError("probability and target_return must have the same shape")
+
+    valid = np.isfinite(score) & np.isfinite(returns)
+    if valid.sum() < 2:
+        return float("nan")
+
+    centered_score = score[valid] - score[valid].mean()
+    centered_returns = returns[valid] - returns[valid].mean()
+    denominator = np.sqrt(
+        np.dot(centered_score, centered_score)
+        * np.dot(centered_returns, centered_returns)
+    )
+    if denominator == 0:
+        return float("nan")
+    return float(np.dot(centered_score, centered_returns) / denominator)
+
+
+def classification_metrics(
+    y_true: np.ndarray,
+    probability: np.ndarray,
+    target_return: np.ndarray | None = None,
+) -> dict[str, float]:
     y = np.asarray(y_true, dtype=int)
-    probability = np.clip(np.asarray(probability, dtype=float), 1e-12, 1 - 1e-12)
+    probability = np.asarray(probability, dtype=float)
+    ic = (
+        information_coefficient(probability, target_return)
+        if target_return is not None
+        else None
+    )
+    probability = np.clip(probability, 1e-12, 1 - 1e-12)
     prediction = (probability >= 0.5).astype(int)
     accuracy = float(np.mean(prediction == y))
     recalls = []
@@ -33,7 +72,7 @@ def classification_metrics(y_true: np.ndarray, probability: np.ndarray) -> dict[
         if positive.any() and negative.any()
         else float("nan")
     )
-    return {
+    metrics = {
         "samples": float(len(y)),
         "positive_rate": float(y.mean()),
         "accuracy": accuracy,
@@ -42,6 +81,9 @@ def classification_metrics(y_true: np.ndarray, probability: np.ndarray) -> dict[
         "brier_score": float(np.mean((probability - y) ** 2)),
         "log_loss": float(-np.mean(y * np.log(probability) + (1 - y) * np.log(1 - probability))),
     }
+    if ic is not None:
+        metrics["ic"] = ic
+    return metrics
 
 
 def daily_accuracy_trend(predictions: pd.DataFrame) -> pd.DataFrame:

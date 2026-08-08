@@ -17,6 +17,7 @@ METRIC_LABELS = {
     "accuracy": "准确率",
     "balanced_accuracy": "平衡准确率",
     "auc": "ROC AUC",
+    "ic": "IC",
     "brier_score": "Brier 分数",
     "log_loss": "Log Loss",
 }
