@@ -275,6 +275,25 @@ class FactorDslTest(unittest.TestCase):
         self.assertEqual(restored.lookback, 4)
         self.assertTrue(restored.causal)
 
+        restored_from_string = ExpressionNode.from_string(expression.node.to_string())
+        self.assertEqual(restored_from_string, expression.node)
+        self.assertEqual(restored_from_string.columns, frozenset({"close"}))
+
+        for column_name in (
+            "adjusted-close",
+            "close price",
+            "class",
+            "quote's",
+            "K",
+            "e\u0301",
+        ):
+            with self.subTest(column_name=column_name):
+                column_node = ExpressionNode.column(column_name)
+                self.assertEqual(
+                    ExpressionNode.from_string(column_node.to_string()),
+                    column_node,
+                )
+
         with self.assertRaisesRegex(ValueError, "不能包含 inputs"):
             ExpressionNode.from_dict(
                 {
@@ -283,6 +302,11 @@ class FactorDslTest(unittest.TestCase):
                     "parameters": {"name": "close"},
                 }
             )
+
+        with self.assertRaisesRegex(ValueError, "DSL 算子调用"):
+            ExpressionNode.from_string("__import__('os').system('whoami')")
+        with self.assertRaisesRegex(ValueError, "只接受一个列名"):
+            ExpressionNode.from_string("column(close, volume)")
 
     def test_changing_future_data_cannot_change_historical_outputs(self):
         """修改未来行情不得影响表达式在历史前缀上的计算结果。"""

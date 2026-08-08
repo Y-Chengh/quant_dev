@@ -34,6 +34,12 @@ class FactorCandidate:
         return self.expression.canonical
 
     @property
+    def expression_str(self) -> str:
+        """返回可直接配置到主实验并由 DSL 安全解析的表达式字符串。"""
+
+        return self.expression.to_string()
+
+    @property
     def depth(self) -> int:
         """返回底层表达式的最大算子嵌套深度。"""
 

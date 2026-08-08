@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from factor_research.dataset import build_direction_dataset, build_forward_targets
+from factor_research.factor_dsl import ExpressionNode
 from factor_research.factor_factories import FACTOR_FACTORIES
 from factor_research.factor_search import (
     CombinedGrid,
@@ -112,6 +113,20 @@ class FactorSearchSpaceTest(unittest.TestCase):
             [candidate.canonical for candidate in second],
         )
         self.assertEqual(len({candidate.factor_id for candidate in first}), len(first))
+
+    def test_candidate_string_round_trips_for_non_identifier_source(self):
+        """含标点的合法搜索源也必须生成可安全解析的候选字符串。"""
+
+        candidate = PipelineGrid(
+            sources=["adjusted-close"],
+            stages=[[identity()]],
+        ).generate()[0]
+
+        self.assertEqual(candidate.expression_str, "column('adjusted-close')")
+        self.assertEqual(
+            ExpressionNode.from_string(candidate.expression_str),
+            candidate.expression,
+        )
 
     def test_pipeline_rejects_binary_operator(self):
         """单输入流水线必须拒绝相关性等需要多个输入的算子。"""

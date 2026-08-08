@@ -128,6 +128,19 @@ def _format_cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
+def _powershell_single_quoted(value: str) -> str:
+    """把文本编码为不会展开美元符号或反引号的 PowerShell 单引号参数。
+
+    参数：
+        value: 要作为单个 PowerShell 命令行参数展示的因子表达式文本。
+
+    返回：
+        已包围单引号且把内部单引号加倍的 PowerShell 字面量。
+    """
+
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _markdown_table(frame: pd.DataFrame, columns: Sequence[str]) -> str:
     """生成不依赖 ``tabulate`` 的 Markdown 指标表。
 
@@ -386,6 +399,7 @@ def write_grid_search_report(
         {
             "factor_id": candidate.factor_id,
             "canonical": candidate.canonical,
+            "expression_str": candidate.expression_str,
             "depth": candidate.depth,
             "lookback": candidate.lookback,
             "expression": candidate.expression.to_dict(),
@@ -409,6 +423,7 @@ def write_grid_search_report(
         "successful_holdout_candidates": completed_holdout_ids,
         "best_factor_id": best.factor_id,
         "best_canonical": best.canonical,
+        "best_expression_str": best.expression_str,
         "selection": selection,
         "holdout": holdout,
     }
@@ -489,6 +504,12 @@ def write_grid_search_report(
         f"本次运行耗时 {_format_cell(elapsed_seconds)} 秒。最优表达式为：",
         "",
         f"```text\n{best.canonical}\n```",
+        "",
+        "可把上面的字符串直接加入 `run_factor_demo.py`：",
+        "",
+        "```powershell\n"
+        "python run_factor_demo.py --factors --factor-expressions "
+        f"{_powershell_single_quoted(best.expression_str)}\n```",
         "",
         "![selection 排名图](selection_ranking.svg)",
         "",

@@ -54,6 +54,9 @@
 - 候选方向和排名只能使用 selection 区间确定，holdout 只用于最终报告。
 - 选中的表达式只有在转为独立 `FactorFactory` 并补齐测试后，才能进入正式默认
   因子集合。
+- 搜索输出的 `canonical`/`expression_str` 可以通过主实验的
+  `factor_expressions` 配置作为临时候选复用；解析必须走 DSL 白名单，不得使用
+  `eval`，且不得把临时候选注册到 `FACTOR_FACTORIES`。
 
 ## 防止未来数据泄漏
 

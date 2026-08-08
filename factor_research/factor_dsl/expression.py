@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass, field
 import hashlib
 import json
+import keyword
 import math
+import unicodedata
 from typing import TYPE_CHECKING, Callable, Mapping
 
 from .registry import get_operator
@@ -77,7 +80,14 @@ class ExpressionNode:
         """返回适合作为缓存键和日志字段的稳定表达式字符串。"""
 
         if self.operator == "column":
-            return f"column({self.parameter_map['name']})"
+            name = str(self.parameter_map["name"])
+            can_use_bare_name = (
+                name.isidentifier()
+                and not keyword.iskeyword(name)
+                and unicodedata.normalize("NFKC", name) == name
+            )
+            argument = name if can_use_bare_name else repr(name)
+            return f"column({argument})"
         if self.operator == "constant":
             return f"constant({self.parameter_map['value']!r})"
         arguments = [child.canonical for child in self.inputs]
@@ -117,6 +127,14 @@ class ExpressionNode:
             return True
         definition = get_operator(self.operator)
         return definition.causal and all(child.causal for child in self.inputs)
+
+    @property
+    def columns(self) -> frozenset[str]:
+        """返回表达式直接或间接引用的全部日频列名。"""
+
+        if self.operator == "column":
+            return frozenset({str(self.parameter_map["name"])})
+        return frozenset().union(*(child.columns for child in self.inputs))
 
     def to_dict(self) -> dict[str, object]:
         """导出不包含 Python 代码的安全配置结构。"""
@@ -168,6 +186,98 @@ class ExpressionNode:
         return json.dumps(
             self.to_dict(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
+
+    def to_string(self) -> str:
+        """返回可由 :meth:`from_string` 安全恢复的规范表达式字符串。"""
+
+        return self.canonical
+
+    @classmethod
+    def from_string(cls, expression: str) -> "ExpressionNode":
+        """从搜索输出的规范字符串安全恢复表达式节点。
+
+        解析器只接受 DSL 算子调用、标量命名参数以及 ``column(close)`` 形式的
+        列引用，不执行任意 Python 代码。恢复过程中会重新校验算子数量、参数和
+        因果性。
+
+        参数：
+            expression: 搜索结果中的 ``canonical``/``expression_str`` 字符串。
+        """
+
+        if not isinstance(expression, str) or not expression.strip():
+            raise ValueError("因子表达式字符串不能为空")
+        if len(expression) > 20_000:
+            raise ValueError("因子表达式字符串过长")
+        try:
+            parsed = ast.parse(expression, mode="eval")
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"因子表达式字符串语法错误: {exc}") from exc
+        return _node_from_ast(parsed.body)
+
+
+def _scalar_from_ast(node: ast.AST) -> ScalarParameter:
+    """从 AST 节点读取 DSL 允许的标量参数，不执行 Python 表达式。
+
+    参数：
+        node: 应表示字符串、布尔值、整数、有限浮点数、空值或负数的 AST 节点。
+    """
+
+    if isinstance(node, ast.Constant) and (
+        node.value is None or isinstance(node.value, (str, bool, int, float))
+    ):
+        value = node.value
+    elif (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.USub, ast.UAdd))
+        and isinstance(node.operand, ast.Constant)
+        and not isinstance(node.operand.value, bool)
+        and isinstance(node.operand.value, (int, float))
+    ):
+        value = -node.operand.value if isinstance(node.op, ast.USub) else node.operand.value
+    else:
+        raise ValueError("因子表达式参数只能使用标量字面量")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("因子表达式参数必须是有限数值")
+    return value
+
+
+def _node_from_ast(node: ast.AST) -> ExpressionNode:
+    """递归把受限调用语法转换为经过注册表校验的表达式节点。
+
+    参数：
+        node: 当前待解析的调用节点；任何非白名单 Python 语法都会被拒绝。
+    """
+
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+        raise ValueError("因子表达式只能由 DSL 算子调用组成")
+    if any(keyword.arg is None for keyword in node.keywords):
+        raise ValueError("因子表达式不支持 ** 参数展开")
+    if len({keyword.arg for keyword in node.keywords}) != len(node.keywords):
+        raise ValueError("因子表达式包含重复命名参数")
+
+    operator = node.func.id
+    parameters = {
+        str(keyword.arg): _scalar_from_ast(keyword.value) for keyword in node.keywords
+    }
+    if operator == "column":
+        if node.keywords or len(node.args) != 1:
+            raise ValueError("column 表达式只接受一个列名")
+        column = node.args[0]
+        if isinstance(column, ast.Name):
+            return ExpressionNode.column(column.id)
+        if isinstance(column, ast.Constant) and isinstance(column.value, str):
+            return ExpressionNode.column(column.value)
+        raise ValueError("column 列名必须是标识符或字符串")
+    if operator == "constant":
+        if node.keywords or len(node.args) != 1:
+            raise ValueError("constant 表达式只接受一个数值")
+        value = _scalar_from_ast(node.args[0])
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("constant 表达式只接受有限数值")
+        return ExpressionNode.constant(value)
+
+    inputs = tuple(_node_from_ast(child) for child in node.args)
+    return operation_node(operator, inputs, parameters)
 
 
 def _invalid_child() -> ExpressionNode:

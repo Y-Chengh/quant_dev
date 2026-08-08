@@ -91,6 +91,30 @@ class ModelRegistryTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse_args(["--training-mode", "unknown"])
 
+    def test_factor_expressions_support_cli_and_yaml(self):
+        """搜索表达式应能从命令行或 YAML 字符串列表原样传入。"""
+
+        expression = "cs_rank(delta(column(close),periods=5))"
+        args = parse_args(["--factor-expressions", expression])
+        self.assertEqual(args.factor_expressions, [expression])
+        only_expression = parse_args(
+            ["--factors", "--factor-expressions", expression]
+        )
+        self.assertEqual(only_expression.factors, [])
+
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text(
+                f'factors: []\nfactor_expressions:\n  - "{expression}"\n',
+                encoding="utf-8",
+            )
+            args = parse_args(["--config", str(config_path)])
+        self.assertEqual(args.factor_expressions, [expression])
+        self.assertEqual(args.factors, [])
+
+        with self.assertRaises(SystemExit):
+            parse_args(["--factor-expressions", "open('secret.txt').read()"])
+
     def test_yaml_config_selects_model_and_converts_values(self):
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "experiment.yaml"

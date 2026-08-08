@@ -10,6 +10,7 @@ import pandas as pd
 from factor_research.dataset import build_direction_dataset, split_by_date
 from factor_research.experiment import DirectionExperiment
 from factor_research.factor_factories import FACTOR_FACTORIES
+from factor_research.factor_dsl import ExpressionNode
 from factor_research.factors import build_daily_features
 from factor_research.models import DirectionModel, DirectionModelFactory
 from factor_research.reporting import write_evaluation_report
@@ -91,6 +92,33 @@ class FactorResearchTest(unittest.TestCase):
             cache_files = list(Path(cache_dir).rglob("*.parquet"))
             self.assertEqual({path.parent.name for path in cache_files}, set(selected))
             self.assertEqual(len(cache_files), len(selected))
+
+    def test_search_expression_string_builds_runtime_factor_with_dependencies(self):
+        """搜索字符串应可直接计算，且自动加载引用的正式因子依赖。"""
+
+        expression = "delta(column(return_1d),periods=1)"
+        node = ExpressionNode.from_string(expression)
+        daily = build_daily_features(
+            synthetic_bars(days=6, symbols=2),
+            feature_columns=[],
+            factor_expressions=[expression],
+        )
+
+        self.assertIn("return_1d", daily.columns)
+        self.assertIn(node.factor_id, daily.columns)
+        expected = daily.groupby("code", sort=False)["return_1d"].diff()
+        pd.testing.assert_series_equal(
+            daily[node.factor_id],
+            expected,
+            check_names=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "未知列"):
+            build_daily_features(
+                synthetic_bars(days=3, symbols=1),
+                feature_columns=[],
+                factor_expressions=["column(future_return)"],
+            )
 
     def test_all_factory_modules_are_auto_registered(self):
         self.assertEqual(

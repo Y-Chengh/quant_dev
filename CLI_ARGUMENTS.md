@@ -45,7 +45,8 @@ python run_factor_demo.py --model lightgbm --help
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
 | `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务当前需搭配 `--model lightgbm`。 |
 | `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
-| `--factors` | 一个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的因子。参数后可连续写多个名称，直到遇到下一个以 `--` 开头的参数。 |
+| `--factors` | 零个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的正式因子。显式写出空的 `--factors` 可只使用 `--factor-expressions`；两者不能同时为空。 |
+| `--factor-expressions` | 一个或多个 DSL 字符串 | 空 | 直接加载搜索报告中的 `canonical`/`expression_str`，并按稳定 `fg_...` ID 加入模型。PowerShell 应使用外层单引号；内部单引号写成两个，或直接复制搜索报告生成的命令。 |
 | `--factor-cache-dir` | 路径 | `.factor_cache` | 因子 Parquet 缓存目录。 |
 | `--no-factor-cache` | 开关 | 关闭 | 出现该参数时完全禁用因子缓存，`--factor-cache-dir` 不再生效。适合核对最新因子实现。 |
 | `--log-level` | `DEBUG`、`INFO`、`WARNING`、`ERROR` | `INFO` | 控制终端和文件日志等级。 |
@@ -164,6 +165,13 @@ python run_factor_demo.py --symbol-limit 50
 ```powershell
 python run_factor_demo.py `
   --factors return_1d return_5d realized_vol volume_ratio_5d
+```
+
+只研究一个搜索表达式：
+
+```powershell
+python run_factor_demo.py --factors `
+  --factor-expressions 'cs_rank(delta(column(close),periods=5))'
 ```
 
 因子缓存异常或需要强制重新计算时：

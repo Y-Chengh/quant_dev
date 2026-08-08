@@ -18,7 +18,11 @@ from factor_research.factor_search import (
     identity,
     op,
 )
-from grid_search_smoke import resolve_report_output_dir, write_grid_search_report
+from grid_search_smoke import (
+    _powershell_single_quoted,
+    resolve_report_output_dir,
+    write_grid_search_report,
+)
 
 
 class _FailingVolumeHoldoutEvaluator:
@@ -53,6 +57,14 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(
             output,
             Path("logs/_search/2026-08-08/20260808_214530_a1b2c3d4"),
+        )
+
+    def test_powershell_expression_argument_escapes_special_characters(self) -> None:
+        """报告命令应禁止变量展开，并正确保留表达式内部的单引号。"""
+
+        self.assertEqual(
+            _powershell_single_quoted('column("quote\'s-$value`tick")'),
+            "'column(\"quote''s-$value`tick\")'",
         )
 
     @staticmethod
@@ -125,6 +137,9 @@ class GridSearchReportTests(unittest.TestCase):
             self.assertIn("holdout 结果不用于重排候选", report_path.read_text(encoding="utf-8"))
             leaderboard = pd.read_csv(output_dir / "leaderboard.csv")
             self.assertEqual(len(leaderboard), len(result.leaderboard))
+            self.assertTrue(
+                leaderboard["expression_str"].equals(leaderboard["expression"])
+            )
             self.assertIn("selection_oriented_rank_icir", leaderboard)
             top_row = leaderboard.iloc[0]
             self.assertEqual(top_row["direction"], -1.0)
@@ -158,6 +173,18 @@ class GridSearchReportTests(unittest.TestCase):
             )
             candidates = json.loads((output_dir / "candidates.json").read_text(encoding="utf-8"))
             self.assertEqual(len(candidates), len(result.candidates))
+            self.assertTrue(
+                all(item["expression_str"] == item["canonical"] for item in candidates)
+            )
+            self.assertEqual(
+                candidates[0]["expression_str"],
+                result.candidates[0].expression_str,
+            )
+            metadata = json.loads(
+                (output_dir / "run_metadata.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["best_expression_str"], result.best_candidate.canonical)
+            self.assertIn("--factor-expressions", report_path.read_text(encoding="utf-8"))
             daily_ic = pd.read_csv(output_dir / "top_candidates_daily_ic.csv")
             self.assertLessEqual(daily_ic["factor_id"].nunique(), 2)
             self.assertEqual(set(daily_ic["period"]), {"selection", "holdout"})

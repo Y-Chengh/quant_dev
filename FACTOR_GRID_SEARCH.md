@@ -318,6 +318,13 @@ print(result.errors)
 print(result.best_candidate.canonical)
 ```
 
+`canonical` 是可由 `ExpressionNode.from_string()` 安全恢复的规范字符串。搜索报告
+的 `candidates.json` 同时写出同值的 `expression_str` 字段；可直接复制到主实验：
+
+```powershell
+python run_factor_demo.py --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
+```
+
 默认排序目标是 `selection_oriented_rank_ic`，并且 `objective` 强制要求以
 `selection_` 开头，不能配置 holdout 指标。方向只根据 selection 的 Rank IC
 决定：负 Rank IC 的因子方向为 -1，holdout 使用同一个已锁定方向，避免从

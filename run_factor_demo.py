@@ -21,7 +21,12 @@ from factor_research.experiment import (
     PREDICTION_TASKS,
     TRAINING_MODES,
 )
-from factor_research.factors import DEFAULT_FEATURES, available_factors, build_daily_features
+from factor_research.factors import (
+    DEFAULT_FEATURES,
+    available_factors,
+    build_daily_features,
+    parse_factor_expressions,
+)
 from factor_research.models.registry import (
     add_model_selection_argument,
     add_selected_model_arguments,
@@ -39,6 +44,22 @@ DEFAULT_SYMBOL_LIMIT = 80
 DEFAULT_FACTOR_CACHE = Path(".factor_cache")
 DEFAULT_LOG_DIR = Path("logs")
 logger = logging.getLogger(__name__)
+
+
+def _factor_expression_argument(value: str) -> str:
+    """校验并规范化一个命令行或 YAML 中的 DSL 因子表达式。
+
+    参数：
+        value: 搜索报告输出的 ``canonical``/``expression_str`` 文本。
+
+    返回：
+        重新解析后生成的稳定规范字符串。
+    """
+
+    try:
+        return parse_factor_expressions([value])[0].to_string()
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _load_yaml_config(path: Path, parser: argparse.ArgumentParser) -> dict[str, Any]:
@@ -224,10 +245,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_selected_model_arguments(parser, selected.model)
     parser.add_argument(
         "--factors",
-        nargs="+",
+        nargs="*",
         choices=available_factors(),
         default=DEFAULT_FEATURES,
         help="运行时选择使用的因子；默认使用全部已注册因子",
+    )
+    parser.add_argument(
+        "--factor-expressions",
+        nargs="+",
+        type=_factor_expression_argument,
+        default=[],
+        help=(
+            "搜索输出的 canonical/expression_str 因子表达式；"
+            "可传多个，并在已注册因子之外加入本次模型"
+        ),
     )
     parser.add_argument(
         "--factor-cache-dir",
@@ -259,7 +290,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             ignored_unknown=ignored_model_arguments,
         )
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.factors and not args.factor_expressions:
+        parser.error("factors 与 factor-expressions 不能同时为空")
+    return args
 
 
 @log_elapsed(logger, "程序运行")
@@ -336,13 +370,22 @@ def main() -> None:
         raise RuntimeError("指定窗口内没有5分钟行情")
 
     cache_dir = None if args.no_factor_cache else args.factor_cache_dir
-    daily = build_daily_features(bars, feature_columns=args.factors, cache_dir=cache_dir)
+    expression_nodes = parse_factor_expressions(
+        getattr(args, "factor_expressions", ())
+    )
+    model_features = [*args.factors, *(node.factor_id for node in expression_nodes)]
+    daily = build_daily_features(
+        bars,
+        feature_columns=args.factors,
+        cache_dir=cache_dir,
+        factor_expressions=expression_nodes,
+    )
     logger.info("开始构建方向预测数据集")
-    dataset = build_direction_dataset(daily, feature_columns=args.factors, args=args)
+    dataset = build_direction_dataset(daily, feature_columns=model_features, args=args)
     logger.info("方向预测数据集行数: %d，开始模型训练验证", len(dataset))
     result = DirectionExperiment(
         validation_start=validation_start,
-        feature_columns=args.factors,
+        feature_columns=model_features,
         args=args,
         model_factory=model_factory_from_args(args),
         training_mode=args.training_mode,

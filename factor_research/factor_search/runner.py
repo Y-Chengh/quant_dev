@@ -108,6 +108,7 @@ class FactorGridSearch:
             identity = {
                 "factor_id": candidate.factor_id,
                 "expression": candidate.canonical,
+                "expression_str": candidate.expression_str,
                 "depth": candidate.depth,
                 "lookback": candidate.lookback,
                 "elapsed_seconds": result.elapsed_seconds,

@@ -37,6 +37,19 @@ YAML 列表和 `true`/`false`。未知参数或无效值会直接报错。完整
 python run_factor_demo.py --factors return_1d return_5d realized_vol --factor-cache-dir .factor_cache
 ```
 
+搜索报告中的 `canonical`/`expression_str` 可以直接作为临时因子加入实验；程序会
+安全解析表达式，并用稳定的 `fg_...` 因子 ID 作为模型特征列名：
+
+```powershell
+python run_factor_demo.py --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
+```
+
+这里显式传入空的 `--factors`，表示只测试搜索因子；省略它则会在默认正式因子
+之外追加搜索因子。也可以在 YAML 中配置 `factors: []` 和
+`factor_expressions` 字符串列表。表达式引用的注册因子会
+自动作为计算依赖加载，但只有 `factors` 和 `factor_expressions` 明确选择的特征
+会进入模型。
+
 模型通过 `--model` 选择。当前默认模型为 `simple_decision_tree`，其参数由模型
 模块自行注册：
 

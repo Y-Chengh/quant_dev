@@ -10,6 +10,7 @@ from typing import Sequence
 import pandas as pd
 
 from .data import validate_bars
+from .factor_dsl import DailyFactorFrame, ExpressionNode
 from .factor_factories import FACTOR_FACTORIES, get_factor_factory
 from .factor_factories.base import FactorFactory
 from .timing import log_elapsed
@@ -24,6 +25,30 @@ def available_factors() -> list[str]:
     """返回当前已注册正式因子的稳定排序名称列表。"""
 
     return sorted(FACTOR_FACTORIES)
+
+
+def parse_factor_expressions(
+    expressions: Sequence[str | ExpressionNode] | None,
+) -> list[ExpressionNode]:
+    """解析并校验运行时 DSL 因子表达式，保留调用方给出的顺序。
+
+    参数：
+        expressions: 搜索输出的规范字符串或已解析节点；为空时返回空列表。
+
+    返回：
+        已重新验证算子参数与因果性的不可变表达式节点列表。
+    """
+
+    parsed = [
+        ExpressionNode.from_string(item) if isinstance(item, str) else item
+        for item in (expressions or ())
+    ]
+    if not all(isinstance(node, ExpressionNode) for node in parsed):
+        raise TypeError("运行时因子表达式必须是字符串或 ExpressionNode")
+    factor_ids = [node.factor_id for node in parsed]
+    if len(factor_ids) != len(set(factor_ids)):
+        raise ValueError("运行时因子表达式不能包含重复项")
+    return parsed
 
 
 def _normalized_keys(frame: pd.DataFrame) -> pd.DataFrame:
@@ -215,6 +240,7 @@ def build_daily_features(
     bars: pd.DataFrame,
     feature_columns: Sequence[str] | None = None,
     cache_dir: str | Path | None = None,
+    factor_expressions: Sequence[str | ExpressionNode] | None = None,
 ) -> pd.DataFrame:
     """按运行时选择构建因子，并按实现和输入版本安全地复用缓存。
 
@@ -222,16 +248,31 @@ def build_daily_features(
         bars: 待校验、聚合并传给因子工厂的分钟行情表。
         feature_columns: 按顺序要计算的注册因子名；为 ``None`` 时使用默认集合，显式空序列非法。
         cache_dir: 可选因子缓存根目录；为空时不读写缓存。
+        factor_expressions: 搜索输出的 DSL 字符串或节点；按稳定因子 ID 追加为日频列。
     """
     bars = validate_bars(bars)
     selected = list(feature_columns) if feature_columns is not None else DEFAULT_FEATURES.copy()
-    if not selected:
+    expression_nodes = parse_factor_expressions(factor_expressions)
+    if not selected and not expression_nodes:
         raise ValueError("至少需要选择一个因子")
     if len(selected) != len(set(selected)):
         raise ValueError("因子列表不能包含重复项")
 
-    factories = [get_factor_factory(name) for name in selected]
-    logger.info("开始构建日频因子: factors=%d bars=%d cache=%s", len(factories), len(bars), cache_dir or "disabled")
+    base_columns = {*KEY_COLUMNS, "open", "high", "low", "close", "volume"}
+    referenced_columns = set().union(*(node.columns for node in expression_nodes))
+    unknown_columns = referenced_columns.difference(base_columns, FACTOR_FACTORIES)
+    if unknown_columns:
+        raise ValueError(f"运行时因子表达式引用未知列: {sorted(unknown_columns)}")
+    dependency_names = sorted(referenced_columns.intersection(FACTOR_FACTORIES) - set(selected))
+    computed_names = [*selected, *dependency_names]
+    factories = [get_factor_factory(name) for name in computed_names]
+    logger.info(
+        "开始构建日频因子: registered=%d expressions=%d bars=%d cache=%s",
+        len(factories),
+        len(expression_nodes),
+        len(bars),
+        cache_dir or "disabled",
+    )
     daily = _build_daily_bars(bars)
     logger.info(
         "基础日线聚合完成: rows=%d symbols=%d",
@@ -268,10 +309,27 @@ def build_daily_features(
         daily[factory.name] = values
         timings.append((factory.name, mode, perf_counter() - factor_started))
 
+    if expression_nodes:
+        frame = DailyFactorFrame(daily)
+        for position, node in enumerate(expression_nodes, start=1):
+            logger.info(
+                "[%d/%d] 计算运行时表达式因子 %s: %s",
+                position,
+                len(expression_nodes),
+                node.factor_id,
+                node.canonical,
+            )
+            daily[node.factor_id] = frame.evaluate(node, name=node.factor_id)
+
     slowest = sorted(timings, key=lambda item: item[2], reverse=True)
     logger.info(
         "因子耗时排行: %s",
         ", ".join(f"{name}={elapsed:.3f}s({mode})" for name, mode, elapsed in slowest),
     )
-    logger.info("全部因子构建完成: factors=%d rows=%d", len(factories), len(daily))
+    logger.info(
+        "全部因子构建完成: registered=%d expressions=%d rows=%d",
+        len(factories),
+        len(expression_nodes),
+        len(daily),
+    )
     return daily.sort_values(["trade_date", "code"]).reset_index(drop=True)
