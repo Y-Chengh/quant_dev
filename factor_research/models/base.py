@@ -11,8 +11,6 @@ import numpy as np
 class DirectionModel(ABC):
     """滚动方向预测所需的最小模型接口。"""
 
-    feature_importances_: np.ndarray
-
     @abstractmethod
     def fit(self, X: np.ndarray, y: np.ndarray) -> "DirectionModel":
         """使用二维特征矩阵和 0/1 标签训练模型。"""

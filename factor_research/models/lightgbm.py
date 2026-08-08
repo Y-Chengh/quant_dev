@@ -32,6 +32,9 @@ class LightGBMClassifier(DirectionModel):
     ):
         self.estimator = LGBMClassifier(
             objective="binary",
+            boosting_type='dart',
+            # min_split_gain=0.01,
+            # early_stopping_rounds=100,
             n_estimators=n_estimators,
             learning_rate=learning_rate,
             num_leaves=num_leaves,

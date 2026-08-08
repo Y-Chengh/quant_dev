@@ -1,0 +1,306 @@
+# 命令行参数说明
+
+本文档以主实验入口 `run_factor_demo.py` 为主，说明当前 `argparse` 参数、默认行为和常用命令。文末附有数据构建、行情下载和单因子检查脚本的参数速查。
+
+## 1. 基本用法
+
+```powershell
+python run_factor_demo.py [通用参数] [所选模型的专属参数]
+```
+
+不传参数时，程序会：
+
+- 使用环境变量 `MARKET_DB_PATH` 指向的数据库；未设置时使用 `D:\量化\market.duckdb`。
+- 以数据库最后时间为研究终点，向前取 3 年数据。
+- 从代码表中取前 20 只证券。
+- 使用全部已注册因子和因子缓存。
+- 使用 `simple_decision_tree` 模型。
+- 从研究终点向前 1 年开始逐日扩展窗口验证。
+- 以 `INFO` 等级同时写终端日志和 `logs/YYYY-MM-DD/` 下的运行日志、评估报告及准确率趋势图。
+
+模型参数采用两阶段解析：程序先读取 `--model`，然后只注册所选模型的参数。因此，不同模型可以有同名参数；某个模型的专属参数不能用于另一个模型。
+
+查看实际可用参数：
+
+```powershell
+python run_factor_demo.py --help
+python run_factor_demo.py --model gradient_boosting_tree --help
+python run_factor_demo.py --model lightgbm --help
+```
+
+## 2. 主实验通用参数
+
+| 参数 | 类型/取值 | 默认值 | 含义 |
+| --- | --- | --- | --- |
+| `--database` | 路径 | `MARKET_DB_PATH`，否则 `D:\量化\market.duckdb` | `market.duckdb` 文件路径。命令行值优先于环境变量。 |
+| `--start` | 日期或时间 | 研究终点向前 3 年 | 研究窗口开始时间；若早于数据库首条数据，会自动截到数据起点。建议使用 `YYYY-MM-DD`。 |
+| `--end` | 日期或时间 | 数据库最后时间 | 研究窗口结束时间；若晚于数据库末条数据，会自动截到数据终点。建议使用 `YYYY-MM-DD`。 |
+| `--codes` | 一个或多个证券代码 | 未指定 | 明确选择证券，例如 `000001.SZ 600000.SH`。未指定时按 `--symbol-limit` 自动选择。 |
+| `--symbol-limit` | 整数，1～100 | `20` | 未指定 `--codes` 时，从代码表中选取的证券数。程序始终校验该值在 1～100 内。 |
+| `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
+| `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
+| `--factors` | 一个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的因子。参数后可连续写多个名称，直到遇到下一个以 `--` 开头的参数。 |
+| `--factor-cache-dir` | 路径 | `.factor_cache` | 因子 Parquet 缓存目录。 |
+| `--no-factor-cache` | 开关 | 关闭 | 出现该参数时完全禁用因子缓存，`--factor-cache-dir` 不再生效。适合核对最新因子实现。 |
+| `--log-level` | `DEBUG`、`INFO`、`WARNING`、`ERROR` | `INFO` | 控制终端和文件日志等级。 |
+| `--debug` | 开关 | 关闭 | 开启调试模式，并强制把日志等级设为 `DEBUG`；其优先级高于 `--log-level`。 |
+| `--log-dir` | 路径 | `logs` | 日志、Markdown 评估报告和 SVG 趋势图的归档根目录。 |
+
+当前可用于 `--factors` 的名称如下（默认全部使用）：
+
+```text
+amplitude
+breakout_strength_20d
+close_position
+close_to_ma_5d
+intraday_return
+last_30m_return
+last_30m_volume_ratio
+ma_5d_slope
+ma_distance_change_5d
+ma_spread_5d_20d
+ma_spread_change_5d_20d
+momentum_acceleration_5d_20d
+positive_bar_ratio
+realized_vol
+return_1d
+return_5d
+return_10d
+return_20d
+up_days_ratio_5d
+volatility_5d
+volume_ratio_5d
+```
+
+## 3. 模型专属参数
+
+### 3.1 `simple_decision_tree`
+
+项目内置的轻量级 CART 二分类树，适合作为快速基线。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--max-depth` | `3` | 树的最大深度。更大时模型表达能力更强，但更容易过拟合且运行更慢。 |
+| `--min-samples-leaf` | `20` | 每个叶节点允许的最少训练样本数。调大可减少过小叶节点。 |
+| `--max-thresholds` | `32` | 每个因子最多尝试的候选切分阈值数。调大可搜索得更细，但会增加训练耗时。 |
+
+### 3.2 `gradient_boosting_tree`
+
+基于 scikit-learn 的梯度提升树。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--n-estimators` | `100` | 提升迭代次数，即树的数量。 |
+| `--learning-rate` | `0.1` | 每棵树的贡献缩减系数；通常与树数量配合调整。 |
+| `--max-depth` | `3` | 每棵基学习树的最大深度。 |
+| `--min-samples-leaf` | `20` | 每棵基学习树叶节点的最少样本数。 |
+| `--subsample` | `1.0` | 每轮训练使用的样本比例，合法范围为 `(0, 1]`；小于 1 时引入随机采样。 |
+| `--random-state` | `42` | 随机种子，用于复现实验结果。 |
+
+### 3.3 `lightgbm`
+
+基于 LightGBM 的二分类模型。使用前需安装 `requirements-factor-research.txt` 中的依赖。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--n-estimators` | `300` | 提升迭代次数，即树的数量。 |
+| `--learning-rate` | `0.03` | 每棵树的贡献缩减系数；较小值通常需要更多树。 |
+| `--num-leaves` | `15` | 单棵树的最大叶节点数，控制模型复杂度。 |
+| `--max-depth` | `5` | 单棵树最大深度。 |
+| `--min-child-samples` | `50` | 一个叶节点所需的最少样本数。 |
+| `--subsample` | `0.8` | 每轮训练的行采样比例；小于 1 时程序会启用每轮行采样。 |
+| `--colsample-bytree` | `0.8` | 每棵树使用的特征比例。 |
+| `--reg-alpha` | `0.1` | L1 正则化系数。 |
+| `--reg-lambda` | `1.0` | L2 正则化系数。 |
+| `--n-jobs` | `-1` | 训练线程数；`-1` 表示使用全部可用 CPU。共享机器上可设为固定正整数。 |
+| `--random-state` | `42` | 随机种子，用于复现实验结果。 |
+
+## 4. 常用设置与命令
+
+### 4.1 按默认配置运行
+
+```powershell
+python run_factor_demo.py
+```
+
+### 4.2 指定数据库和研究区间
+
+```powershell
+python run_factor_demo.py `
+  --database C:\data\market.duckdb `
+  --start 2022-01-01 `
+  --end 2025-01-01 `
+  --validation-start 2024-01-01
+```
+
+也可为当前 PowerShell 会话设置默认数据库：
+
+```powershell
+$env:MARKET_DB_PATH = "C:\data\market.duckdb"
+python run_factor_demo.py
+```
+
+### 4.3 指定证券
+
+```powershell
+python run_factor_demo.py --codes 000001.SZ 600000.SH 600519.SH
+```
+
+让程序自动选择前 50 只证券：
+
+```powershell
+python run_factor_demo.py --symbol-limit 50
+```
+
+### 4.4 只研究部分因子
+
+```powershell
+python run_factor_demo.py `
+  --factors return_1d return_5d realized_vol volume_ratio_5d
+```
+
+因子缓存异常或需要强制重新计算时：
+
+```powershell
+python run_factor_demo.py --no-factor-cache
+```
+
+把缓存和运行产物放到指定目录：
+
+```powershell
+python run_factor_demo.py `
+  --factor-cache-dir D:\factor-cache `
+  --log-dir D:\factor-logs
+```
+
+### 4.5 快速决策树基线
+
+```powershell
+python run_factor_demo.py `
+  --model simple_decision_tree `
+  --max-depth 3 `
+  --min-samples-leaf 20 `
+  --max-thresholds 32
+```
+
+如果只想快速检查流程，可同时缩小证券数、日期范围和因子集合：
+
+```powershell
+python run_factor_demo.py `
+  --start 2024-01-01 `
+  --validation-start 2024-10-01 `
+  --symbol-limit 5 `
+  --factors return_1d return_5d realized_vol `
+  --model simple_decision_tree
+```
+
+### 4.6 梯度提升树
+
+```powershell
+python run_factor_demo.py `
+  --model gradient_boosting_tree `
+  --n-estimators 100 `
+  --learning-rate 0.1 `
+  --max-depth 3 `
+  --min-samples-leaf 20 `
+  --subsample 0.8 `
+  --random-state 42
+```
+
+### 4.7 LightGBM
+
+偏稳健的常用起点：
+
+```powershell
+python run_factor_demo.py `
+  --model lightgbm `
+  --n-estimators 300 `
+  --learning-rate 0.03 `
+  --num-leaves 15 `
+  --max-depth 5 `
+  --min-child-samples 50 `
+  --subsample 0.8 `
+  --colsample-bytree 0.8 `
+  --reg-alpha 0.1 `
+  --reg-lambda 1.0 `
+  --n-jobs 4 `
+  --random-state 42
+```
+
+### 4.8 调试和详细日志
+
+```powershell
+python run_factor_demo.py --debug
+```
+
+仅希望减少输出时：
+
+```powershell
+python run_factor_demo.py --log-level WARNING
+```
+
+## 5. 使用注意事项
+
+- `--codes` 和 `--factors` 都接收多个值；后面的另一个参数必须带 `--`，以便 `argparse` 判断列表结束。
+- `--validation-start` 控制验证区间，不会改变特征只能使用当日及以前数据、训练样本必须满足 `target_date < T` 的防泄漏规则。
+- 比较模型或参数时，应固定研究窗口、证券、因子、验证起点和随机种子，否则结果不可直接归因于模型设置。
+- `--debug` 会覆盖 `--log-level` 并使用 `DEBUG`，即使命令中同时指定了其他日志等级。
+- 路径包含空格时需加双引号，例如 `--database "D:\quant data\market.duckdb"`。
+- 完整运行会逐日重新训练模型。增加证券数、验证天数、因子数、树数量或树复杂度都会提高耗时。
+
+## 6. 其他命令行脚本速查
+
+### 6.1 `run_single_factor_test.py`
+
+使用最近一个月行情检查 `return_1d` 因子。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--database` | `MARKET_DB_PATH`，否则 `D:\量化\market.duckdb` | 数据库路径。 |
+| `--codes` | 未指定 | 证券代码列表；未指定时自动选择。 |
+| `--symbol-limit` | `20` | 自动选择的证券数，范围 1～100。 |
+| `--output` | 未指定 | 可选的 CSV 输出路径。 |
+| `--debug` | 关闭 | 开启调试标记。 |
+
+```powershell
+python run_single_factor_test.py `
+  --codes 000001.SZ 600000.SH `
+  --output .\output\return_1d.csv
+```
+
+### 6.2 `market_service/build_database.py`
+
+从年度压缩包构建标准化 Parquet 数据和 DuckDB 目录。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--root` | `D:\量化` | 原始年度压缩包所在目录，也是生成 `extracted_daily/`、`bars_5m/` 和 `market.duckdb` 的根目录。 |
+
+```powershell
+python market_service/build_database.py --root D:\量化
+```
+
+### 6.3 `download_ifind_minute.py`
+
+通过 iFinD 下载单只证券的分钟行情。账号密码优先从 `IFIND_USERNAME`、`IFIND_PASSWORD` 读取，缺失时交互输入。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--code` | `600000.SH` | 证券代码。 |
+| `--start` | `2026-03-01` | 开始日期，格式 `YYYY-MM-DD`。 |
+| `--end` | `2026-03-30` | 结束日期，格式 `YYYY-MM-DD`。 |
+| `--start-time` | `09:15:00` | 每日请求开始时间。 |
+| `--end-time` | `15:15:00` | 每日请求结束时间。 |
+| `--indicators` | 脚本内置指标串 | 传给 `THS_HF` 的分号分隔指标。 |
+| `--params` | `Fill:Original` | 传给 `THS_HF` 的请求参数。 |
+| `--output` | `data/600000_SH_202603` | 每日 CSV 和合并 CSV 的输出目录。 |
+| `--retry` | `3` | 单日请求失败时的最大尝试次数。 |
+
+```powershell
+python download_ifind_minute.py `
+  --code 600000.SH `
+  --start 2026-03-01 `
+  --end 2026-03-31 `
+  --output .\data\600000_SH_202603 `
+  --retry 3
+```

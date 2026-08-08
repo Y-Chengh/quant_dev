@@ -1,17 +1,52 @@
 # 命令行参数会覆盖本文件中的同名配置。
-database: D:/量化/market.duckdb
-start: "2024-01-01"
-end: "2026-01-01"
-validation_start: "2025-06-01"
-training_mode: rolling  # rolling: 逐日扩展训练；single: 固定训练集只训练一次
-codes:
-  - 000001.SZ
-  - 600000.SH
-factors:
-  - return_1d
-  - return_5d
-model: gradient_boosting_tree
-n_estimators: 100
-learning_rate: 0.05
+# python run_factor_demo.py --config factor_config.example.yaml
+
+# 数据集设置
+start: 2020-01-01
+end: 2026-01-01
+validation_start: 2025-01-01
+symbol_limit: 500
+
+training_mode: single  # rolling: 逐日扩展训练；single: 固定训练集只训练一次
+
+# 模型设置
+model: lightgbm
+n_estimators: 300
+learning_rate:  0.03
+num_leaves: 31
+max_depth: 5
+min_child_samples: 50
+subsample: 0.8
+colsample_bytree: 0.8
+reg_alpha: 0.1
+reg_lambda: 1.0
+
+
 no_factor_cache: false
 log_level: INFO
+
+# 因子设置
+factors:
+  # - amplitude
+  - breakout_strength_20d
+  - close_position
+  # - close_to_ma_5d
+  # - intraday_return
+  # - last_30m_return
+  - last_30m_volume_ratio
+  # - ma_5d_slope
+  # - ma_distance_change_5d
+  # - ma_spread_5d_20d
+  # - ma_spread_change_5d_20d
+  # - momentum_acceleration_5d_20d
+  - positive_bar_ratio
+  # - realized_vol
+  - return_10d
+  - return_1d
+  # - return_20d
+  # - return_5d
+  # - up_days_ratio_5d
+  - volatility_5d
+  - volume_ratio_5d
+  - candle_body_ratio
+  - alpha_002

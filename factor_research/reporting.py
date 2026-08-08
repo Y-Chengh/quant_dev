@@ -137,17 +137,13 @@ def write_evaluation_report(
         ]
     )
 
-    lines.extend(
-        [
-            "",
-            "## 因子重要性",
-            "",
-            "| 因子 | 重要性 |",
-            "| --- | ---: |",
-        ]
-    )
-    for factor, importance in result.feature_importance.items():
-        lines.append(f"| `{factor}` | {float(importance):.6f} |")
+    lines.extend(["", "## 因子重要性", ""])
+    if result.feature_importance is None:
+        lines.append("当前模型未提供因子重要性。")
+    else:
+        lines.extend(["| 因子 | 重要性 |", "| --- | ---: |"])
+        for factor, importance in result.feature_importance.items():
+            lines.append(f"| `{factor}` | {float(importance):.6f} |")
 
     lines.extend(["", "## 运行参数", "", "```text"])
     lines.extend(f"{key}={value}" for key, value in sorted(run_arguments.items()))

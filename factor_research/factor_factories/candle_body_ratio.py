@@ -19,7 +19,8 @@ class CandleBodyRatioFactory(FactorFactory):
     name = "candle_body_ratio"
 
     def compute(self, bars: pd.DataFrame, daily: pd.DataFrame) -> pd.Series:
-        price_range = daily["high"] - daily["low"]
+        # 考虑停牌的情况
+        price_range = daily["high"] - daily["low"] + 0.0001
         # 零振幅或高低价倒置时比例没有金融含义，保留为缺失值。
-        valid_range = price_range.where(price_range > 0)
-        return (daily["close"] - daily["open"]).abs() / valid_range
+        # valid_range = price_range.where(price_range > 0)
+        return (daily["close"] - daily["open"]) / price_range

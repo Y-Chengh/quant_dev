@@ -31,7 +31,7 @@ from factor_research.timing import log_elapsed
 DEFAULT_DATABASE = Path(os.getenv("MARKET_DB_PATH", r"D:\量化\market.duckdb"))
 DEFAULT_LOOKBACK_YEARS = 3
 DEFAULT_VALIDATION_YEARS = 1
-DEFAULT_SYMBOL_LIMIT = 20
+DEFAULT_SYMBOL_LIMIT = 80
 DEFAULT_FACTOR_CACHE = Path(".factor_cache")
 DEFAULT_LOG_DIR = Path("logs")
 logger = logging.getLogger(__name__)
@@ -189,17 +189,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="通过market service预测下一交易日涨跌")
     parser.add_argument("--config", type=Path, help="YAML 配置文件；命令行参数优先")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE, help="market.duckdb路径")
-    parser.add_argument("--start", help="研究开始时间，默认数据末端向前3年")
-    parser.add_argument("--end", help="研究结束时间，默认数据库最后时间")
-    parser.add_argument("--codes", nargs="+", help="股票代码列表，默认取代码表前20只")
-    parser.add_argument(
-        "--symbol-limit",
-        type=int,
-        default=DEFAULT_SYMBOL_LIMIT,
-        help="股票数量，默认取20只",
-    )
+    parser.add_argument("--start", default='2024-01-01', help="研究开始时间，默认数据末端向前3年")
+    parser.add_argument("--end", default='2026-01-01', help="研究结束时间，默认数据库最后时间")
     parser.add_argument(
         "--validation-start",
+        default='2025-06-01',
         help="验证集开始日期；默认从研究结束日期往前1年，例如 2024-01-01",
     )
     parser.add_argument(
@@ -208,6 +202,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="rolling",
         help="训练方式：rolling 为逐日扩展窗口训练，single 为训练集仅拟合一次",
     )
+    parser.add_argument("--codes", nargs="+", help="股票代码列表，默认取代码表前20只")
+    parser.add_argument(
+        "--symbol-limit",
+        type=int,
+        default=DEFAULT_SYMBOL_LIMIT,
+        help="股票数量，默认取20只",
+    )
+
     add_model_selection_argument(parser)
     add_selected_model_arguments(parser, selected.model)
     parser.add_argument(
@@ -293,8 +295,8 @@ def main() -> None:
     run_arguments = {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()}
     logger.info("运行参数: %s", json.dumps(run_arguments, ensure_ascii=False, sort_keys=True))
     logger.info("运行ID: %s，日志文件: %s", run_id, log_file.resolve())
-    if args.symbol_limit < 1 or args.symbol_limit > 100:
-        raise ValueError("symbol-limit必须在1至100之间")
+    # if args.symbol_limit < 1 or args.symbol_limit > 100:
+    #     raise ValueError("symbol-limit必须在1至100之间")
 
     client = MarketDataClient(args.database)
     metadata = client.get_metadata()
@@ -335,7 +337,10 @@ def main() -> None:
         training_mode=args.training_mode,
     ).run(dataset)
     logger.info("验证指标: %s", result.metrics)
-    logger.info("因子重要性:\n%s", result.feature_importance.to_string())
+    if result.feature_importance is None:
+        logger.info("当前模型未提供因子重要性")
+    else:
+        logger.info("因子重要性:\n%s", result.feature_importance.to_string())
     write_evaluation_report(
         result,
         report_file,

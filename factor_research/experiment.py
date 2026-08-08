@@ -26,7 +26,7 @@ class ExperimentResult:
     feature_columns: list[str]
     metrics: dict[str, float]
     predictions: pd.DataFrame
-    feature_importance: pd.Series
+    feature_importance: pd.Series | None
     daily_accuracy_trend: pd.DataFrame
 
 
@@ -90,7 +90,13 @@ class DirectionExperiment:
                 predictions["target_return"],
             ),
             predictions=predictions,
-            feature_importance=pd.Series(importance, index=self.feature_columns).sort_values(ascending=False),
+            feature_importance=(
+                None
+                if importance is None
+                else pd.Series(importance, index=self.feature_columns).sort_values(
+                    ascending=False
+                )
+            ),
             daily_accuracy_trend=daily_accuracy_trend(predictions),
         )
 
@@ -98,16 +104,16 @@ class DirectionExperiment:
         self,
         train_frame: pd.DataFrame,
         validation_frame: pd.DataFrame,
-    ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray]:
+    ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray | None]:
         """只使用验证起始日前的训练集拟合一次，并预测完整验证集。"""
         timings = ElapsedRecorder()
-        medians = train_frame[self.feature_columns].median().fillna(0.0)
+        nan_fill_value = -10000.0
         model = self.model_factory.create()
         train_matrix = timings.track("preprocessing")(self._matrix)(
-            train_frame, medians
+            train_frame, nan_fill_value
         )
         validation_matrix = timings.track("preprocessing")(self._matrix)(
-            validation_frame, medians
+            validation_frame, nan_fill_value
         )
         timings.track("fit")(model.fit)(
             train_matrix,
@@ -124,10 +130,19 @@ class DirectionExperiment:
         predictions["prediction"] = (probability >= 0.5).astype(int)
         predictions["training_samples"] = len(train_frame)
         predictions["training_end_date"] = train_frame["target_date"].max()
-        importance = np.asarray(model.feature_importances_, dtype=float)
-        total_importance = importance.sum()
-        if total_importance > 0:
-            importance /= total_importance
+        importance = getattr(model, "feature_importances_", None)
+        if importance is not None:
+            importance = np.asarray(importance, dtype=float)
+            expected_shape = (len(self.feature_columns),)
+            if importance.shape != expected_shape:
+                raise ValueError(
+                    "模型特征重要度形状不正确: "
+                    f"expected={expected_shape} actual={importance.shape}"
+                )
+            if not np.isfinite(importance).all():
+                raise ValueError("模型特征重要度包含 NaN 或无穷值")
+            if importance.sum() > 0:
+                importance = importance / importance.sum()
         logger.info(
             "单次训练验证耗时汇总: train_samples=%d validation_samples=%d "
             "total=%.3fs preprocessing=%.3fs fit=%.3fs predict=%.3fs",
@@ -144,10 +159,11 @@ class DirectionExperiment:
         self,
         dataset: pd.DataFrame,
         prediction_dates: pd.Index,
-    ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray]:
+    ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray | None]:
         predictions: list[pd.DataFrame] = []
         model: DirectionModel | None = None
-        importance = np.zeros(len(self.feature_columns), dtype=float)
+        importance_sum: np.ndarray | None = None
+        importance_count = 0
         total_dates = len(prediction_dates)
         progress_interval = max(1, total_dates // 10)
         timings = ElapsedRecorder()
@@ -157,12 +173,15 @@ class DirectionExperiment:
             train_frame: pd.DataFrame,
             predict_frame: pd.DataFrame,
         ) -> tuple[DirectionModel, np.ndarray, np.ndarray]:
-            medians = train_frame[self.feature_columns].median().fillna(0.0)
+            # TODO: nan怎么处理要好好想想
+            # nan_fill_value = train_frame[self.feature_columns].median().fillna(0.0)
+            nan_fill_value = -10000.0
+
             current_model = self.model_factory.create()
             return (
                 current_model,
-                self._matrix(train_frame, medians),
-                self._matrix(predict_frame, medians),
+                self._matrix(train_frame, nan_fill_value),
+                self._matrix(predict_frame, nan_fill_value),
             )
 
         # if getattr(self.args, "debug", False):
@@ -216,8 +235,22 @@ class DirectionExperiment:
             daily["training_samples"] = len(train_frame)
             daily["training_end_date"] = train_frame["target_date"].max()
             predictions.append(daily)
-            logger.debug("model.feature_importances_: %s", model.feature_importances_)
-            importance += model.feature_importances_
+            model_importance = getattr(model, "feature_importances_", None)
+            logger.debug("model.feature_importances_: %s", model_importance)
+            if model_importance is not None:
+                model_importance = np.asarray(model_importance, dtype=float)
+                expected_shape = (len(self.feature_columns),)
+                if model_importance.shape != expected_shape:
+                    raise ValueError(
+                        "模型特征重要度形状不正确: "
+                        f"expected={expected_shape} actual={model_importance.shape}"
+                    )
+                if not np.isfinite(model_importance).all():
+                    raise ValueError("模型特征重要度包含 NaN 或无穷值")
+                if importance_sum is None:
+                    importance_sum = np.zeros(expected_shape, dtype=float)
+                importance_sum += model_importance
+                importance_count += 1
 
         if model is None or not predictions:
             raise ValueError("没有足够的数据执行滚动验证")
@@ -231,13 +264,19 @@ class DirectionExperiment:
             timings.elapsed("predict"),
             total_elapsed / total_dates,
         )
-        importance /= len(predictions)
-        total_importance = importance.sum()
-        if total_importance > 0:
-            importance /= total_importance
+        importance = None
+        if importance_sum is not None:
+            importance = importance_sum / importance_count
+            total_importance = importance.sum()
+            if total_importance > 0:
+                importance /= total_importance
         return pd.concat(predictions, ignore_index=True), model, importance
 
-    def _matrix(self, frame: pd.DataFrame, medians: pd.Series) -> np.ndarray:
+    def _matrix(
+        self,
+        frame: pd.DataFrame,
+        medians: pd.Series | float,
+    ) -> np.ndarray:
         # Fit missing-value replacements on the currently available history only.
         return (
             frame[self.feature_columns]

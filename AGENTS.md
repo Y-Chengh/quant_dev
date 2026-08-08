@@ -53,7 +53,8 @@
 - 具体模型继承 `DirectionModel`，并实现：
   - `fit(X, y)`
   - `predict_proba(X)`
-  - 训练后可用的 `feature_importances_`
+- `feature_importances_` 是可选能力。模型可以不定义该属性或将其设为 `None`；
+  如果提供，必须是与输入特征数相同的一维有限数值数组。
 - 模型工厂继承 `DirectionModelFactory`，定义唯一的 `name` 并实现 `create()`。
 - 模型工厂使用 `@register_model_factory` 注册，并负责通过 `add_arguments()` 声明
   自身 CLI 参数、通过 `from_args()` 从命令行参数构建工厂。主程序不得为具体

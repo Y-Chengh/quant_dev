@@ -150,6 +150,7 @@ class FactorResearchTest(unittest.TestCase):
         self.assertEqual(result.model_name, "simple_decision_tree")
         self.assertGreater(len(result.predictions), 0)
         self.assertTrue(np.isfinite(result.predictions["up_probability"]).all())
+        self.assertIsNotNone(result.feature_importance)
         self.assertAlmostEqual(float(result.feature_importance.sum()), 1.0, places=6)
         self.assertIn("auc", result.metrics)
         self.assertTrue(np.isfinite(result.metrics["auc"]))
@@ -185,11 +186,7 @@ class FactorResearchTest(unittest.TestCase):
 
     def test_experiment_accepts_an_injected_model_factory(self):
         class ConstantProbabilityModel(DirectionModel):
-            def __init__(self):
-                self.feature_importances_ = np.array([], dtype=float)
-
             def fit(self, X: np.ndarray, y: np.ndarray):
-                self.feature_importances_ = np.full(X.shape[1], 1 / X.shape[1])
                 return self
 
             def predict_proba(self, X: np.ndarray) -> np.ndarray:
@@ -213,6 +210,17 @@ class FactorResearchTest(unittest.TestCase):
         self.assertEqual(result.model_name, "constant_probability")
         self.assertTrue((result.predictions["up_probability"] == 0.75).all())
         self.assertEqual(factory.created, result.predictions["target_date"].nunique())
+        self.assertIsNone(result.feature_importance)
+        with TemporaryDirectory() as report_dir:
+            report_path = Path(report_dir) / "evaluation.md"
+            chart_path = Path(report_dir) / "evaluation_accuracy.svg"
+            write_evaluation_report(
+                result, report_path, chart_path, "no-importance", {}
+            )
+            self.assertIn(
+                "当前模型未提供因子重要性",
+                report_path.read_text(encoding="utf-8"),
+            )
 
     def test_walk_forward_training_precedes_each_prediction_date(self):
         cutoff = self.dataset["target_date"].drop_duplicates().sort_values().iloc[48]
@@ -225,11 +233,9 @@ class FactorResearchTest(unittest.TestCase):
         class RecordingModel(DirectionModel):
             def __init__(self):
                 self.fit_labels: np.ndarray | None = None
-                self.feature_importances_ = np.array([], dtype=float)
 
             def fit(self, X: np.ndarray, y: np.ndarray):
                 self.fit_labels = y.copy()
-                self.feature_importances_ = np.full(X.shape[1], 1 / X.shape[1])
                 return self
 
             def predict_proba(self, X: np.ndarray) -> np.ndarray:

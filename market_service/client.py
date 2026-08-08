@@ -57,8 +57,8 @@ class MarketDataClient:
         return PagedBars(frame, total, query.page, query.page_size)
 
     def search_symbols(self, text: str = "", limit: int = 20) -> list[str]:
-        if not 1 <= limit <= 100:
-            raise ValueError("limit必须在1到100之间")
+        # if not 1 <= limit <= 100:
+        #     raise ValueError("limit必须在1到100之间")
         return self._repository.symbols(text, limit)
 
     @staticmethod
