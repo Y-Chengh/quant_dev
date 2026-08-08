@@ -4,7 +4,11 @@ import unittest
 
 import numpy as np
 
-from factor_research.metrics import classification_metrics, information_coefficient
+from factor_research.metrics import (
+    classification_metrics,
+    information_coefficient,
+    regression_metrics,
+)
 
 
 class InformationCoefficientTest(unittest.TestCase):
@@ -59,6 +63,21 @@ class InformationCoefficientTest(unittest.TestCase):
         )
 
         self.assertNotIn("ic", metrics)
+
+    def test_regression_metrics_use_continuous_returns_and_direction(self):
+        actual = np.array([-0.02, 0.01, 0.03, -0.04])
+        predicted = np.array([-0.01, -0.01, 0.02, -0.02])
+
+        metrics = regression_metrics(actual, predicted)
+
+        error = predicted - actual
+        self.assertEqual(metrics["samples"], 4.0)
+        self.assertAlmostEqual(metrics["mae"], float(np.mean(np.abs(error))))
+        self.assertAlmostEqual(metrics["rmse"], float(np.sqrt(np.mean(error**2))))
+        self.assertEqual(metrics["direction_accuracy"], 0.75)
+        self.assertAlmostEqual(
+            metrics["ic"], float(np.corrcoef(predicted, actual)[0, 1])
+        )
 
     def test_information_coefficient_requires_matching_shapes(self):
         with self.assertRaisesRegex(ValueError, "same shape"):

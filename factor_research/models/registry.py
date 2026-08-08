@@ -85,4 +85,11 @@ def model_factory_from_args(args: argparse.Namespace) -> DirectionModelFactory:
         raise ValueError(
             f"未知模型 {args.model!r}；可选模型: {available_models()}"
         ) from exc
-    return factory_type.from_args(args)
+    factory = factory_type.from_args(args)
+    task = getattr(args, "task", "classification")
+    if task not in factory.supported_tasks:
+        raise ValueError(
+            f"模型 {factory.name!r} 不支持任务 {task!r}；"
+            f"支持的任务为 {factory.supported_tasks}"
+        )
+    return factory

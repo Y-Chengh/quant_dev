@@ -85,6 +85,44 @@ class YamlConfigReportingTest(unittest.TestCase):
 
         self.assertIn("## YAML 配置\n\n未使用 YAML 配置文件。", report)
 
+    def test_regression_result_is_reported_without_probabilities(self):
+        target_date = pd.Timestamp("2025-06-02")
+        result = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="test_regressor",
+            feature_columns=["return_1d"],
+            metrics={"samples": 1.0, "rmse": 0.001},
+            predictions=pd.DataFrame(
+                {
+                    "target_date": [target_date],
+                    "label": [1],
+                    "target_return": [0.01],
+                    "predicted_return": [0.009],
+                    "prediction": [1],
+                }
+            ),
+            feature_importance=None,
+            daily_accuracy_trend=pd.DataFrame(
+                {
+                    "target_date": [target_date],
+                    "samples": [1],
+                    "accuracy": [1.0],
+                    "accuracy_change": [np.nan],
+                }
+            ),
+            task="regression",
+        )
+        with TemporaryDirectory() as temp_dir:
+            report_path = Path(temp_dir) / "evaluation.md"
+            chart_path = Path(temp_dir) / "accuracy.svg"
+            write_evaluation_report(
+                result, report_path, chart_path, "regression-run", {}
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("# 涨跌幅预测评估报告", report)
+        self.assertIn("| RMSE | 0.001000 |", report)
+
     def test_main_reads_and_passes_the_original_yaml_snapshot(self):
         with TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -103,6 +141,7 @@ class YamlConfigReportingTest(unittest.TestCase):
                 codes=["000001.SZ"],
                 symbol_limit=1,
                 training_mode="rolling",
+                task="classification",
                 factors=["return_1d"],
                 factor_cache_dir=root / "cache",
                 no_factor_cache=True,

@@ -250,6 +250,62 @@ class FactorResearchTest(unittest.TestCase):
                 report_path.read_text(encoding="utf-8"),
             )
 
+    def test_regression_task_trains_on_returns_without_future_targets(self):
+        class MeanReturnModel(DirectionModel):
+            def __init__(self):
+                self.fit_targets: np.ndarray | None = None
+                self.mean_: float | None = None
+
+            def fit(self, X: np.ndarray, y: np.ndarray):
+                self.fit_targets = y.copy()
+                self.mean_ = float(np.mean(y))
+                return self
+
+            def predict(self, X: np.ndarray) -> np.ndarray:
+                if self.mean_ is None:
+                    raise RuntimeError("模型尚未训练")
+                return np.full(len(X), self.mean_)
+
+            def predict_proba(self, X: np.ndarray) -> np.ndarray:
+                raise NotImplementedError
+
+        class MeanReturnFactory(DirectionModelFactory):
+            name = "mean_return"
+            supported_tasks = ("regression",)
+
+            def __init__(self):
+                self.created: list[MeanReturnModel] = []
+
+            def create(self):
+                model = MeanReturnModel()
+                self.created.append(model)
+                return model
+
+        cutoff = self.dataset["target_date"].drop_duplicates().sort_values().iloc[48]
+        factory = MeanReturnFactory()
+        result = DirectionExperiment(
+            cutoff,
+            model_factory=factory,
+            task="regression",
+        ).run(self.dataset)
+
+        first_training = self.dataset.loc[self.dataset["target_date"] < cutoff]
+        np.testing.assert_allclose(
+            factory.created[0].fit_targets,
+            first_training["target_return"].to_numpy(dtype=float),
+        )
+        self.assertEqual(result.task, "regression")
+        self.assertIn("predicted_return", result.predictions)
+        self.assertNotIn("up_probability", result.predictions)
+        self.assertIn("rmse", result.metrics)
+        self.assertTrue(np.isfinite(result.predictions["predicted_return"]).all())
+        self.assertTrue(
+            (
+                result.predictions["training_end_date"]
+                < result.predictions["target_date"]
+            ).all()
+        )
+
     def test_walk_forward_training_precedes_each_prediction_date(self):
         cutoff = self.dataset["target_date"].drop_duplicates().sort_values().iloc[48]
         result = DirectionExperiment(cutoff, max_depth=2, min_samples_leaf=5).run(self.dataset)

@@ -9,7 +9,7 @@ import pandas as pd
 
 from .dataset import split_by_date
 from .factors import DEFAULT_FEATURES
-from .metrics import classification_metrics, daily_accuracy_trend
+from .metrics import classification_metrics, daily_accuracy_trend, regression_metrics
 from .models.base import DirectionModel, DirectionModelFactory
 from .models.simple_decision_tree import SimpleDecisionTreeModelFactory
 from .timing import ElapsedRecorder, log_elapsed
@@ -17,6 +17,7 @@ from .timing import ElapsedRecorder, log_elapsed
 
 logger = logging.getLogger(__name__)
 TRAINING_MODES = ("rolling", "single")
+PREDICTION_TASKS = ("classification", "regression")
 
 
 @dataclass
@@ -28,6 +29,7 @@ class ExperimentResult:
     predictions: pd.DataFrame
     feature_importance: pd.Series | None
     daily_accuracy_trend: pd.DataFrame
+    task: str = "classification"
 
 
 class DirectionExperiment:
@@ -40,10 +42,15 @@ class DirectionExperiment:
         args: argparse.Namespace | None = None,
         model_factory: DirectionModelFactory | None = None,
         training_mode: str = "rolling",
+        task: str = "classification",
     ):
         if training_mode not in TRAINING_MODES:
             raise ValueError(
                 f"training_mode 必须是 {TRAINING_MODES} 之一，实际为 {training_mode!r}"
+            )
+        if task not in PREDICTION_TASKS:
+            raise ValueError(
+                f"task 必须是 {PREDICTION_TASKS} 之一，实际为 {task!r}"
             )
         self.validation_start = pd.Timestamp(validation_start)
         self.feature_columns = feature_columns or DEFAULT_FEATURES
@@ -51,6 +58,7 @@ class DirectionExperiment:
         self.min_samples_leaf = min_samples_leaf
         self.args = args
         self.training_mode = training_mode
+        self.task = task
         # 保留原有树参数作为默认配置；注入工厂后，实验流程不再关心具体算法。
         self.model_factory = (
             model_factory
@@ -60,6 +68,16 @@ class DirectionExperiment:
                 min_samples_leaf=min_samples_leaf,
             )
         )
+        if task not in self.model_factory.supported_tasks:
+            raise ValueError(
+                f"模型 {self.model_factory.name!r} 不支持任务 {task!r}；"
+                f"支持的任务为 {self.model_factory.supported_tasks}"
+            )
+        factory_task = getattr(self.model_factory, "task", None)
+        if factory_task is not None and factory_task != task:
+            raise ValueError(
+                f"实验任务 {task!r} 与模型工厂任务 {factory_task!r} 不一致"
+            )
 
     @log_elapsed(logger, "模型训练验证")
     def run(self, dataset: pd.DataFrame) -> ExperimentResult:
@@ -80,15 +98,23 @@ class DirectionExperiment:
                 split.train, split.validation
             )
 
+        metrics = (
+            classification_metrics(
+                predictions["label"],
+                predictions["up_probability"],
+                predictions["target_return"],
+            )
+            if self.task == "classification"
+            else regression_metrics(
+                predictions["target_return"],
+                predictions["predicted_return"],
+            )
+        )
         return ExperimentResult(
             model=model,
             model_name=self.model_factory.name,
             feature_columns=self.feature_columns,
-            metrics=classification_metrics(
-                predictions["label"],
-                predictions["up_probability"],
-                predictions["target_return"],
-            ),
+            metrics=metrics,
             predictions=predictions,
             feature_importance=(
                 None
@@ -98,7 +124,39 @@ class DirectionExperiment:
                 )
             ),
             daily_accuracy_trend=daily_accuracy_trend(predictions),
+            task=self.task,
         )
+
+    def _target(self, frame: pd.DataFrame) -> np.ndarray:
+        """按任务选择训练目标；两种目标都只属于对应的 target_date。"""
+        if self.task == "classification":
+            return frame["label"].to_numpy(dtype=int)
+        return frame["target_return"].to_numpy(dtype=float)
+
+    def _add_model_predictions(
+        self,
+        predictions: pd.DataFrame,
+        model: DirectionModel,
+        matrix: np.ndarray,
+        timings: ElapsedRecorder,
+    ) -> None:
+        if self.task == "classification":
+            probability = timings.track("predict")(model.predict_proba)(matrix)[:, 1]
+            predictions["up_probability"] = probability
+            predictions["prediction"] = (probability >= 0.5).astype(int)
+            return
+        predicted_return = np.asarray(
+            timings.track("predict")(model.predict)(matrix), dtype=float
+        )
+        if predicted_return.shape != (len(predictions),):
+            raise ValueError(
+                "回归模型预测形状不正确: "
+                f"expected={(len(predictions),)} actual={predicted_return.shape}"
+            )
+        if not np.isfinite(predicted_return).all():
+            raise ValueError("回归模型预测包含 NaN 或无穷值")
+        predictions["predicted_return"] = predicted_return
+        predictions["prediction"] = (predicted_return > 0).astype(int)
 
     def _single_fit(
         self,
@@ -117,17 +175,13 @@ class DirectionExperiment:
         )
         timings.track("fit")(model.fit)(
             train_matrix,
-            train_frame["label"].to_numpy(dtype=int),
+            self._target(train_frame),
         )
-        probability = timings.track("predict")(model.predict_proba)(
-            validation_matrix
-        )[:, 1]
 
         predictions = validation_frame[
             ["feature_date", "target_date", "code", "label", "target_return"]
         ].copy()
-        predictions["up_probability"] = probability
-        predictions["prediction"] = (probability >= 0.5).astype(int)
+        self._add_model_predictions(predictions, model, validation_matrix, timings)
         predictions["training_samples"] = len(train_frame)
         predictions["training_end_date"] = train_frame["target_date"].max()
         importance = getattr(model, "feature_importances_", None)
@@ -226,12 +280,10 @@ class DirectionExperiment:
             model, train_matrix, predict_matrix = preprocess(train_frame, predict_frame)
             timings.track("fit")(model.fit)(
                 train_matrix,
-                train_frame["label"].to_numpy(dtype=int),
+                self._target(train_frame),
             )
-            probability = timings.track("predict")(model.predict_proba)(predict_matrix)[:, 1]
             daily = predict_frame[["feature_date", "target_date", "code", "label", "target_return"]].copy()
-            daily["up_probability"] = probability
-            daily["prediction"] = (probability >= 0.5).astype(int)
+            self._add_model_predictions(daily, model, predict_matrix, timings)
             daily["training_samples"] = len(train_frame)
             daily["training_end_date"] = train_frame["target_date"].max()
             predictions.append(daily)

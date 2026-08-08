@@ -20,6 +20,10 @@ METRIC_LABELS = {
     "ic": "IC",
     "brier_score": "Brier 分数",
     "log_loss": "Log Loss",
+    "mae": "MAE",
+    "rmse": "RMSE",
+    "r2": "R²",
+    "direction_accuracy": "方向准确率",
 }
 
 
@@ -100,7 +104,10 @@ def write_evaluation_report(
     render_accuracy_trend_svg(result.daily_accuracy_trend, chart_path)
 
     predictions = result.predictions.copy()
-    predictions["predicted_up"] = predictions["up_probability"] >= 0.5
+    if "prediction" in predictions:
+        predictions["predicted_up"] = predictions["prediction"].astype(bool)
+    else:
+        predictions["predicted_up"] = predictions["up_probability"] >= 0.5
     daily_summary = (
         predictions.groupby("target_date", as_index=False, sort=True)
         .agg(
@@ -112,7 +119,11 @@ def write_evaluation_report(
     )
 
     lines = [
-        "# 方向预测评估报告",
+        (
+            "# 涨跌幅预测评估报告"
+            if result.task == "regression"
+            else "# 方向预测评估报告"
+        ),
         "",
         f"- 运行 ID：`{run_id}`",
         f"- 生成时间：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",

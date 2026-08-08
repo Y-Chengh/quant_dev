@@ -55,6 +55,27 @@ class ModelRegistryTest(unittest.TestCase):
         args = parse_args([])
         self.assertEqual(args.model, "simple_decision_tree")
         self.assertEqual(args.training_mode, "rolling")
+        self.assertEqual(args.task, "classification")
+
+    def test_task_supports_cli_and_yaml(self):
+        args = parse_args(["--model", "lightgbm", "--task", "regression"])
+        self.assertEqual(args.task, "regression")
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text(
+                "model: lightgbm\ntask: regression\nobjective: huber\n",
+                encoding="utf-8",
+            )
+            args = parse_args(["--config", str(config_path)])
+        factory = model_factory_from_args(args)
+        self.assertEqual(factory.task, "regression")
+        self.assertEqual(factory.objective, "huber")
+
+        unsupported = parse_args(
+            ["--model", "simple_decision_tree", "--task", "regression"]
+        )
+        with self.assertRaisesRegex(ValueError, "不支持任务"):
+            model_factory_from_args(unsupported)
 
     def test_training_mode_supports_cli_and_yaml(self):
         self.assertEqual(

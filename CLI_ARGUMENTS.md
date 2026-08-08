@@ -28,6 +28,11 @@ python run_factor_demo.py --model gradient_boosting_tree --help
 python run_factor_demo.py --model lightgbm --help
 ```
 
+任务类型由 `--task` 控制：`classification`（默认）执行涨跌二分类，
+`regression` 预测下一交易日开盘至收盘的连续涨跌幅。回归任务当前需选择
+`--model lightgbm`。LightGBM 的 `--objective` 默认随任务选择 `binary` 或
+`regression`，也可显式指定与任务兼容的目标函数。
+
 ## 2. 主实验通用参数
 
 | 参数 | 类型/取值 | 默认值 | 含义 |
@@ -38,6 +43,7 @@ python run_factor_demo.py --model lightgbm --help
 | `--codes` | 一个或多个证券代码 | 未指定 | 明确选择证券，例如 `000001.SZ 600000.SH`。未指定时按 `--symbol-limit` 自动选择。 |
 | `--symbol-limit` | 整数，1～100 | `20` | 未指定 `--codes` 时，从代码表中选取的证券数。程序始终校验该值在 1～100 内。 |
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
+| `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务当前需搭配 `--model lightgbm`。 |
 | `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
 | `--factors` | 一个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的因子。参数后可连续写多个名称，直到遇到下一个以 `--` 开头的参数。 |
 | `--factor-cache-dir` | 路径 | `.factor_cache` | 因子 Parquet 缓存目录。 |
@@ -99,7 +105,7 @@ volume_ratio_5d
 
 ### 3.3 `lightgbm`
 
-基于 LightGBM 的二分类模型。使用前需安装 `requirements-factor-research.txt` 中的依赖。
+基于 LightGBM 的二分类与连续涨跌幅回归模型。使用前需安装 `requirements-factor-research.txt` 中的依赖。
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -114,6 +120,7 @@ volume_ratio_5d
 | `--reg-lambda` | `1.0` | L2 正则化系数。 |
 | `--n-jobs` | `-1` | 训练线程数；`-1` 表示使用全部可用 CPU。共享机器上可设为固定正整数。 |
 | `--random-state` | `42` | 随机种子，用于复现实验结果。 |
+| `--objective` | 随 `--task` 选择 | LightGBM 目标函数。分类默认为 `binary`，还支持 `cross_entropy`、`cross_entropy_lambda`；回归默认为 `regression`，还支持 `regression_l1`、`huber`、`fair`、`quantile`。目标函数必须与任务类型兼容。 |
 
 ## 4. 常用设置与命令
 

@@ -16,7 +16,11 @@ import yaml
 
 from factor_research.data import load_market_service
 from factor_research.dataset import build_direction_dataset
-from factor_research.experiment import DirectionExperiment, TRAINING_MODES
+from factor_research.experiment import (
+    DirectionExperiment,
+    PREDICTION_TASKS,
+    TRAINING_MODES,
+)
 from factor_research.factors import DEFAULT_FEATURES, available_factors, build_daily_features
 from factor_research.models.registry import (
     add_model_selection_argument,
@@ -202,6 +206,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="rolling",
         help="训练方式：rolling 为逐日扩展窗口训练，single 为训练集仅拟合一次",
     )
+    parser.add_argument(
+        "--task",
+        choices=PREDICTION_TASKS,
+        default="classification",
+        help="预测任务：classification 为涨跌二分类，regression 为连续涨跌幅",
+    )
     parser.add_argument("--codes", nargs="+", help="股票代码列表，默认取代码表前20只")
     parser.add_argument(
         "--symbol-limit",
@@ -318,6 +328,7 @@ def main() -> None:
     logger.info("数据窗口: %s 至 %s", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
     logger.info("验证集开始: %s", validation_start.strftime("%Y-%m-%d"))
     logger.info("训练方式: %s", args.training_mode)
+    logger.info("预测任务: %s", args.task)
     logger.info("股票数量: %d", len(codes))
     bars = load_market_service(client, codes, start, end)
     logger.info("分钟行情行数: %d", len(bars))
@@ -335,6 +346,7 @@ def main() -> None:
         args=args,
         model_factory=model_factory_from_args(args),
         training_mode=args.training_mode,
+        task=args.task,
     ).run(dataset)
     logger.info("验证指标: %s", result.metrics)
     if result.feature_importance is None:

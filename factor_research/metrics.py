@@ -86,18 +86,56 @@ def classification_metrics(
     return metrics
 
 
+def regression_metrics(
+    y_true: np.ndarray,
+    prediction: np.ndarray,
+) -> dict[str, float]:
+    """计算连续涨跌幅预测的误差、方向准确率和 Pearson IC。"""
+    actual = np.asarray(y_true, dtype=float)
+    predicted = np.asarray(prediction, dtype=float)
+    if actual.shape != predicted.shape:
+        raise ValueError("y_true and prediction must have the same shape")
+    valid = np.isfinite(actual) & np.isfinite(predicted)
+    if not valid.any():
+        raise ValueError("regression metrics require at least one finite pair")
+    actual = actual[valid]
+    predicted = predicted[valid]
+    error = predicted - actual
+    denominator = float(np.sum((actual - actual.mean()) ** 2))
+    r2 = (
+        1.0 - float(np.sum(error**2)) / denominator
+        if denominator > 0
+        else float("nan")
+    )
+    return {
+        "samples": float(len(actual)),
+        "mae": float(np.mean(np.abs(error))),
+        "rmse": float(np.sqrt(np.mean(error**2))),
+        "r2": r2,
+        "direction_accuracy": float(np.mean((predicted > 0) == (actual > 0))),
+        "ic": information_coefficient(predicted, actual),
+    }
+
+
 def daily_accuracy_trend(predictions: pd.DataFrame) -> pd.DataFrame:
     """Summarize out-of-sample prediction accuracy for each target date."""
-    required_columns = {"target_date", "label", "up_probability"}
+    required_columns = {"target_date", "label"}
     missing_columns = required_columns.difference(predictions.columns)
     if missing_columns:
         raise ValueError(f"Missing columns for daily accuracy trend: {sorted(missing_columns)}")
 
-    frame = predictions.loc[:, ["target_date", "label", "up_probability"]].copy()
-    frame["correct"] = (
-        (frame["up_probability"].to_numpy(dtype=float) >= 0.5)
-        == frame["label"].to_numpy(dtype=int)
-    )
+    frame = predictions.loc[:, ["target_date", "label"]].copy()
+    if "prediction" in predictions:
+        predicted_direction = predictions["prediction"].to_numpy(dtype=int)
+    elif "up_probability" in predictions:
+        predicted_direction = (
+            predictions["up_probability"].to_numpy(dtype=float) >= 0.5
+        ).astype(int)
+    else:
+        raise ValueError(
+            "Missing prediction or up_probability for daily accuracy trend"
+        )
+    frame["correct"] = predicted_direction == frame["label"].to_numpy(dtype=int)
     trend = (
         frame.groupby("target_date", as_index=False, sort=True)
         .agg(samples=("correct", "size"), accuracy=("correct", "mean"))

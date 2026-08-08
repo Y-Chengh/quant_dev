@@ -19,11 +19,16 @@ class DirectionModel(ABC):
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """返回形状为（样本数, 2）的下跌、上涨概率。"""
 
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """返回连续预测值；仅回归模型需要实现。"""
+        raise NotImplementedError(f"{type(self).__name__} 不支持连续值预测")
+
 
 class DirectionModelFactory(ABC):
     """定义模型的 CLI 配置方式，并为每个预测日期创建全新模型。"""
 
     name: str
+    supported_tasks: tuple[str, ...] = ("classification",)
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:

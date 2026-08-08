@@ -6,7 +6,11 @@ import numpy as np
 import pandas as pd
 
 from factor_research.experiment import DirectionExperiment
-from factor_research.models.lightgbm import LightGBMClassifier, LightGBMModelFactory
+from factor_research.models.lightgbm import (
+    LightGBMClassifier,
+    LightGBMModelFactory,
+    LightGBMRegressor,
+)
 from factor_research.models.registry import available_models, model_factory_from_args
 from run_factor_demo import parse_args
 
@@ -39,6 +43,8 @@ class LightGBMModelTest(unittest.TestCase):
                 "2",
                 "--random-state",
                 "7",
+                "--objective",
+                "cross_entropy",
             ]
         )
         factory = model_factory_from_args(args)
@@ -56,6 +62,18 @@ class LightGBMModelTest(unittest.TestCase):
         self.assertEqual(factory.reg_lambda, 1.5)
         self.assertEqual(factory.n_jobs, 2)
         self.assertEqual(factory.random_state, 7)
+        self.assertEqual(factory.objective, "cross_entropy")
+
+    def test_legacy_namespace_defaults_to_binary_classification(self):
+        args = parse_args(["--model", "lightgbm"])
+        delattr(args, "task")
+        delattr(args, "objective")
+
+        factory = model_factory_from_args(args)
+
+        self.assertEqual(factory.task, "classification")
+        self.assertEqual(factory.objective, "binary")
+        self.assertIsInstance(factory.create(), LightGBMClassifier)
 
     def test_factory_creates_independent_models_with_expected_parameters(self):
         factory = LightGBMModelFactory(subsample=0.7, n_jobs=2)
@@ -67,6 +85,42 @@ class LightGBMModelTest(unittest.TestCase):
         self.assertIsNot(first.estimator, second.estimator)
         self.assertEqual(first.estimator.get_params()["n_jobs"], 2)
         self.assertEqual(first.estimator.get_params()["subsample_freq"], 1)
+        self.assertEqual(first.estimator.get_params()["objective"], "binary")
+
+    def test_regression_factory_uses_configured_objective(self):
+        factory = LightGBMModelFactory(
+            task="regression",
+            objective="huber",
+            n_estimators=5,
+            n_jobs=1,
+        )
+
+        model = factory.create()
+
+        self.assertIsInstance(model, LightGBMRegressor)
+        self.assertEqual(model.estimator.get_params()["objective"], "huber")
+
+    def test_objective_must_match_task(self):
+        with self.assertRaisesRegex(ValueError, "不兼容"):
+            LightGBMModelFactory(task="regression", objective="binary")
+        with self.assertRaisesRegex(ValueError, "不兼容"):
+            LightGBMModelFactory(task="classification", objective="regression")
+
+    def test_experiment_task_must_match_factory_task(self):
+        with self.assertRaisesRegex(ValueError, "不一致"):
+            DirectionExperiment(
+                validation_start="2024-01-02",
+                feature_columns=["factor_a"],
+                model_factory=LightGBMModelFactory(task="classification"),
+                task="regression",
+            )
+        with self.assertRaisesRegex(ValueError, "不一致"):
+            DirectionExperiment(
+                validation_start="2024-01-02",
+                feature_columns=["factor_a"],
+                model_factory=LightGBMModelFactory(task="regression"),
+                task="classification",
+            )
 
     def test_classifier_produces_probabilities_and_feature_importance(self):
         random = np.random.default_rng(42)
@@ -104,6 +158,29 @@ class LightGBMModelTest(unittest.TestCase):
         model = LightGBMClassifier(n_jobs=1)
         with self.assertRaises(RuntimeError):
             model.predict_proba(np.zeros((1, 2)))
+
+    def test_regressor_predicts_continuous_returns_and_constant_window(self):
+        random = np.random.default_rng(42)
+        X = random.normal(size=(120, 3))
+        y = 0.01 * X[:, 0] - 0.005 * X[:, 1]
+        model = LightGBMRegressor(
+            n_estimators=20,
+            learning_rate=0.1,
+            num_leaves=7,
+            max_depth=3,
+            min_child_samples=3,
+            n_jobs=1,
+        ).fit(X, y)
+
+        prediction = model.predict(X[:8])
+        self.assertEqual(prediction.shape, (8,))
+        self.assertTrue(np.isfinite(prediction).all())
+        self.assertEqual(model.feature_importances_.shape, (3,))
+
+        constant = LightGBMRegressor(n_estimators=5, n_jobs=1).fit(
+            X[:6], np.full(6, 0.012)
+        )
+        np.testing.assert_allclose(constant.predict(X[:2]), [0.012, 0.012])
 
     def test_factory_runs_in_walk_forward_experiment_without_future_labels(self):
         target_dates = pd.date_range("2024-01-02", periods=8, freq="D")
