@@ -38,6 +38,8 @@ class SearchContext:
         holdout_start: str | pd.Timestamp | None = None,
         holdout_end: str | pd.Timestamp | None = None,
     ) -> "SearchContext":
+        """校验并规范化日频表，一次性构建目标、行映射和日期区间掩码。"""
+
         required = {"code", "trade_date", "open", "close"}
         missing = required.difference(daily.columns)
         if missing:

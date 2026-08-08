@@ -23,6 +23,8 @@ from factor_research.models.simple_decision_tree import SimpleDecisionTreeModelF
 
 
 def _search_daily(days: int = 12) -> pd.DataFrame:
+    """生成横截面收益顺序稳定且包含固定因子的日频搜索样本。"""
+
     dates = pd.bdate_range("2024-01-02", periods=days)
     returns = {"A": -0.02, "B": -0.005, "C": 0.01, "D": 0.025}
     rows = []
@@ -44,6 +46,8 @@ def _search_daily(days: int = 12) -> pd.DataFrame:
 
 
 def _minute_bars(days: int = 8) -> pd.DataFrame:
+    """生成可供真实聚合和固定因子工厂使用的多证券五分钟样本。"""
+
     rows = []
     for date in pd.bdate_range("2024-01-02", periods=days):
         for code_index, code in enumerate(("A", "B", "C")):
@@ -65,6 +69,8 @@ def _minute_bars(days: int = 8) -> pd.DataFrame:
 
 
 def _context() -> SearchContext:
+    """构造带固定因子、selection 和 holdout 的标准测试上下文。"""
+
     daily = _search_daily()
     dates = daily["trade_date"].drop_duplicates().sort_values()
     return SearchContext.from_daily(
@@ -76,7 +82,11 @@ def _context() -> SearchContext:
 
 
 class FactorSearchSpaceTest(unittest.TestCase):
+    """验证搜索空间展开、参数默认值、确定性和去重行为。"""
+
     def test_pipeline_grid_expands_deterministically_and_deduplicates_identity(self):
+        """流水线重复展开顺序应稳定，多个 identity 产生的等价式应去重。"""
+
         space = PipelineGrid(
             sources=["close"],
             stages=[
@@ -96,6 +106,8 @@ class FactorSearchSpaceTest(unittest.TestCase):
         self.assertEqual(len({candidate.factor_id for candidate in first}), len(first))
 
     def test_pipeline_rejects_binary_operator(self):
+        """单输入流水线必须拒绝相关性等需要多个输入的算子。"""
+
         space = PipelineGrid(
             sources=["close"],
             stages=[[op("ts_correlation", window=[3], min_periods=[3])]],
@@ -105,6 +117,8 @@ class FactorSearchSpaceTest(unittest.TestCase):
             space.generate()
 
     def test_expression_grid_builds_multi_input_formulas(self):
+        """模板网格应能展开多输入公式并正确累计历史回看长度。"""
+
         space = ExpressionGrid(
             builder=lambda daily, parameters: daily.close().correlation(
                 daily.volume(), int(parameters["window"])
@@ -118,6 +132,8 @@ class FactorSearchSpaceTest(unittest.TestCase):
         self.assertEqual([candidate.lookback for candidate in candidates], [2, 4])
 
     def test_rolling_operator_grid_applies_documented_defaults(self):
+        """滚动算子网格应补齐完整窗口和标准差自由度的默认参数。"""
+
         space = PipelineGrid(
             sources=["close"],
             stages=[[op("ts_stddev", window=[3, 5])]],
@@ -132,7 +148,11 @@ class FactorSearchSpaceTest(unittest.TestCase):
 
 
 class FactorSearchExecutionTest(unittest.TestCase):
+    """验证上下文准备、评价隔离、并行执行、模型复验和结果物化。"""
+
     def test_context_rejects_keys_that_collide_after_normalization(self):
+        """搜索上下文必须拒绝规范化后发生日期或代码主键碰撞的数据。"""
+
         daily = _search_daily(days=3)
         first = daily.iloc[[0]]
 
@@ -155,6 +175,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
             SearchContext.from_daily(code_collision)
 
     def test_forward_targets_match_existing_dataset_target_semantics(self):
+        """搜索目标必须与现有方向数据集的下一交易日目标口径一致。"""
+
         daily = _search_daily()
         targets = build_forward_targets(daily)
         dataset = build_direction_dataset(daily, feature_columns=["fixed"])
@@ -165,6 +187,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         )
 
     def test_context_keeps_selection_and_holdout_isolated(self):
+        """selection 和 holdout 应按目标日期严格分离且互不重叠。"""
+
         context = _context()
         selection_dates = context.targets.loc[context.selection_mask, "target_date"]
         holdout_dates = context.targets.loc[context.holdout_mask, "target_date"]
@@ -174,6 +198,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertFalse((context.selection_mask & context.holdout_mask).any())
 
     def test_fixed_factor_factory_is_called_once_during_context_preparation(self):
+        """固定因子工厂应只在上下文准备时调用一次，worker 不得重复计算。"""
+
         factory = FACTOR_FACTORIES["return_1d"]
         original = factory.compute
         dates = pd.bdate_range("2024-01-02", periods=8)
@@ -196,6 +222,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertIn("return_1d", context.daily)
 
     def test_sequential_search_scores_and_materializes_best_candidate(self):
+        """串行搜索应排序有效候选并把最优表达式物化为普通日频列。"""
+
         context = _context()
         space = PipelineGrid(
             sources=["close", "volume"],
@@ -218,6 +246,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertEqual(result.leaderboard["holdout_rank_ic"].notna().sum(), 1)
 
     def test_factor_direction_is_locked_on_selection_not_holdout(self):
+        """因子方向只能由 selection 确定，holdout 反转时不得重新选方向。"""
+
         dates = pd.bdate_range("2024-01-02", periods=8)
         rows = []
         for day_index, date in enumerate(dates):
@@ -251,6 +281,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertAlmostEqual(row["holdout_oriented_rank_ic"], -1.0)
 
     def test_runtime_error_is_isolated_to_invalid_candidate(self):
+        """单个候选运行错误应写入错误表，而不终止其他合法候选。"""
+
         context = _context()
         space = CombinedGrid(
             [
@@ -266,6 +298,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertIn("缺少表达式列", result.errors.iloc[0]["error"])
 
     def test_candidate_limit_and_depth_are_checked_before_execution(self):
+        """候选数量、深度及禁止 holdout 排序应在实际计算前完成校验。"""
+
         context = _context()
         space = PipelineGrid(
             ["close", "volume"],
@@ -280,6 +314,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
             FactorGridSearch(objective="holdout_oriented_rank_ic")
 
     def test_process_and_sequential_backends_produce_identical_metrics(self):
+        """进程与串行后端应返回一致的候选身份、顺序和 selection 指标。"""
+
         context = _context()
         space = PipelineGrid(
             ["close", "volume"],
@@ -306,6 +342,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertEqual(len(sequential.errors), len(parallel.errors))
 
     def test_top_k_model_evaluation_reuses_existing_experiment(self):
+        """Top K 模型复验应复用既有实验流程并把指标并入排行榜。"""
+
         context = _context()
         space = PipelineGrid(["close"], [[op("cs_rank")]])
         evaluator = ModelCandidateEvaluator(
@@ -325,6 +363,8 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertTrue(result.errors.empty)
 
     def test_model_evaluation_respects_context_holdout_end(self):
+        """模型复验样本必须截断在上下文声明的 holdout 结束日期。"""
+
         daily = _search_daily()
         dates = daily["trade_date"].drop_duplicates().sort_values()
         context = SearchContext.from_daily(

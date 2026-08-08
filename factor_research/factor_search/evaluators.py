@@ -29,6 +29,8 @@ class CandidateEvaluator(Protocol):
 
 
 def _finite_std(values: pd.Series) -> float:
+    """计算有限值的样本标准差，不足两个观测时返回缺失值。"""
+
     finite = values[np.isfinite(values.to_numpy(dtype=float))]
     return float(finite.std(ddof=1)) if len(finite) >= 2 else float("nan")
 
@@ -40,6 +42,8 @@ def _period_ic_metrics(
     prefix: str,
     min_daily_samples: int,
 ) -> dict[str, float]:
+    """在指定日期掩码上汇总逐日横截面 IC、覆盖率和稳定性指标。"""
+
     rows = int(mask.sum())
     if rows == 0:
         return {
@@ -109,6 +113,8 @@ class IcEvaluator:
     min_daily_samples: int = 2
 
     def __post_init__(self) -> None:
+        """校验每日计算横截面相关系数所需的最小样本数。"""
+
         if self.min_daily_samples < 2:
             raise ValueError("min_daily_samples 必须大于等于 2")
 
@@ -118,6 +124,8 @@ class IcEvaluator:
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
+        """评价 selection 指标，并只用 selection Rank IC 锁定因子方向。"""
+
         aligned = context.align_factor_values(values)
         metrics = _period_ic_metrics(
             context,
@@ -143,6 +151,8 @@ class HoldoutIcEvaluator:
     min_daily_samples: int = 2
 
     def __post_init__(self) -> None:
+        """校验 holdout 每日横截面计算的最小样本数。"""
+
         if self.min_daily_samples < 2:
             raise ValueError("min_daily_samples 必须大于等于 2")
 
@@ -152,6 +162,8 @@ class HoldoutIcEvaluator:
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
+        """仅在预先划定的 holdout 区间计算候选 IC 汇总指标。"""
+
         aligned = context.align_factor_values(values)
         return _period_ic_metrics(
             context,

@@ -15,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class DatasetSplit:
+    """保存按目标日期切分且互不重叠的训练集与验证集。"""
+
     train: pd.DataFrame
     validation: pd.DataFrame
 

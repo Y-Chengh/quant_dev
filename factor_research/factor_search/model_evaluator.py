@@ -29,6 +29,8 @@ class ModelCandidateEvaluator:
         values: pd.Series,
         context: SearchContext,
     ) -> dict[str, float]:
+        """把当前候选与固定因子合并，运行既有实验并返回带前缀的模型指标。"""
+
         validation_start = (
             pd.Timestamp(self.validation_start)
             if self.validation_start is not None

@@ -26,6 +26,8 @@ class CandidateTaskResult:
 
 
 class ExecutionBackend(Protocol):
+    """约束候选执行后端必须提供保持输入顺序的批量运行接口。"""
+
     def run(
         self,
         candidates: Sequence[FactorCandidate],
@@ -42,6 +44,8 @@ def _evaluate_batch(
     context: SearchContext,
     evaluator: CandidateEvaluator,
 ) -> list[CandidateTaskResult]:
+    """在共享 Frame 上依次计算一批候选，并隔离每个候选的异常。"""
+
     results: list[CandidateTaskResult] = []
     for candidate in candidates:
         started = perf_counter()
@@ -80,6 +84,8 @@ class SequentialBackend:
         evaluator: CandidateEvaluator,
         batch_size: int,
     ) -> list[CandidateTaskResult]:
+        """在当前进程中按批次计算候选，供调试和确定性基准使用。"""
+
         frame = DailyFactorFrame(context.daily)
         results: list[CandidateTaskResult] = []
         for start in range(0, len(candidates), batch_size):
@@ -106,6 +112,8 @@ def _initialize_worker(context: SearchContext, evaluator: CandidateEvaluator) ->
 
 
 def _worker_batch(candidates: Sequence[FactorCandidate]) -> list[CandidateTaskResult]:
+    """使用进程初始化器保存的只读上下文评价一个候选批次。"""
+
     if _WORKER_FRAME is None or _WORKER_CONTEXT is None or _WORKER_EVALUATOR is None:
         raise RuntimeError("搜索 worker 尚未初始化")
     return _evaluate_batch(
@@ -120,6 +128,8 @@ class ProcessBackend:
     n_jobs: int = -1
 
     def _workers(self, candidate_count: int) -> int:
+        """根据用户配置、CPU 数和批次数计算实际 worker 数量。"""
+
         if self.n_jobs == 0 or self.n_jobs < -1:
             raise ValueError("n_jobs 必须是 -1 或正整数")
         requested = (os.cpu_count() or 1) if self.n_jobs == -1 else self.n_jobs
@@ -132,6 +142,8 @@ class ProcessBackend:
         evaluator: CandidateEvaluator,
         batch_size: int,
     ) -> list[CandidateTaskResult]:
+        """把候选批次分派给进程池，并恢复为与输入候选一致的顺序。"""
+
         if not candidates:
             return []
         batches = [

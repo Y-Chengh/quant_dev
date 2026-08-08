@@ -25,6 +25,8 @@ def _exact_parameters(
     parameters: Mapping[str, object],
     expected: set[str],
 ) -> None:
+    """校验算子参数名称集合与声明完全一致，拒绝遗漏和多余参数。"""
+
     actual = set(parameters)
     if actual != expected:
         raise ValueError(
@@ -33,6 +35,8 @@ def _exact_parameters(
 
 
 def _normalize_exponent(parameters: Mapping[str, object]) -> dict[str, object]:
+    """校验并标准化幂运算使用的有限浮点指数。"""
+
     _exact_parameters(parameters, {"exponent"})
     exponent = parameters["exponent"]
     if isinstance(exponent, bool) or not isinstance(exponent, (int, float)):
@@ -44,6 +48,8 @@ def _normalize_exponent(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize_periods(parameters: Mapping[str, object]) -> dict[str, object]:
+    """校验差分和收益算子使用的正整数历史周期。"""
+
     _exact_parameters(parameters, {"periods"})
     periods = parameters["periods"]
     if isinstance(periods, bool) or not isinstance(periods, int) or periods <= 0:
@@ -52,6 +58,8 @@ def _normalize_periods(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize_delay(parameters: Mapping[str, object]) -> dict[str, object]:
+    """校验延迟算子的非负整数周期，禁止向未来移动。"""
+
     _exact_parameters(parameters, {"periods"})
     periods = parameters["periods"]
     if isinstance(periods, bool) or not isinstance(periods, int) or periods < 0:
@@ -60,6 +68,8 @@ def _normalize_delay(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize_window(parameters: Mapping[str, object]) -> dict[str, object]:
+    """标准化滚动窗口及其最小有效观测数。"""
+
     allowed = {"window", "min_periods"}
     if "window" not in parameters or set(parameters).difference(allowed):
         raise ValueError(
@@ -79,6 +89,8 @@ def _normalize_window(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize_stddev(parameters: Mapping[str, object]) -> dict[str, object]:
+    """标准化滚动标准差的窗口、最小观测数和自由度参数。"""
+
     allowed = {"window", "min_periods", "ddof"}
     if "window" not in parameters or set(parameters).difference(allowed):
         raise ValueError(
@@ -101,6 +113,8 @@ def _normalize_stddev(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def _normalize_winsorize(parameters: Mapping[str, object]) -> dict[str, object]:
+    """校验横截面缩尾使用的上下分位点。"""
+
     _exact_parameters(parameters, {"lower", "upper"})
     lower = float(parameters["lower"])
     upper = float(parameters["upper"])
@@ -110,10 +124,14 @@ def _normalize_winsorize(parameters: Mapping[str, object]) -> dict[str, object]:
 
 
 def _period_lookback(parameters: Mapping[str, object]) -> int:
+    """返回位移类算子需要额外读取的历史期数。"""
+
     return int(parameters["periods"])
 
 
 def _window_lookback(parameters: Mapping[str, object]) -> int:
+    """返回包含当日的滚动窗口所需额外历史行数。"""
+
     return int(parameters["window"]) - 1
 
 
@@ -123,6 +141,8 @@ def _window_lookback(parameters: Mapping[str, object]) -> int:
 def _add(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素相加两个输入，并把无穷结果统一转换为缺失值。"""
+
     return _replace_infinite(inputs[0] + inputs[1])
 
 
@@ -135,6 +155,8 @@ def _add(
 def _subtract(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素用第一个输入减第二个输入。"""
+
     return _replace_infinite(inputs[0] - inputs[1])
 
 
@@ -147,6 +169,8 @@ def _subtract(
 def _multiply(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素相乘两个输入，并规范化溢出的无穷值。"""
+
     return _replace_infinite(inputs[0] * inputs[1])
 
 
@@ -159,6 +183,8 @@ def _multiply(
 def _divide(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素相除两个输入，分母为零时返回缺失值。"""
+
     denominator = inputs[1].where(inputs[1] != 0)
     return _replace_infinite(inputs[0] / denominator)
 
@@ -172,6 +198,8 @@ def _divide(
 def _negative(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素返回输入值的相反数。"""
+
     return -inputs[0]
 
 
@@ -184,6 +212,8 @@ def _negative(
 def _absolute(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素返回输入值的绝对值。"""
+
     return inputs[0].abs()
 
 
@@ -193,6 +223,8 @@ def _absolute(
 def _log(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素计算自然对数，非正数返回缺失值。"""
+
     # 对数只在正数上有定义；零、负数和缺失值均保留为缺失值。
     return np.log(inputs[0].where(inputs[0] > 0))
 
@@ -203,6 +235,8 @@ def _log(
 def _sign(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素返回输入值的正负符号。"""
+
     return np.sign(inputs[0])
 
 
@@ -212,6 +246,8 @@ def _sign(
 def _power(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素计算普通幂，并把非法或溢出结果规范为缺失值。"""
+
     with np.errstate(invalid="ignore", over="ignore"):
         result = inputs[0].pow(float(parameters["exponent"]))
     return _replace_infinite(result)
@@ -226,6 +262,8 @@ def _power(
 def _signed_power(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """逐元素计算保留原符号的绝对值幂。"""
+
     with np.errstate(invalid="ignore", over="ignore"):
         result = np.sign(inputs[0]) * inputs[0].abs().pow(
             float(parameters["exponent"])
@@ -236,6 +274,8 @@ def _signed_power(
 def _comparison(
     left: pd.Series, right: pd.Series, comparator
 ) -> pd.Series:
+    """对两个序列应用比较器，并令任一输入缺失时条件为假。"""
+
     # 与 pandas 比较语义保持一致：任一输入缺失时条件为 False，使 where 走
     # false 分支；真正的分支值仍会保留自身的缺失值。
     valid = left.notna() & right.notna()
@@ -252,6 +292,8 @@ for _name, _comparator in {
 }.items():
 
     def _make_comparison(comparator):
+        """为当前循环中的比较器创建并注册二元算子实现。"""
+
         @register_operator(
             name=_name,
             arity=2,
@@ -263,6 +305,8 @@ for _name, _comparator in {
             inputs: tuple[pd.Series, ...],
             parameters: Mapping[str, object],
         ) -> pd.Series:
+            """调用闭包绑定的比较器计算逐元素布尔结果。"""
+
             return _comparison(inputs[0], inputs[1], comparator)
 
         return evaluator
@@ -276,6 +320,8 @@ for _name, _comparator in {
 def _where(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """根据第一个布尔输入逐行选择真分支或假分支。"""
+
     condition, when_true, when_false = inputs
     return pd.Series(
         np.where(condition.fillna(False).astype(bool), when_true, when_false),
@@ -293,6 +339,8 @@ def _where(
 def _delay(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按证券独立返回指定历史期的原始值。"""
+
     return inputs[0].groupby(frame["code"], sort=False).shift(
         int(parameters["periods"])
     )
@@ -308,6 +356,8 @@ def _delay(
 def _delta(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按证券独立计算当前值与指定历史期值之差。"""
+
     return inputs[0].groupby(frame["code"], sort=False).diff(
         int(parameters["periods"])
     )
@@ -323,6 +373,8 @@ def _delta(
 def _returns(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按证券独立计算当前值相对指定历史期值的变化率。"""
+
     periods = int(parameters["periods"])
     previous = inputs[0].groupby(frame["code"], sort=False).shift(periods)
     return _replace_infinite(inputs[0] / previous.where(previous != 0) - 1)
@@ -334,6 +386,8 @@ def _rolling_transform(
     parameters: Mapping[str, object],
     method: str,
 ) -> pd.Series:
+    """按证券调用 pandas 简单滚动聚合，并保持输入行位置。"""
+
     window = int(parameters["window"])
     min_periods = int(parameters["min_periods"])
     return values.groupby(frame["code"], sort=False).transform(
@@ -344,6 +398,8 @@ def _rolling_transform(
 
 
 def _register_simple_rolling(name: str, method: str) -> None:
+    """注册可直接映射到 pandas Rolling 方法的单输入算子。"""
+
     @register_operator(
         name=name,
         arity=1,
@@ -356,6 +412,8 @@ def _register_simple_rolling(name: str, method: str) -> None:
         inputs: tuple[pd.Series, ...],
         parameters: Mapping[str, object],
     ) -> pd.Series:
+        """执行闭包指定的 pandas 滚动聚合方法。"""
+
         return _rolling_transform(frame, inputs[0], parameters, method)
 
 
@@ -378,6 +436,8 @@ for _operator_name, _rolling_method in {
 def _ts_stddev(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按证券计算包含当日的滚动标准差。"""
+
     window = int(parameters["window"])
     min_periods = int(parameters["min_periods"])
     ddof = int(parameters["ddof"])
@@ -387,6 +447,8 @@ def _ts_stddev(
 
 
 def _first_argmax(values: np.ndarray) -> float:
+    """忽略缺失值并返回最大有限值在原窗口中首次出现的 1 基位置。"""
+
     # min_periods 可以小于 window，此时窗口数组仍可能包含 NaN。只在有限值中
     # 比较大小，但返回其在原窗口中的 1 基位置，不能把 NaN 自身当成最大值。
     finite_positions = np.flatnonzero(np.isfinite(values))
@@ -397,6 +459,8 @@ def _first_argmax(values: np.ndarray) -> float:
 
 
 def _first_argmin(values: np.ndarray) -> float:
+    """忽略缺失值并返回最小有限值在原窗口中首次出现的 1 基位置。"""
+
     finite_positions = np.flatnonzero(np.isfinite(values))
     if not len(finite_positions):
         return float("nan")
@@ -405,10 +469,14 @@ def _first_argmin(values: np.ndarray) -> float:
 
 
 def _current_percentile_rank(values: np.ndarray) -> float:
+    """返回窗口最后一个值在窗口内的平均并列百分位排名。"""
+
     return float(pd.Series(values).rank(method="average", pct=True).iloc[-1])
 
 
 def _register_rolling_apply(name: str, calculator) -> None:
+    """注册需要对每个滚动窗口调用自定义 NumPy 计算器的算子。"""
+
     @register_operator(
         name=name,
         arity=1,
@@ -421,6 +489,8 @@ def _register_rolling_apply(name: str, calculator) -> None:
         inputs: tuple[pd.Series, ...],
         parameters: Mapping[str, object],
     ) -> pd.Series:
+        """按证券把闭包计算器应用到每个包含当日的滚动窗口。"""
+
         window = int(parameters["window"])
         min_periods = int(parameters["min_periods"])
         return inputs[0].groupby(frame["code"], sort=False).transform(
@@ -442,6 +512,8 @@ def _rolling_pair(
     parameters: Mapping[str, object],
     method: str,
 ) -> pd.Series:
+    """按证券计算两个序列的滚动相关性或协方差并按位置回填。"""
+
     window = int(parameters["window"])
     min_periods = int(parameters["min_periods"])
     result = np.full(len(frame), np.nan, dtype=float)
@@ -459,6 +531,8 @@ def _rolling_pair(
 
 
 def _register_rolling_pair(name: str, method: str) -> None:
+    """注册相关性或协方差形式的双输入滚动算子。"""
+
     @register_operator(
         name=name,
         arity=2,
@@ -471,6 +545,8 @@ def _register_rolling_pair(name: str, method: str) -> None:
         inputs: tuple[pd.Series, ...],
         parameters: Mapping[str, object],
     ) -> pd.Series:
+        """调用闭包指定的双输入滚动统计方法。"""
+
         return _rolling_pair(frame, inputs[0], inputs[1], parameters, method)
 
 
@@ -487,6 +563,8 @@ _register_rolling_pair("ts_covariance", "cov")
 def _cs_rank(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按交易日计算平均并列百分位横截面排名。"""
+
     return inputs[0].groupby(frame["trade_date"], sort=False).rank(
         method="average", pct=True
     )
@@ -501,6 +579,8 @@ def _cs_rank(
 def _cs_demean(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按交易日从每个值中减去当日横截面均值。"""
+
     means = inputs[0].groupby(frame["trade_date"], sort=False).transform("mean")
     return inputs[0] - means
 
@@ -514,6 +594,8 @@ def _cs_demean(
 def _cs_zscore(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按交易日使用总体标准差计算横截面 Z 分数。"""
+
     grouped = inputs[0].groupby(frame["trade_date"], sort=False)
     means = grouped.transform("mean")
     standard_deviations = grouped.transform(lambda values: values.std(ddof=0))
@@ -529,6 +611,8 @@ def _cs_zscore(
 def _cs_scale(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按交易日缩放输入，使当日有效值绝对值之和为一。"""
+
     absolute_sum = inputs[0].abs().groupby(frame["trade_date"], sort=False).transform("sum")
     return _replace_infinite(inputs[0] / absolute_sum.where(absolute_sum != 0))
 
@@ -542,6 +626,8 @@ def _cs_scale(
 def _cs_winsorize(
     frame: pd.DataFrame, inputs: tuple[pd.Series, ...], parameters: Mapping[str, object]
 ) -> pd.Series:
+    """按交易日使用给定上下分位点对横截面输入执行缩尾。"""
+
     lower = float(parameters["lower"])
     upper = float(parameters["upper"])
     grouped = inputs[0].groupby(frame["trade_date"], sort=False)

@@ -23,18 +23,26 @@ class FactorCandidate:
 
     @property
     def factor_id(self) -> str:
+        """返回底层表达式生成的稳定短因子 ID。"""
+
         return self.expression.factor_id
 
     @property
     def canonical(self) -> str:
+        """返回可用于日志、去重和复现的规范表达式文本。"""
+
         return self.expression.canonical
 
     @property
     def depth(self) -> int:
+        """返回底层表达式的最大算子嵌套深度。"""
+
         return self.expression.depth
 
     @property
     def lookback(self) -> int:
+        """返回底层表达式需要的最大额外历史行数。"""
+
         return self.expression.lookback
 
 
@@ -56,6 +64,8 @@ class OperatorGrid:
     parameters: tuple[tuple[str, tuple[object, ...]], ...] = ()
 
     def expand(self) -> list[tuple[str | None, dict[str, object]]]:
+        """展开参数笛卡尔积，并校验该阶段适用于单输入流水线。"""
+
         if self.name is None:
             if self.parameters:
                 raise ValueError("identity 阶段不能配置参数")
@@ -124,6 +134,8 @@ class PipelineGrid:
     stages: Sequence[Sequence[OperatorGrid]]
 
     def estimate_size(self) -> int:
+        """估计各数据源与阶段参数组合的去重前候选上界。"""
+
         if not self.sources:
             return 0
         size = len(self.sources)
@@ -132,6 +144,8 @@ class PipelineGrid:
         return size
 
     def generate(self) -> list[FactorCandidate]:
+        """逐层展开单输入算子组合，并在每一层及时去除等价表达式。"""
+
         if not self.sources:
             raise ValueError("PipelineGrid 至少需要一个数据源")
         nodes = [ExpressionNode.column(source) for source in self.sources]
@@ -160,12 +174,16 @@ class ExpressionGrid:
     parameters: Mapping[str, Sequence[object]]
 
     def estimate_size(self) -> int:
+        """返回模板参数取值笛卡尔积的组合数量。"""
+
         size = 1
         for values in self.parameters.values():
             size *= len(values)
         return size
 
     def generate(self) -> list[FactorCandidate]:
+        """对每组参数调用符号构建器，并校验、收集和去重多输入表达式。"""
+
         names = sorted(self.parameters)
         choices = [tuple(self.parameters[name]) for name in names]
         if any(not values for values in choices):
@@ -191,9 +209,13 @@ class CombinedGrid:
     spaces: Sequence[SearchSpace]
 
     def estimate_size(self) -> int:
+        """汇总所有子空间的去重前候选数量上界。"""
+
         return sum(space.estimate_size() for space in self.spaces)
 
     def generate(self) -> list[FactorCandidate]:
+        """按子空间顺序合并候选，并再次消除跨空间重复表达式。"""
+
         if not self.spaces:
             raise ValueError("CombinedGrid 至少需要一个子空间")
         nodes = [

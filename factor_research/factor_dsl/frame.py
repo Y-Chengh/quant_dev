@@ -15,6 +15,8 @@ class DailyFactorFrame(ExpressionNamespace):
     REQUIRED_COLUMNS = {"code", "trade_date"}
 
     def __init__(self, daily: pd.DataFrame):
+        """复制并规范化日频表，建立稳定排序、原序恢复和节点缓存。"""
+
         missing = self.REQUIRED_COLUMNS.difference(daily.columns)
         if missing:
             raise ValueError(f"日频数据缺少键列: {sorted(missing)}")
@@ -63,6 +65,8 @@ class DailyFactorFrame(ExpressionNamespace):
         expression: FactorExpression | ExpressionNode,
         name: str | None = None,
     ) -> pd.Series:
+        """计算一个因果表达式，并按调用方原始行顺序和索引返回结果。"""
+
         node = expression.node if isinstance(expression, FactorExpression) else expression
         if isinstance(expression, FactorExpression) and expression.frame not in {None, self}:
             raise ValueError("表达式绑定到了另一个 DailyFactorFrame")
@@ -81,6 +85,8 @@ class DailyFactorFrame(ExpressionNamespace):
         self._cache.clear()
 
     def _evaluate_node(self, node: ExpressionNode) -> pd.Series:
+        """递归计算单个节点，并复用当前批次已得到的公共子表达式。"""
+
         cached = self._cache.get(node)
         if cached is not None:
             return cached
@@ -124,5 +130,7 @@ class DailyFactorFrame(ExpressionNamespace):
         return values
 
     def _restore_frame_order(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """使用构造时保存的位置映射把内部排序表恢复为调用方行顺序。"""
+
         result = frame.iloc[np.argsort(self._order)].copy()
         return result.reset_index(drop=True)

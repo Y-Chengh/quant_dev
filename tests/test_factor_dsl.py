@@ -10,6 +10,8 @@ from factor_research.factor_factories import FACTOR_FACTORIES
 
 
 def _daily_frame(days: int = 8, codes: tuple[str, ...] = ("A", "B")) -> pd.DataFrame:
+    """生成价格单调递增、可精确推导滚动结果的多证券日频样本。"""
+
     dates = pd.bdate_range("2024-01-02", periods=days)
     rows = []
     for code_index, code in enumerate(codes):
@@ -30,6 +32,8 @@ def _daily_frame(days: int = 8, codes: tuple[str, ...] = ("A", "B")) -> pd.DataF
 
 
 def _alpha_002_frame(days: int = 8) -> pd.DataFrame:
+    """生成可独立控制量价横截面顺序的 Alpha 002 精确值样本。"""
+
     dates = pd.bdate_range("2024-01-02", periods=days)
     volume_a_high = [True, False, True, False, True, False]
     return_a_high = [True, True, False, False, True, False]
@@ -62,7 +66,11 @@ def _alpha_002_frame(days: int = 8) -> pd.DataFrame:
 
 
 class FactorDslTest(unittest.TestCase):
+    """验证因子 DSL 的数值语义、因果性、分组隔离和序列化稳定性。"""
+
     def test_normalized_daily_keys_must_remain_unique(self):
+        """规范化后发生日期或证券代码碰撞时必须拒绝构建执行上下文。"""
+
         base = _daily_frame(days=2, codes=("1",))
 
         # 同一自然日的不同时刻会在 normalize 后碰撞，必须在滚动计算前拒绝。
@@ -87,6 +95,8 @@ class FactorDslTest(unittest.TestCase):
             DailyFactorFrame(code_collision)
 
     def test_elementwise_arithmetic_preserves_original_index_and_row_order(self):
+        """逐元素算术结果必须恢复乱序输入及重复标签索引的逐行对应关系。"""
+
         daily = _daily_frame().sample(frac=1.0, random_state=17)
         daily.index = [index // 2 for index in range(len(daily))]  # 重复索引也必须逐行对齐。
         frame = DailyFactorFrame(daily)
@@ -99,6 +109,8 @@ class FactorDslTest(unittest.TestCase):
         self.assertEqual(values.name, "ratio")
 
     def test_time_series_windows_are_isolated_by_code(self):
+        """滚动均值和差分的历史状态不得在不同证券之间串联。"""
+
         daily = _daily_frame(days=4).sort_values("trade_date", kind="stable")
         frame = DailyFactorFrame(daily)
 
@@ -113,6 +125,8 @@ class FactorDslTest(unittest.TestCase):
             self.assertEqual(group["delta"].iloc[2], 2.0)
 
     def test_remaining_rolling_operators_have_exact_documented_values(self):
+        """校验和、极值、排名、位移、收益、相关和协方差的精确结果。"""
+
         daily = _daily_frame(days=3, codes=("A",))
         daily["close"] = [1.0, 2.0, 3.0]
         daily["volume"] = [2.0, 4.0, 6.0]
@@ -133,6 +147,8 @@ class FactorDslTest(unittest.TestCase):
         )
 
     def test_cross_sectional_normalizers_and_winsorize_are_exact(self):
+        """校验去均值、Z 分数、绝对值缩放和分位缩尾的横截面结果。"""
+
         daily = _daily_frame(days=1, codes=("A", "B", "C"))
         daily["close"] = [1.0, 2.0, 3.0]
         frame = DailyFactorFrame(daily)
@@ -150,6 +166,8 @@ class FactorDslTest(unittest.TestCase):
         np.testing.assert_allclose(winsorized, [1.5, 2.0, 2.5])
 
     def test_missing_comparison_is_false_and_where_uses_false_branch(self):
+        """比较输入缺失时条件应为假，where 应选择假分支且保留分支缺失。"""
+
         daily = _daily_frame(days=2, codes=("A",))
         daily.loc[0, "close"] = np.nan
         frame = DailyFactorFrame(daily)
@@ -159,6 +177,8 @@ class FactorDslTest(unittest.TestCase):
         np.testing.assert_allclose(values, [1.0, 1.0])
 
     def test_cross_sectional_rank_and_ties_are_isolated_by_date(self):
+        """横截面排名应按日隔离，并对并列值使用平均百分位。"""
+
         daily = _daily_frame(days=2, codes=("A", "B", "C"))
         first_date = daily["trade_date"].min()
         daily.loc[daily["trade_date"].eq(first_date), "close"] = [1.0, 1.0, 3.0]
@@ -171,6 +191,8 @@ class FactorDslTest(unittest.TestCase):
         self.assertEqual(result.at[(first_date, "C"), "rank"], 1.0)
 
     def test_argmax_uses_first_one_based_position_and_full_window(self):
+        """argmax 应要求默认完整窗口，并返回首个最大值的 1 基位置。"""
+
         daily = _daily_frame(days=5, codes=("A",))
         daily["close"] = [5.0, 5.0, 4.0, 3.0, 2.0]
 
@@ -180,6 +202,8 @@ class FactorDslTest(unittest.TestCase):
         self.assertEqual(values.iloc[4], 1.0)
 
     def test_argmax_and_argmin_ignore_nan_but_preserve_original_position(self):
+        """部分窗口内的缺失值不参与极值比较，但仍占据原窗口位置。"""
+
         daily = _daily_frame(days=3, codes=("A",))
         daily["close"] = [1.0, np.nan, 2.0]
         frame = DailyFactorFrame(daily)
@@ -199,6 +223,8 @@ class FactorDslTest(unittest.TestCase):
         )
 
     def test_invalid_or_future_looking_windows_are_rejected(self):
+        """非法窗口、最小观测数和可能引用未来的负位移必须被拒绝。"""
+
         frame = DailyFactorFrame(_daily_frame())
 
         with self.assertRaisesRegex(ValueError, "禁止"):
@@ -209,6 +235,8 @@ class FactorDslTest(unittest.TestCase):
             frame.close().stddev(5, min_periods=6)
 
     def test_missing_and_invalid_numeric_inputs_follow_documented_rules(self):
+        """验证无穷、除零、非正数对数和缺失输入统一产生缺失结果。"""
+
         daily = _daily_frame(days=3, codes=("A",))
         daily.loc[0, "volume"] = 0.0
         daily.loc[1, "open"] = 0.0
@@ -226,6 +254,8 @@ class FactorDslTest(unittest.TestCase):
         self.assertTrue(pd.isna(finite_values.iloc[2]))
 
     def test_expression_serialization_is_stable_and_round_trips(self):
+        """表达式配置和因子 ID 应稳定，并能安全反序列化为等价节点。"""
+
         frame = DailyFactorFrame(_daily_frame())
         expression = frame.close().delta(2).stddev(3).rank()
 
@@ -246,6 +276,8 @@ class FactorDslTest(unittest.TestCase):
             )
 
     def test_changing_future_data_cannot_change_historical_outputs(self):
+        """修改未来行情不得影响表达式在历史前缀上的计算结果。"""
+
         daily = _daily_frame(days=8, codes=("A", "B", "C"))
         expression = lambda frame: frame.close().returns(1).stddev(3).rank()
         original = expression(DailyFactorFrame(daily)).compute()
@@ -261,6 +293,8 @@ class FactorDslTest(unittest.TestCase):
         )
 
     def test_dsl_reproduces_existing_alpha_001_exactly(self):
+        """使用 DSL 重建 Alpha 001 时必须与现有正式工厂逐行完全一致。"""
+
         dates = pd.bdate_range("2024-01-02", periods=25)
         prefix = [10.0] * 19 + [9.0]
         prices = {
@@ -289,6 +323,8 @@ class FactorDslTest(unittest.TestCase):
         np.testing.assert_allclose(dsl, existing, equal_nan=True)
 
     def test_dsl_reproduces_existing_alpha_002_exactly(self):
+        """使用 DSL 重建 Alpha 002 时必须与现有正式工厂逐行完全一致。"""
+
         daily = _alpha_002_frame().sample(frac=1.0, random_state=11)
         frame = DailyFactorFrame(daily)
         volume_side = frame.volume().log().delta(2).rank()

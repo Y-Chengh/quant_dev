@@ -23,6 +23,8 @@ class FactorSearchResult:
 
     @property
     def best_candidate(self) -> FactorCandidate:
+        """返回排行榜中第一个满足覆盖率和目标有限性要求的候选。"""
+
         if self.leaderboard.empty or "eligible" not in self.leaderboard:
             raise ValueError("搜索没有成功产生候选排行榜")
         eligible = self.leaderboard.loc[self.leaderboard["eligible"]]
@@ -31,6 +33,8 @@ class FactorSearchResult:
         return self.get_candidate(str(eligible.iloc[0]["factor_id"]))
 
     def get_candidate(self, factor_id: str) -> FactorCandidate:
+        """按稳定因子 ID 查找原始候选表达式，未知 ID 时明确报错。"""
+
         for candidate in self.candidates:
             if candidate.factor_id == factor_id:
                 return candidate

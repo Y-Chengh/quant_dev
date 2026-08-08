@@ -34,6 +34,8 @@ class FactorGridSearch:
     objective: str = "selection_oriented_rank_ic"
 
     def __post_init__(self) -> None:
+        """校验执行规模、覆盖率和只允许 selection 指标排序的安全约束。"""
+
         if self.batch_size <= 0:
             raise ValueError("batch_size 必须是正整数")
         if self.max_candidates <= 0:
@@ -44,6 +46,8 @@ class FactorGridSearch:
             raise ValueError("objective 必须是 selection 指标，禁止使用 holdout 选择因子")
 
     def _backend(self) -> ExecutionBackend:
+        """把后端名称解析为执行对象，或直接返回调用方注入的自定义后端。"""
+
         if not isinstance(self.backend, str):
             return self.backend
         if self.backend == "sequential":
@@ -55,6 +59,8 @@ class FactorGridSearch:
     def _validate_candidates(
         self, candidates: Sequence[FactorCandidate]
     ) -> None:
+        """在执行前校验候选非空、实际数量、表达式深度和历史长度。"""
+
         if not candidates:
             raise ValueError("搜索空间没有生成任何候选")
         if len(candidates) > self.max_candidates:
@@ -83,6 +89,8 @@ class FactorGridSearch:
         candidates: Sequence[FactorCandidate],
         results: Sequence[CandidateTaskResult],
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """合并候选身份与初筛结果，隔离错误并按 selection 目标稳定排序。"""
+
         candidates_by_id = {candidate.factor_id: candidate for candidate in candidates}
         rows: list[dict[str, object]] = []
         errors: list[dict[str, object]] = []
@@ -137,7 +145,12 @@ class FactorGridSearch:
         model_evaluator: CandidateEvaluator | None = None,
         model_top_k: int = 0,
     ) -> FactorSearchResult:
-        """执行全量 IC 初筛，并可选地对 Top K 复用现有模型实验。"""
+        """执行全量 selection 评价、Top K holdout 报告和可选模型复验。
+
+        初筛使用调用方注入的 ``evaluator``，未注入时才默认计算横截面 IC；候选
+        始终只按 selection 指标排序。holdout 仅评价 selection 预先入选的 Top K，
+        不参与候选方向或名次确定；模型评价同样只作用于预先入选的 Top K。
+        """
 
         if holdout_top_k < 0:
             raise ValueError("holdout_top_k 不能为负数")

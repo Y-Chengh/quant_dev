@@ -58,6 +58,8 @@ def register_operator(
     lookback = additional_lookback or (lambda parameters: 0)
 
     def decorator(evaluator: OperatorEvaluator) -> OperatorEvaluator:
+        """把被装饰的执行函数及其元数据写入 DSL 私有注册表。"""
+
         OPERATORS[name] = OperatorDefinition(
             name=name,
             arity=arity,

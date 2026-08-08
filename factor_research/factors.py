@@ -21,11 +21,14 @@ KEY_COLUMNS = ["code", "trade_date"]
 
 
 def available_factors() -> list[str]:
+    """返回当前已注册正式因子的稳定排序名称列表。"""
+
     return sorted(FACTOR_FACTORIES)
 
 
 def _normalized_keys(frame: pd.DataFrame) -> pd.DataFrame:
-    """Normalize Parquet/pandas dtype differences before comparing logical keys."""
+    """统一代码和日期类型，避免 Parquet 类型差异干扰逻辑主键比较。"""
+
     keys = frame[KEY_COLUMNS].copy().reset_index(drop=True)
     keys["code"] = keys["code"].astype(str)
     keys["trade_date"] = pd.to_datetime(keys["trade_date"], errors="raise").astype("datetime64[ns]")
@@ -33,6 +36,8 @@ def _normalized_keys(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
+    """按证券和交易日把已校验分钟行情聚合为排序后的日频 OHLCV。"""
+
     return (
         bars.groupby(KEY_COLUMNS, sort=True)
         .agg(
@@ -62,6 +67,8 @@ def aggregate_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
 
 
 def _input_fingerprint(bars: pd.DataFrame) -> str:
+    """根据分钟行情列类型和全部值生成稳定的缓存输入指纹。"""
+
     columns = ["code", "trade_time", "open", "high", "low", "close", "volume"]
     digest = hashlib.sha256()
     digest.update("|".join(f"{column}:{bars[column].dtype}" for column in columns).encode())
@@ -70,6 +77,8 @@ def _input_fingerprint(bars: pd.DataFrame) -> str:
 
 
 def _implementation_fingerprint(factory: FactorFactory) -> str:
+    """根据具体工厂、公共基类和日频聚合实现生成代码版本指纹。"""
+
     digest = hashlib.sha256()
     # Include the concrete factory, shared helpers, and base daily aggregation.
     module_path = Path(inspect.getfile(factory.__class__))
@@ -81,7 +90,11 @@ def _implementation_fingerprint(factory: FactorFactory) -> str:
 
 
 class FactorCache:
+    """按因子实现版本和行情输入版本安全读写独立的 Parquet 缓存。"""
+
     def __init__(self, root: str | Path):
+        """保存缓存根目录，具体因子目录在首次写入时创建。"""
+
         self.root = Path(root)
 
     def load(
@@ -90,6 +103,8 @@ class FactorCache:
         input_fingerprint: str,
         daily: pd.DataFrame,
     ) -> pd.Series | None:
+        """读取并严格校验缓存列、行数和日频主键，失效时返回 ``None``。"""
+
         path = self._path(factory, input_fingerprint)
         if not path.exists():
             logger.debug("因子 %s 缓存不存在: %s", factory.name, path)
@@ -135,6 +150,8 @@ class FactorCache:
         daily: pd.DataFrame,
         values: pd.Series,
     ) -> Path:
+        """先写临时 Parquet 再原子替换目标文件，并返回最终缓存路径。"""
+
         path = self._path(factory, input_fingerprint)
         path.parent.mkdir(parents=True, exist_ok=True)
         frame = daily[KEY_COLUMNS].copy()
@@ -146,6 +163,8 @@ class FactorCache:
         return path
 
     def _path(self, factory: FactorFactory, input_fingerprint: str) -> Path:
+        """组合因子名称、实现指纹和输入指纹得到唯一缓存文件路径。"""
+
         implementation = _implementation_fingerprint(factory)
         return self.root / factory.name / f"{implementation}-{input_fingerprint}.parquet"
 
