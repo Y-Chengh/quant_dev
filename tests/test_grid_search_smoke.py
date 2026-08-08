@@ -164,6 +164,14 @@ class GridSearchReportTests(unittest.TestCase):
                     check_names=False,
                 )
             report_text = report_path.read_text(encoding="utf-8")
+            self.assertIn(
+                "| factor_id | expression_str | depth |",
+                report_text,
+            )
+            self.assertIn(
+                "| factor_id | expression_str | selection_oriented_rank_ic |",
+                report_text,
+            )
             self.assertIn("selection_oriented_rank_ic_rank", report_text)
             self.assertIn("holdout_oriented_ic_rank", report_text)
             self.assertIn("holdout_oriented_rank_ic_rank", report_text)

@@ -457,6 +457,7 @@ def write_grid_search_report(
     )
     top_columns = [
         "factor_id",
+        "expression_str",
         "canonical",
         "depth",
         "lookback",
@@ -469,6 +470,7 @@ def write_grid_search_report(
     ]
     holdout_columns = [
         "factor_id",
+        "expression_str",
         "selection_oriented_rank_ic",
         "selection_oriented_rank_ic_rank",
         "holdout_coverage",
