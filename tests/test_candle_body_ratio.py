@@ -31,11 +31,11 @@ class CandleBodyRatioTest(unittest.TestCase):
     def test_zero_or_invalid_range_and_missing_prices_return_nan(self):
         daily = pd.DataFrame(
             {
-                "code": ["A", "B", "C"],
-                "open": [10.0, 10.0, np.nan],
-                "high": [10.0, 9.0, 12.0],
-                "low": [10.0, 11.0, 10.0],
-                "close": [10.0, 10.0, 11.0],
+                "code": ["A", "B", "C", "D", "E", "F"],
+                "open": [10.0, 10.0, np.nan, 10.0, 10.0, 10.0],
+                "high": [10.0, 9.0, 12.0, np.nan, 12.0, 12.0],
+                "low": [10.0, 11.0, 10.0, 9.0, np.nan, 9.0],
+                "close": [10.0, 10.0, 11.0, 11.0, 11.0, np.nan],
             }
         )
 
