@@ -25,7 +25,7 @@ def build_direction_dataset(
     feature_columns: list[str] | None = None,
     args: argparse.Namespace | None = None,
 ) -> pd.DataFrame:
-    """用D日收盘后的特征预测该股票下一个有效交易日的收盘方向。"""
+    """用 D 日收盘后的特征预测下一有效交易日从开盘到收盘的方向。"""
     feature_columns = feature_columns or DEFAULT_FEATURES
     missing = set(feature_columns).difference(daily_features.columns)
     if missing:
@@ -33,8 +33,9 @@ def build_direction_dataset(
     data = daily_features.sort_values(["code", "trade_date"]).copy()
     grouped = data.groupby("code", sort=False)
     data["target_date"] = grouped["trade_date"].shift(-1)
+    next_open = grouped["open"].shift(-1)
     next_close = grouped["close"].shift(-1)
-    data["target_return"] = next_close / data["close"] - 1
+    data["target_return"] = next_close / next_open - 1
     data["label"] = (data["target_return"] > 0).astype("Int8")
     columns = ["trade_date", "target_date", "code", *feature_columns, "target_return", "label"]
     return (

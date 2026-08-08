@@ -14,7 +14,7 @@ from .registry import register_model_factory
 
 
 class LightGBMClassifier(DirectionModel):
-    """使用支持多线程的直方图梯度提升树预测下一交易日方向。"""
+    """使用支持多线程的直方图梯度提升树预测下一交易日开盘至收盘方向。"""
 
     def __init__(
         self,

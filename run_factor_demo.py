@@ -186,7 +186,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         model_parser.set_defaults(model=configured_model)
     selected, _ = model_parser.parse_known_args(argv)
 
-    parser = argparse.ArgumentParser(description="通过market service预测下一交易日涨跌")
+    parser = argparse.ArgumentParser(description="通过market service预测下一交易日开盘至收盘涨跌")
     parser.add_argument("--config", type=Path, help="YAML 配置文件；命令行参数优先")
     parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE, help="market.duckdb路径")
     parser.add_argument("--start", default='2024-01-01', help="研究开始时间，默认数据末端向前3年")

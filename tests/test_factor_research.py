@@ -53,6 +53,34 @@ class FactorResearchTest(unittest.TestCase):
         self.assertTrue((self.dataset["target_date"] > self.dataset["feature_date"]).all())
         self.assertIn("last_30m_return", self.dataset.columns)
 
+    def test_target_is_next_trading_day_open_to_close_direction_by_code(self):
+        dates = pd.bdate_range("2024-01-02", periods=3)
+        daily_features = pd.DataFrame(
+            {
+                "code": ["A", "B", "A", "B", "A", "B"],
+                "trade_date": [dates[0], dates[0], dates[1], dates[1], dates[2], dates[2]],
+                "open": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
+                "close": [29.0, 41.0, 33.0, 36.0, 50.0, 66.0],
+                "test_feature": range(6),
+            }
+        )
+
+        dataset = build_direction_dataset(daily_features, ["test_feature"])
+
+        expected = pd.DataFrame(
+            {
+                "target_date": [dates[1], dates[1], dates[2], dates[2]],
+                "code": ["A", "B", "A", "B"],
+                "target_return": [0.1, -0.1, 0.0, 0.1],
+                "label": pd.Series([1, 0, 0, 1], dtype="Int8"),
+            }
+        )
+        pd.testing.assert_frame_equal(
+            dataset[["target_date", "code", "target_return", "label"]],
+            expected,
+        )
+        self.assertEqual(len(dataset), 4)
+
     def test_selected_factors_are_cached_separately(self):
         bars = synthetic_bars(days=12, symbols=2)
         with TemporaryDirectory() as cache_dir:
