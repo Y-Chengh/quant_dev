@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 
 import numpy as np
@@ -9,7 +9,13 @@ import pandas as pd
 
 from .dataset import split_by_date
 from .factors import DEFAULT_FEATURES
-from .metrics import classification_metrics, daily_accuracy_trend, regression_metrics
+from .metrics import (
+    classification_metrics,
+    cross_sectional_ic_metrics,
+    daily_accuracy_trend,
+    daily_cross_sectional_ic,
+    regression_metrics,
+)
 from .models.base import DirectionModel, DirectionModelFactory
 from .models.simple_decision_tree import SimpleDecisionTreeModelFactory
 from .timing import ElapsedRecorder, log_elapsed
@@ -30,6 +36,7 @@ class ExperimentResult:
     feature_importance: pd.Series | None
     daily_accuracy_trend: pd.DataFrame
     task: str = "classification"
+    daily_ic_trend: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 class DirectionExperiment:
@@ -98,6 +105,11 @@ class DirectionExperiment:
                 split.train, split.validation
             )
 
+        score_column = (
+            "up_probability"
+            if self.task == "classification"
+            else "predicted_return"
+        )
         metrics = (
             classification_metrics(
                 predictions["label"],
@@ -110,6 +122,9 @@ class DirectionExperiment:
                 predictions["predicted_return"],
             )
         )
+        metrics["pooled_ic"] = metrics.pop("ic")
+        daily_ic = daily_cross_sectional_ic(predictions, score_column)
+        metrics.update(cross_sectional_ic_metrics(daily_ic))
         return ExperimentResult(
             model=model,
             model_name=self.model_factory.name,
@@ -125,6 +140,7 @@ class DirectionExperiment:
             ),
             daily_accuracy_trend=daily_accuracy_trend(predictions),
             task=self.task,
+            daily_ic_trend=daily_ic,
         )
 
     def _target(self, frame: pd.DataFrame) -> np.ndarray:

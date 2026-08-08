@@ -33,6 +33,73 @@ def information_coefficient(
     return float(np.dot(centered_score, centered_returns) / denominator)
 
 
+def rank_information_coefficient(
+    score: np.ndarray,
+    target_return: np.ndarray,
+) -> float:
+    """计算平均秩处理并列值后的 Spearman Rank IC。"""
+    score = np.asarray(score, dtype=float)
+    returns = np.asarray(target_return, dtype=float)
+    if score.shape != returns.shape:
+        raise ValueError("score and target_return must have the same shape")
+    valid = np.isfinite(score) & np.isfinite(returns)
+    if valid.sum() < 2:
+        return float("nan")
+    score_rank = pd.Series(score[valid]).rank(method="average").to_numpy()
+    return_rank = pd.Series(returns[valid]).rank(method="average").to_numpy()
+    return information_coefficient(score_rank, return_rank)
+
+
+def daily_cross_sectional_ic(
+    predictions: pd.DataFrame,
+    score_column: str,
+) -> pd.DataFrame:
+    """按目标交易日计算预测分数与实际收益率的横截面 IC 和 Rank IC。"""
+    required = {"target_date", "target_return", score_column}
+    missing = required.difference(predictions.columns)
+    if missing:
+        raise ValueError(
+            f"Missing columns for cross-sectional IC: {sorted(missing)}"
+        )
+
+    rows: list[dict[str, object]] = []
+    for target_date, group in predictions.groupby("target_date", sort=True):
+        score = group[score_column].to_numpy(dtype=float)
+        returns = group["target_return"].to_numpy(dtype=float)
+        valid = np.isfinite(score) & np.isfinite(returns)
+        rows.append(
+            {
+                "target_date": target_date,
+                "samples": int(valid.sum()),
+                "ic": information_coefficient(score, returns),
+                "rank_ic": rank_information_coefficient(score, returns),
+            }
+        )
+    return pd.DataFrame(rows, columns=["target_date", "samples", "ic", "rank_ic"])
+
+
+def cross_sectional_ic_metrics(daily_ic: pd.DataFrame) -> dict[str, float]:
+    """汇总每日横截面 IC；均值只使用对应 IC 为有限值的交易日。"""
+    required = {"ic", "rank_ic"}
+    missing = required.difference(daily_ic.columns)
+    if missing:
+        raise ValueError(f"Missing daily IC columns: {sorted(missing)}")
+    ic = daily_ic["ic"].to_numpy(dtype=float)
+    rank_ic = daily_ic["rank_ic"].to_numpy(dtype=float)
+    valid_ic = np.isfinite(ic)
+    valid_rank_ic = np.isfinite(rank_ic)
+    return {
+        "ic": float(np.mean(ic[valid_ic])) if valid_ic.any() else float("nan"),
+        "rank_ic": (
+            float(np.mean(rank_ic[valid_rank_ic]))
+            if valid_rank_ic.any()
+            else float("nan")
+        ),
+        "ic_dates": float(valid_ic.sum()),
+        "rank_ic_dates": float(valid_rank_ic.sum()),
+    }
+
+
 def classification_metrics(
     y_true: np.ndarray,
     probability: np.ndarray,

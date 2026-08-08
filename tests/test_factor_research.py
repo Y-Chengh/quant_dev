@@ -183,12 +183,27 @@ class FactorResearchTest(unittest.TestCase):
         self.assertIn("auc", result.metrics)
         self.assertTrue(np.isfinite(result.metrics["auc"]))
         self.assertIn("ic", result.metrics)
-        self.assertTrue(np.isfinite(result.metrics["ic"]))
+        self.assertIn("rank_ic", result.metrics)
+        self.assertIn("pooled_ic", result.metrics)
         self.assertAlmostEqual(
-            result.metrics["ic"],
+            result.metrics["pooled_ic"],
             result.predictions["up_probability"].corr(
                 result.predictions["target_return"]
             ),
+        )
+        expected_ic = result.daily_ic_trend["ic"].dropna().mean()
+        expected_rank_ic = result.daily_ic_trend["rank_ic"].dropna().mean()
+        np.testing.assert_allclose(result.metrics["ic"], expected_ic, equal_nan=True)
+        np.testing.assert_allclose(
+            result.metrics["rank_ic"], expected_rank_ic, equal_nan=True
+        )
+        self.assertEqual(
+            list(result.daily_ic_trend.columns),
+            ["target_date", "samples", "ic", "rank_ic"],
+        )
+        self.assertEqual(
+            len(result.daily_ic_trend),
+            result.predictions["target_date"].nunique(),
         )
         self.assertEqual(
             list(result.daily_accuracy_trend.columns),
@@ -207,6 +222,8 @@ class FactorResearchTest(unittest.TestCase):
             report = report_path.read_text(encoding="utf-8")
             self.assertIn("ROC AUC", report)
             self.assertIn("| IC |", report)
+            self.assertIn("| Rank IC |", report)
+            self.assertIn("## 每日横截面 IC", report)
             self.assertIn(chart_path.name, report)
             self.assertGreater(report.index("## 每日预估汇总"), report.index("## 运行参数"))
             self.assertEqual(report.rfind("## "), report.index("## 每日预估汇总"))

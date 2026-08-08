@@ -18,6 +18,10 @@ METRIC_LABELS = {
     "balanced_accuracy": "平衡准确率",
     "auc": "ROC AUC",
     "ic": "IC",
+    "rank_ic": "Rank IC",
+    "pooled_ic": "全样本 Pearson IC",
+    "ic_dates": "有效 IC 交易日数",
+    "rank_ic_dates": "有效 Rank IC 交易日数",
     "brier_score": "Brier 分数",
     "log_loss": "Log Loss",
     "mae": "MAE",
@@ -147,6 +151,22 @@ def write_evaluation_report(
             "浅色线为每日准确率，深色线为 20 日移动平均。",
         ]
     )
+
+    if not result.daily_ic_trend.empty:
+        lines.extend(
+            [
+                "",
+                "## 每日横截面 IC",
+                "",
+                "| 目标日期 | 有效样本数 | IC | Rank IC |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for row in result.daily_ic_trend.itertuples(index=False):
+            lines.append(
+                f"| {pd.Timestamp(row.target_date).date()} | {row.samples} | "
+                f"{_format_number(row.ic)} | {_format_number(row.rank_ic)} |"
+            )
 
     lines.extend(["", "## 因子重要性", ""])
     if result.feature_importance is None:

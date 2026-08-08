@@ -128,12 +128,15 @@ result = DirectionExperiment(
 
 print(result.metrics)
 print(result.daily_accuracy_trend)
+print(result.daily_ic_trend)
 print(result.feature_importance)
 print(result.predictions.head())
 ```
 
-`result.metrics["auc"]` 是全部验证样本的 ROC AUC，`result.metrics["ic"]` 是
-样本外上涨概率与下一交易日收益率的 Pearson 相关系数；`result.daily_accuracy_trend` 按
+`result.metrics["auc"]` 是全部验证样本的 ROC AUC。`result.metrics["ic"]` 和
+`result.metrics["rank_ic"]` 分别是逐交易日横截面 Pearson IC、Spearman Rank IC
+的有效日均值；`pooled_ic` 保留全部验证样本混合计算的 Pearson 相关作为辅助诊断。
+`result.daily_ic_trend` 保存每日横截面明细；`result.daily_accuracy_trend` 按
 `target_date` 给出每日样本数、预估准度以及较前一交易日的准度变化。
 
 `feature_date` 是特征截止日，`target_date` 是被预测日。框架按 `target_date` 整日切分，确保同一天的不同股票不会同时出现在训练集与测试集中；缺失值填充中位数也只使用训练集拟合。
