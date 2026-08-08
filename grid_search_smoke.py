@@ -337,6 +337,23 @@ def write_grid_search_report(
     else:
         completed_holdout = leaderboard.iloc[0:0]
     completed_holdout_ids = completed_holdout["factor_id"].astype(str).tolist()
+    completed_holdout_mask = leaderboard["factor_id"].astype(str).isin(
+        completed_holdout_ids
+    )
+    for metric in (
+        "selection_oriented_rank_ic",
+        "holdout_oriented_ic",
+        "holdout_oriented_rank_ic",
+    ):
+        rank_column = f"{metric}_rank"
+        leaderboard[rank_column] = float("nan")
+        if metric in leaderboard and completed_holdout_mask.any():
+            disclosed_values = pd.to_numeric(
+                leaderboard.loc[completed_holdout_mask, metric], errors="coerce"
+            )
+            leaderboard.loc[completed_holdout_mask, rank_column] = (
+                disclosed_values.rank(method="average", ascending=False)
+            )
     top_daily_ic = _build_top_daily_ic(result, context, completed_holdout_ids)
     top_daily_ic.to_csv(daily_ic_path, index=False, encoding="utf-8-sig")
     if not top_daily_ic.empty:
@@ -438,9 +455,12 @@ def write_grid_search_report(
     holdout_columns = [
         "factor_id",
         "selection_oriented_rank_ic",
+        "selection_oriented_rank_ic_rank",
         "holdout_coverage",
         "holdout_oriented_ic",
+        "holdout_oriented_ic_rank",
         "holdout_oriented_rank_ic",
+        "holdout_oriented_rank_ic_rank",
         "holdout_oriented_rank_icir",
         "holdout_oriented_positive_rank_ic_ratio",
     ]

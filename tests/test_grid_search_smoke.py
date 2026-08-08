@@ -131,6 +131,27 @@ class GridSearchReportTests(unittest.TestCase):
             self.assertEqual(
                 top_row["selection_oriented_positive_rank_ic_ratio"], 1.0
             )
+            completed = leaderboard.loc[
+                leaderboard["holdout_elapsed_seconds"].notna()
+            ]
+            for metric in (
+                "selection_oriented_rank_ic",
+                "holdout_oriented_ic",
+                "holdout_oriented_rank_ic",
+            ):
+                rank_column = f"{metric}_rank"
+                expected_ranks = completed[metric].rank(
+                    method="average", ascending=False
+                )
+                pd.testing.assert_series_equal(
+                    completed[rank_column],
+                    expected_ranks,
+                    check_names=False,
+                )
+            report_text = report_path.read_text(encoding="utf-8")
+            self.assertIn("selection_oriented_rank_ic_rank", report_text)
+            self.assertIn("holdout_oriented_ic_rank", report_text)
+            self.assertIn("holdout_oriented_rank_ic_rank", report_text)
             self.assertEqual(
                 list(pd.read_csv(output_dir / "errors.csv").columns),
                 ["factor_id", "stage", "error", "elapsed_seconds"],
