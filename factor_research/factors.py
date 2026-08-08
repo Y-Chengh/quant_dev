@@ -48,6 +48,19 @@ def _build_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def aggregate_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
+    """校验分钟行情并只聚合基础日频 OHLCV，不计算任何注册因子。
+
+    网格搜索在没有固定因子时使用该入口。原有 ``build_daily_features`` 仍走
+    原来的内部聚合函数，因此既不改变默认因子集合，也不改变既有缓存指纹。
+    """
+
+    validated = validate_bars(bars)
+    return _build_daily_bars(validated).sort_values(
+        ["trade_date", "code"]
+    ).reset_index(drop=True)
+
+
 def _input_fingerprint(bars: pd.DataFrame) -> str:
     columns = ["code", "trade_time", "open", "high", "low", "close", "volume"]
     digest = hashlib.sha256()

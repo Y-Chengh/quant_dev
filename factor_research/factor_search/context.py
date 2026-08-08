@@ -1,0 +1,120 @@
+"""因子搜索的一次性数据准备结果。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Sequence
+
+import numpy as np
+import pandas as pd
+
+from factor_research.dataset import build_forward_targets
+
+
+@dataclass(frozen=True)
+class SearchContext:
+    """可被所有候选只读复用的日频数据、目标和日期切分。
+
+    ``target_positions`` 把按目标日期排序的目标行映射回 ``daily`` 的原始行位置，
+    因而每个候选只需一次 NumPy 索引即可与标签严格对齐。
+    """
+
+    daily: pd.DataFrame
+    targets: pd.DataFrame
+    target_positions: np.ndarray
+    fixed_features: tuple[str, ...]
+    selection_mask: np.ndarray
+    holdout_mask: np.ndarray
+    holdout_start: pd.Timestamp | None
+    holdout_end: pd.Timestamp | None
+
+    @classmethod
+    def from_daily(
+        cls,
+        daily: pd.DataFrame,
+        *,
+        fixed_features: Sequence[str] = (),
+        selection_start: str | pd.Timestamp | None = None,
+        holdout_start: str | pd.Timestamp | None = None,
+        holdout_end: str | pd.Timestamp | None = None,
+    ) -> "SearchContext":
+        required = {"code", "trade_date", "open", "close"}
+        missing = required.difference(daily.columns)
+        if missing:
+            raise ValueError(f"搜索日频数据缺少列: {sorted(missing)}")
+        fixed = tuple(fixed_features)
+        if len(fixed) != len(set(fixed)):
+            raise ValueError("固定因子列表不能包含重复项")
+        missing_features = set(fixed).difference(daily.columns)
+        if missing_features:
+            raise ValueError(f"搜索日频数据缺少固定因子: {sorted(missing_features)}")
+
+        normalized = daily.copy()
+        normalized["code"] = normalized["code"].astype(str)
+        normalized["trade_date"] = pd.to_datetime(
+            normalized["trade_date"], errors="raise"
+        ).dt.normalize()
+        # SearchContext 后续使用规范化主键建立 MultiIndex 映射，因此必须在同一
+        # 口径下验证唯一性。否则 1/"1" 或同日不同时刻会在规范化后碰撞，轻则
+        # 重复计算一个交易日，重则让 get_indexer 因非唯一索引直接失败。
+        if normalized.duplicated(["code", "trade_date"]).any():
+            raise ValueError("搜索日频数据规范化后存在重复的 (code, trade_date)")
+        targets = build_forward_targets(normalized)
+
+        daily_keys = pd.MultiIndex.from_frame(normalized[["code", "trade_date"]])
+        target_keys = pd.MultiIndex.from_arrays(
+            [targets["code"].astype(str), pd.to_datetime(targets["feature_date"])]
+        )
+        target_positions = daily_keys.get_indexer(target_keys)
+        if (target_positions < 0).any():
+            raise RuntimeError("目标行无法映射回日频特征行")
+
+        target_dates = pd.to_datetime(targets["target_date"])
+        selection = np.ones(len(targets), dtype=bool)
+        if selection_start is not None:
+            selection &= (target_dates >= pd.Timestamp(selection_start)).to_numpy(
+                dtype=bool
+            )
+        cutoff = pd.Timestamp(holdout_start) if holdout_start is not None else None
+        if cutoff is not None:
+            selection &= (target_dates < cutoff).to_numpy(dtype=bool)
+            # pandas 可能返回只读 NumPy 视图；后续还要叠加 holdout_end，因此必须
+            # 显式复制为当前上下文独占的可写布尔数组。
+            holdout = (target_dates >= cutoff).to_numpy(
+                dtype=bool, copy=True
+            )
+        else:
+            holdout = np.zeros(len(targets), dtype=bool)
+        end = pd.Timestamp(holdout_end) if holdout_end is not None else None
+        if end is not None:
+            if cutoff is None:
+                raise ValueError("配置 holdout_end 时必须同时配置 holdout_start")
+            if end < cutoff:
+                raise ValueError("holdout_end 不能早于 holdout_start")
+            holdout &= (target_dates <= end).to_numpy(dtype=bool)
+        selection = np.asarray(selection, dtype=bool)
+        if not selection.any():
+            raise ValueError("selection 区间没有可评价样本")
+        if cutoff is not None and not holdout.any():
+            raise ValueError("holdout 区间没有可评价样本")
+
+        return cls(
+            daily=normalized,
+            targets=targets,
+            target_positions=target_positions,
+            fixed_features=fixed,
+            selection_mask=selection,
+            holdout_mask=holdout,
+            holdout_start=cutoff,
+            holdout_end=end,
+        )
+
+    def align_factor_values(self, values: pd.Series | np.ndarray) -> np.ndarray:
+        """把与 daily 等长的候选值对齐到目标样本顺序。"""
+
+        array = np.asarray(values, dtype=float)
+        if array.shape != (len(self.daily),):
+            raise ValueError(
+                f"候选因子行数错误: expected={len(self.daily)} actual={array.shape}"
+            )
+        return array[self.target_positions]

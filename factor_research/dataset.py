@@ -19,6 +19,40 @@ class DatasetSplit:
     validation: pd.DataFrame
 
 
+def _with_forward_targets(daily: pd.DataFrame) -> pd.DataFrame:
+    """在按证券排序的副本上附加下一有效交易日目标列。"""
+
+    required = {"code", "trade_date", "open", "close"}
+    missing = required.difference(daily.columns)
+    if missing:
+        raise ValueError(f"构建预测目标缺少列: {sorted(missing)}")
+    data = daily.sort_values(["code", "trade_date"]).copy()
+    grouped = data.groupby("code", sort=False)
+    data["target_date"] = grouped["trade_date"].shift(-1)
+    next_open = grouped["open"].shift(-1)
+    next_close = grouped["close"].shift(-1)
+    data["target_return"] = next_close / next_open - 1
+    data["label"] = (data["target_return"] > 0).astype("Int8")
+    return data
+
+
+def build_forward_targets(daily: pd.DataFrame) -> pd.DataFrame:
+    """构建下一有效交易日开盘至收盘收益及方向标签。
+
+    返回结果不包含任何特征列，供因子搜索一次性复用。特征日期为 D，目标日期
+    是同一证券 D 之后实际存在行情的下一天；最后一个交易日因为没有目标而丢弃。
+    """
+
+    data = _with_forward_targets(daily)
+    columns = ["trade_date", "target_date", "code", "target_return", "label"]
+    return (
+        data.loc[data["target_date"].notna(), columns]
+        .rename(columns={"trade_date": "feature_date"})
+        .sort_values(["target_date", "code"])
+        .reset_index(drop=True)
+    )
+
+
 @log_elapsed(logger, "方向预测数据集构建")
 def build_direction_dataset(
     daily_features: pd.DataFrame,
@@ -30,13 +64,7 @@ def build_direction_dataset(
     missing = set(feature_columns).difference(daily_features.columns)
     if missing:
         raise ValueError(f"缺少因子列: {sorted(missing)}")
-    data = daily_features.sort_values(["code", "trade_date"]).copy()
-    grouped = data.groupby("code", sort=False)
-    data["target_date"] = grouped["trade_date"].shift(-1)
-    next_open = grouped["open"].shift(-1)
-    next_close = grouped["close"].shift(-1)
-    data["target_return"] = next_close / next_open - 1
-    data["label"] = (data["target_return"] > 0).astype("Int8")
+    data = _with_forward_targets(daily_features)
     columns = ["trade_date", "target_date", "code", *feature_columns, "target_return", "label"]
     return (
         data.loc[data["target_date"].notna(), columns]

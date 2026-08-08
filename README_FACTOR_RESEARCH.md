@@ -140,3 +140,9 @@ print(result.predictions.head())
 `target_date` 给出每日样本数、预估准度以及较前一交易日的准度变化。
 
 `feature_date` 是特征截止日，`target_date` 是被预测日。框架按 `target_date` 整日切分，确保同一天的不同股票不会同时出现在训练集与测试集中；缺失值填充中位数也只使用训练集拟合。
+
+## 因子 DSL 与并行网格搜索
+
+项目提供独立的链式因子表达式、固定/模板网格、selection/holdout IC 初筛、进程
+并行和 Top K 模型验证。搜索候选不会写入正式因子注册表，固定因子在搜索前只
+计算一次。完整设计、算子语义和调用示例见 [FACTOR_GRID_SEARCH.md](FACTOR_GRID_SEARCH.md)。
