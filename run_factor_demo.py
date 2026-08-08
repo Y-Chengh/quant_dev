@@ -263,6 +263,9 @@ def main() -> None:
         raise
 
     args = parse_args()
+    yaml_config_snapshot = (
+        args.config.read_text(encoding="utf-8") if args.config is not None else None
+    )
     if args.debug:
         args.log_level = "DEBUG"
     run_id = uuid4().hex[:8]
@@ -333,7 +336,14 @@ def main() -> None:
     ).run(dataset)
     logger.info("验证指标: %s", result.metrics)
     logger.info("因子重要性:\n%s", result.feature_importance.to_string())
-    write_evaluation_report(result, report_file, chart_file, run_id, run_arguments)
+    write_evaluation_report(
+        result,
+        report_file,
+        chart_file,
+        run_id,
+        run_arguments,
+        yaml_config=yaml_config_snapshot,
+    )
     logger.info("评估报告: %s，准确率趋势图: %s", report_file.resolve(), chart_file.resolve())
 
 

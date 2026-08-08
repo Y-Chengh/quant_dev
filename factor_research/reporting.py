@@ -93,6 +93,7 @@ def write_evaluation_report(
     chart_path: Path,
     run_id: str,
     run_arguments: dict[str, Any],
+    yaml_config: str | None = None,
 ) -> None:
     """Write a Markdown evaluation summary and its linked accuracy chart."""
     report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -150,9 +151,17 @@ def write_evaluation_report(
 
     lines.extend(["", "## 运行参数", "", "```text"])
     lines.extend(f"{key}={value}" for key, value in sorted(run_arguments.items()))
+    lines.extend(["```", "", "## YAML 配置", ""])
+    if yaml_config is None:
+        lines.append("未使用 YAML 配置文件。")
+    else:
+        config_text = yaml_config.rstrip("\r\n")
+        fence = "```"
+        while fence in config_text:
+            fence += "`"
+        lines.extend([f"{fence}yaml", config_text, fence])
     lines.extend(
         [
-            "```",
             "",
             "## 每日预估汇总",
             "",
