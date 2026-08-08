@@ -41,6 +41,14 @@ def _result() -> ExperimentResult:
                 "accuracy_change": [np.nan],
             }
         ),
+        daily_ic_trend=pd.DataFrame(
+            {
+                "target_date": [target_date],
+                "samples": [1],
+                "ic": [0.5],
+                "rank_ic": [0.4],
+            }
+        ),
     )
 
 
@@ -65,7 +73,11 @@ class YamlConfigReportingTest(unittest.TestCase):
         report = self._render(yaml_config)
 
         self.assertLess(report.index("## 运行参数"), report.index("## YAML 配置"))
-        self.assertLess(report.index("## YAML 配置"), report.index("## 每日预估汇总"))
+        self.assertLess(report.index("## YAML 配置"), report.index("## 每日横截面 IC"))
+        self.assertLess(
+            report.index("## 每日横截面 IC"),
+            report.index("## 每日预估汇总"),
+        )
         self.assertIn(yaml_config.strip(), report)
 
     def test_yaml_snapshot_uses_a_longer_fence_when_content_has_backticks(self):

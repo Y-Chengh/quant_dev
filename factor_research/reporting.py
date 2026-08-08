@@ -152,22 +152,6 @@ def write_evaluation_report(
         ]
     )
 
-    if not result.daily_ic_trend.empty:
-        lines.extend(
-            [
-                "",
-                "## 每日横截面 IC",
-                "",
-                "| 目标日期 | 有效样本数 | IC | Rank IC |",
-                "| --- | ---: | ---: | ---: |",
-            ]
-        )
-        for row in result.daily_ic_trend.itertuples(index=False):
-            lines.append(
-                f"| {pd.Timestamp(row.target_date).date()} | {row.samples} | "
-                f"{_format_number(row.ic)} | {_format_number(row.rank_ic)} |"
-            )
-
     lines.extend(["", "## 因子重要性", ""])
     if result.feature_importance is None:
         lines.append("当前模型未提供因子重要性。")
@@ -187,6 +171,23 @@ def write_evaluation_report(
         while fence in config_text:
             fence += "`"
         lines.extend([f"{fence}yaml", config_text, fence])
+
+    if not result.daily_ic_trend.empty:
+        lines.extend(
+            [
+                "",
+                "## 每日横截面 IC",
+                "",
+                "| 目标日期 | 有效样本数 | IC | Rank IC |",
+                "| --- | ---: | ---: | ---: |",
+            ]
+        )
+        for row in result.daily_ic_trend.itertuples(index=False):
+            lines.append(
+                f"| {pd.Timestamp(row.target_date).date()} | {row.samples} | "
+                f"{_format_number(row.ic)} | {_format_number(row.rank_ic)} |"
+            )
+
     lines.extend(
         [
             "",
