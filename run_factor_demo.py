@@ -344,7 +344,7 @@ def main() -> None:
         run_arguments,
         yaml_config=yaml_config_snapshot,
     )
-    logger.info("评估报告: %s，准确率趋势图: %s", report_file.resolve(), chart_file.resolve())
+    logger.info("评估报告: %s", report_file.resolve())
 
 
 if __name__ == "__main__":
