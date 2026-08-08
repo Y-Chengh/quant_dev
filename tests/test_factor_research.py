@@ -69,6 +69,7 @@ class FactorResearchTest(unittest.TestCase):
             set(FACTOR_FACTORIES),
             {
                 "alpha_001",
+                "alpha_002",
                 "return_1d", "return_5d", "volatility_5d", "volume_ratio_5d",
                 "amplitude", "candle_body_ratio", "close_position",
                 "intraday_return", "realized_vol",
