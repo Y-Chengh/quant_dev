@@ -28,7 +28,7 @@ client = MarketDataClient(r"D:\量化\market.duckdb")
 
 # 单只证券K线
 kline = client.get_kline(KlineQuery(
-    code="600000.SH",
+    code="600000",
     start=datetime(2025, 1, 1),
     end=datetime(2026, 4, 17, 23, 59, 59),
     period=KlinePeriod.DAY,
@@ -39,7 +39,7 @@ snapshot = client.get_snapshot(datetime(2026, 4, 17, 10, 30))
 
 # 某交易日5分钟原始数据
 page = client.get_raw_bars(RawBarQuery(
-    code="600000.SH",
+    code="600000",
     trade_date=date(2026, 4, 17),
     min_volume=100_000,
 ))
@@ -53,6 +53,10 @@ print(page.data, page.total)
 - `get_snapshot(at, codes=None)`
 - `get_raw_bars(query)`
 - `search_symbols(text, limit)`
+
+K线、批量5分钟行情、快照和原始行情查询均支持省略沪深交易所后缀。例如，
+`600000` 会按 `600000.SH` 查询，`000001` 会按 `000001.SZ` 查询；已带后缀的
+代码仍可照常使用。
 
 ## REST接口
 

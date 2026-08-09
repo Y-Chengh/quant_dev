@@ -4,11 +4,15 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest.mock import patch
 
 import duckdb
 import pandas as pd
 
+import market_service.app as market_app
+from market_service import KlinePeriod, KlineQuery, MarketDataClient, RawBarQuery
 from market_service.app import records
+from market_service.codes import normalize_security_code
 from market_service.database import MarketDatabase
 
 
@@ -30,12 +34,18 @@ class MarketServiceKlineTest(unittest.TestCase):
                 """
                 CREATE TABLE bars_5m(
                     code VARCHAR, trade_time TIMESTAMP, open DOUBLE, high DOUBLE,
-                    low DOUBLE, close DOUBLE, volume BIGINT, amount DOUBLE
+                    low DOUBLE, close DOUBLE, volume BIGINT, amount DOUBLE,
+                    pre_close DOUBLE, change DOUBLE, pct_change DOUBLE,
+                    trade_date DATE GENERATED ALWAYS AS (CAST(trade_time AS DATE)) VIRTUAL
                 )
                 """
             )
             con.executemany(
-                "INSERT INTO bars_5m VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO bars_5m(
+                    code, trade_time, open, high, low, close, volume, amount
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 [
                     ("000001.SZ", "2026-08-09 09:55:00", 10.0, 10.0, 10.0, 10.0, 100, 1_000.0),
                     ("000001.SZ", "2026-08-09 10:00:00", 11.0, 11.2, 10.8, 11.0, 110, 1_210.0),
@@ -52,6 +62,7 @@ class MarketServiceKlineTest(unittest.TestCase):
                     ("000002.SZ", "2026-08-09 10:10:00", float("inf"), 12.2, 11.8, 12.0, 130, 1_560.0),
                     ("000002.SZ", "2026-08-09 10:15:00", float("-inf"), 8.2, 7.8, 8.0, 140, 1_120.0),
                     ("000002.SZ", "2026-08-09 10:20:00", 10.0, 11.2, 9.9, 11.0, 150, 1_650.0),
+                    ("600000.SH", "2026-08-09 10:00:00", 20.0, 20.2, 19.8, 20.1, 200, 4_020.0),
                 ],
             )
         finally:
@@ -184,6 +195,81 @@ class MarketServiceKlineTest(unittest.TestCase):
             "negative_inf": None,
             "finite": 12.5,
         }])
+
+    def test_bare_stock_codes_are_supported_by_all_database_queries(self) -> None:
+        """单只、批量、快照和原始行情查询均应自动补全六位沪深股票代码。"""
+        with tempfile.TemporaryDirectory() as directory:
+            database = self._create_database(Path(directory) / "market.duckdb")
+            start = datetime(2026, 8, 9, 10, 0)
+            end = datetime(2026, 8, 9, 10, 0)
+
+            shanghai = database.kline(" 600000 ", start, end, "5m")
+            batch = database.klines_5m(["000001", "600000"], start, end)
+            snapshot = database.snapshot(start, ["600000"])
+            raw, total = database.raw("000001", start.date())
+
+        self.assertEqual(shanghai["close"].tolist(), [20.1])
+        self.assertEqual(batch["code"].tolist(), ["000001.SZ", "600000.SH"])
+        self.assertEqual(snapshot["code"].tolist(), ["600000.SH"])
+        self.assertEqual(total, 9)
+        self.assertTrue(raw["code"].eq("000001.SZ").all())
+
+    def test_security_code_normalization_preserves_explicit_and_unknown_codes(self) -> None:
+        """代码规范化应覆盖沪深裸代码，并保持显式后缀及未知市场代码兼容。"""
+        expected_codes = {
+            "000001": "000001.SZ",
+            "100001": "100001.SZ",
+            "200001": "200001.SZ",
+            "300001": "300001.SZ",
+            "500001": "500001.SH",
+            "600000": "600000.SH",
+            "900001": "900001.SH",
+        }
+        for bare_code, expected in expected_codes.items():
+            with self.subTest(code=bare_code):
+                self.assertEqual(normalize_security_code(bare_code), expected)
+        self.assertEqual(normalize_security_code(" 000001.sz "), "000001.SZ")
+        self.assertEqual(normalize_security_code("430001"), "430001")
+        self.assertEqual(normalize_security_code("AAPL"), "AAPL")
+
+    def test_public_client_accepts_bare_codes_for_each_query_type(self) -> None:
+        """Python公共客户端的四类行情查询均应接受不带后缀的沪深代码。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "market.duckdb"
+            self._create_database(path)
+            client = MarketDataClient(path)
+            start = datetime(2026, 8, 9, 10, 0)
+
+            kline = client.get_kline(KlineQuery(
+                "600000", start, start, KlinePeriod.MIN_5
+            ))
+            batch = client.get_klines_5m(["000001", "600000"], start, start)
+            snapshot = client.get_snapshot(start, ["600000"])
+            raw = client.get_raw_bars(RawBarQuery("000001", start.date()))
+
+        self.assertEqual(kline["close"].tolist(), [20.1])
+        self.assertEqual(batch["code"].tolist(), ["000001.SZ", "600000.SH"])
+        self.assertEqual(snapshot["code"].tolist(), ["600000.SH"])
+        self.assertEqual(raw.total, 9)
+        self.assertTrue(raw.data["code"].eq("000001.SZ").all())
+
+    def test_rest_responses_use_normalized_code(self) -> None:
+        """REST K线响应及CSV文件名应展示补全交易所后缀后的规范代码。"""
+        at = datetime(2026, 8, 9, 10, 0)
+        with patch.object(market_app.client, "get_kline", return_value=pd.DataFrame()):
+            result = market_app.kline("600000", at, at)
+        with patch.object(
+            market_app,
+            "raw_query",
+            return_value=(pd.DataFrame({"code": ["600000.SH"]}), 1),
+        ):
+            response = market_app.raw_csv("600000", at.date())
+
+        self.assertEqual(result["code"], "600000.SH")
+        self.assertEqual(
+            response.headers["content-disposition"],
+            'attachment; filename="600000_SH_2026-08-09.csv"',
+        )
 
 
 if __name__ == "__main__":

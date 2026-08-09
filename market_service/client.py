@@ -8,9 +8,11 @@ import pandas as pd
 import duckdb  # 明确暴露缺失依赖，避免被下面的兼容导入逻辑误判。
 
 try:
+    from .codes import normalize_security_code
     from .database import MarketDatabase
     from .models import KlineQuery, PagedBars, RawBarQuery
 except ImportError:  # 支持直接从源码目录运行
+    from codes import normalize_security_code
     from database import MarketDatabase
     from models import KlineQuery, PagedBars, RawBarQuery
 
@@ -25,6 +27,15 @@ class MarketDataClient:
         return self._repository.metadata()
 
     def get_kline(self, query: KlineQuery) -> pd.DataFrame:
+        """读取单只证券的指定周期K线。
+
+        参数：
+            query: K线查询条件，包含证券代码、闭区间起止时间和目标周期；六位
+                沪深裸代码由仓储层自动补全交易所后缀。
+
+        返回：
+            按时间升序排列的K线数据表，包含涨跌额、涨跌幅和日内涨跌幅字段。
+        """
         self._validate_range(query.start, query.end)
         return self._repository.kline(query.code, query.start, query.end, query.period.value)
 
@@ -34,16 +45,47 @@ class MarketDataClient:
         start: datetime,
         end: datetime,
     ) -> pd.DataFrame:
-        """为因子研究批量读取多个股票的5分钟行情。"""
+        """为因子研究批量读取多个证券的5分钟行情。
+
+        参数：
+            codes: 证券代码序列；会去除空值与重复值，六位沪深裸代码会自动
+                补全交易所后缀。
+            start: 查询起始时间，包含该时刻。
+            end: 查询结束时间，包含该时刻。
+
+        返回：
+            按证券代码和时间升序排列的原始5分钟行情数据表。
+        """
         self._validate_range(start, end)
-        normalized = list(dict.fromkeys(code.upper().strip() for code in codes if code.strip()))
+        normalized = list(dict.fromkeys(
+            normalize_security_code(code) for code in codes if code.strip()
+        ))
         return self._repository.klines_5m(normalized, start, end)
 
     def get_snapshot(self, at: datetime, codes: Sequence[str] | None = None) -> pd.DataFrame:
-        normalized = [code.upper().strip() for code in codes] if codes else None
+        """读取指定时刻的全市场或指定证券快照。
+
+        参数：
+            at: 快照对应的行情时刻，需与数据库分钟时间点一致。
+            codes: 可选证券代码序列；六位沪深裸代码会自动补全后缀，缺省时
+                返回该时刻的全部证券。
+
+        返回：
+            按证券代码排序的行情快照数据表。
+        """
+        normalized = [normalize_security_code(code) for code in codes] if codes else None
         return self._repository.snapshot(at, normalized)
 
     def get_raw_bars(self, query: RawBarQuery) -> PagedBars:
+        """分页读取单只证券在一个交易日内的原始5分钟行情。
+
+        参数：
+            query: 原始行情查询条件，包含证券代码、交易日、可选价格/成交过滤
+                条件及分页参数；六位沪深裸代码由仓储层自动补全后缀。
+
+        返回：
+            包含当前页数据、总记录数、页码和页大小的分页结果。
+        """
         if query.page < 1 or not 1 <= query.page_size <= 1000:
             raise ValueError("page必须大于0，page_size必须在1到1000之间")
         frame, total = self._repository.raw(
