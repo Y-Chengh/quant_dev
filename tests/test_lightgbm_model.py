@@ -68,6 +68,7 @@ class LightGBMModelTest(unittest.TestCase):
         args = parse_args(["--model", "lightgbm"])
         delattr(args, "task")
         delattr(args, "objective")
+        delattr(args, "objective_alpha")
 
         factory = model_factory_from_args(args)
 
@@ -91,6 +92,7 @@ class LightGBMModelTest(unittest.TestCase):
         factory = LightGBMModelFactory(
             task="regression",
             objective="huber",
+            objective_alpha=0.02,
             n_estimators=5,
             n_jobs=1,
         )
@@ -99,6 +101,52 @@ class LightGBMModelTest(unittest.TestCase):
 
         self.assertIsInstance(model, LightGBMRegressor)
         self.assertEqual(model.estimator.get_params()["objective"], "huber")
+        self.assertEqual(model.estimator.get_params()["alpha"], 0.02)
+
+    def test_huber_alpha_changes_outlier_response(self):
+        """较小 Huber 阈值应削弱极端收益标签并改变实际预测。"""
+
+        random = np.random.default_rng(42)
+        X = random.normal(size=(400, 3))
+        y = 0.02 * X[:, 0] + random.normal(0.0, 0.01, len(X))
+        y[:8] += 0.5
+        common = {
+            "n_estimators": 20,
+            "learning_rate": 0.1,
+            "num_leaves": 7,
+            "max_depth": 3,
+            "min_child_samples": 5,
+            "reg_alpha": 0.0,
+            "n_jobs": 1,
+            "random_state": 42,
+        }
+        squared = LightGBMRegressor(objective="regression", **common).fit(X, y)
+        robust = LightGBMRegressor(
+            objective="huber",
+            objective_alpha=0.02,
+            **common,
+        ).fit(X, y)
+
+        difference = np.max(np.abs(squared.predict(X) - robust.predict(X)))
+        self.assertGreater(float(difference), 1e-6)
+
+    def test_objective_alpha_is_validated_for_huber_and_quantile(self):
+        """目标函数 alpha 应拒绝非有限、非正及非法分位点。"""
+
+        for invalid in (0.0, -0.1, np.inf, np.nan):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "objective_alpha"):
+                    LightGBMModelFactory(
+                        task="regression",
+                        objective="huber",
+                        objective_alpha=invalid,
+                    )
+        with self.assertRaisesRegex(ValueError, "小于 1"):
+            LightGBMModelFactory(
+                task="regression",
+                objective="quantile",
+                objective_alpha=1.0,
+            )
 
     def test_objective_must_match_task(self):
         with self.assertRaisesRegex(ValueError, "不兼容"):

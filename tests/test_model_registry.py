@@ -63,13 +63,17 @@ class ModelRegistryTest(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "experiment.yaml"
             config_path.write_text(
-                "model: lightgbm\ntask: regression\nobjective: huber\n",
+                "model: lightgbm\n"
+                "task: regression\n"
+                "objective: huber\n"
+                "objective_alpha: 0.02\n",
                 encoding="utf-8",
             )
             args = parse_args(["--config", str(config_path)])
         factory = model_factory_from_args(args)
         self.assertEqual(factory.task, "regression")
         self.assertEqual(factory.objective, "huber")
+        self.assertEqual(factory.objective_alpha, 0.02)
 
         unsupported = parse_args(
             ["--model", "simple_decision_tree", "--task", "regression"]

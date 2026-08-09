@@ -11,6 +11,8 @@ training_mode: single  # rolling: 逐日扩展训练；single: 固定训练集�
 
 # 模型设置
 model: lightgbm
+objective: huber
+objective_alpha: 0.02  # Huber 截断阈值；收益率以小数表示，0.02 即 2%
 n_estimators: 300
 learning_rate:  0.03
 num_leaves: 31

@@ -104,9 +104,29 @@ class LightGBMRegressor(DirectionModel):
         n_jobs: int = -1,
         random_state: int | None = 42,
         objective: str = "regression",
+        objective_alpha: float = 0.9,
     ):
+        """初始化连续收益率回归器。
+
+        参数：
+            n_estimators: 提升树数量，即最大迭代轮数。
+            learning_rate: 每棵树的贡献缩减系数。
+            num_leaves: 单棵树允许的最大叶节点数。
+            max_depth: 单棵树最大深度；负值表示不限制。
+            min_child_samples: 每个叶节点所需的最少训练样本数。
+            subsample: 每轮训练抽取的样本比例，取值范围为 ``(0, 1]``。
+            colsample_bytree: 每棵树抽取的特征比例，取值范围为 ``(0, 1]``。
+            reg_alpha: 叶节点权重的 L1 正则化系数。
+            reg_lambda: 叶节点权重的 L2 正则化系数。
+            n_jobs: LightGBM 并行线程数；``-1`` 表示使用全部可用 CPU。
+            random_state: 随机种子；为空时不固定随机序列。
+            objective: LightGBM 回归目标函数名称。
+            objective_alpha: Huber 的残差截断阈值，或 quantile 的目标分位点；
+                其他回归目标不会使用该值。
+        """
         self.estimator = LGBMRegressor(
             objective=objective,
+            alpha=objective_alpha,
             boosting_type="dart",
             n_estimators=n_estimators,
             learning_rate=learning_rate,
@@ -175,10 +195,13 @@ class LightGBMModelFactory(DirectionModelFactory):
     random_state: int | None = 42
     task: str = "classification"
     objective: str | None = None
+    objective_alpha: float = 0.9
     name: ClassVar[str] = "lightgbm"
     supported_tasks: ClassVar[tuple[str, ...]] = ("classification", "regression")
 
     def __post_init__(self) -> None:
+        """补全任务默认目标，并校验目标函数及其 alpha 参数。"""
+
         classification_objectives = {"binary", "cross_entropy", "cross_entropy_lambda"}
         regression_objectives = {
             "regression", "regression_l1", "huber", "fair", "quantile",
@@ -198,10 +221,20 @@ class LightGBMModelFactory(DirectionModelFactory):
                 f"objective={objective!r} 与 task={self.task!r} 不兼容；"
                 f"可选值为 {sorted(allowed)}"
             )
+        if not np.isfinite(self.objective_alpha) or self.objective_alpha <= 0:
+            raise ValueError("objective_alpha 必须是大于 0 的有限数值")
+        if objective == "quantile" and self.objective_alpha >= 1:
+            raise ValueError("quantile 的 objective_alpha 必须小于 1")
         object.__setattr__(self, "objective", objective)
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:
+        """向命令行解析器注册 LightGBM 专属参数。
+
+        参数：
+            parser: 当前已选中 LightGBM 模型的命令行解析器。
+        """
+
         parser.add_argument("--n-estimators", type=int, default=300)
         parser.add_argument("--learning-rate", type=float, default=0.03)
         parser.add_argument("--num-leaves", type=int, default=15)
@@ -227,9 +260,27 @@ class LightGBMModelFactory(DirectionModelFactory):
             default=None,
             help="LightGBM 目标函数；默认随 --task 选择 binary 或 regression",
         )
+        parser.add_argument(
+            "--objective-alpha",
+            type=float,
+            default=0.9,
+            help=(
+                "Huber 残差截断阈值或 quantile 目标分位点；"
+                "其他目标函数忽略该参数"
+            ),
+        )
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "LightGBMModelFactory":
+        """根据已校验的命令行或 YAML 参数创建模型工厂。
+
+        参数：
+            args: 合并命令行与 YAML 后的实验参数命名空间。
+
+        返回：
+            尚未包含训练状态的 LightGBM 模型工厂。
+        """
+
         return cls(
             n_estimators=args.n_estimators,
             learning_rate=args.learning_rate,
@@ -244,9 +295,12 @@ class LightGBMModelFactory(DirectionModelFactory):
             random_state=args.random_state,
             task=getattr(args, "task", "classification"),
             objective=getattr(args, "objective", None),
+            objective_alpha=getattr(args, "objective_alpha", 0.9),
         )
 
     def create(self) -> DirectionModel:
+        """创建与工厂配置一致且无历史训练状态的新模型。"""
+
         model_type = (
             LightGBMClassifier
             if self.task == "classification"
@@ -265,4 +319,9 @@ class LightGBMModelFactory(DirectionModelFactory):
             n_jobs=self.n_jobs,
             random_state=self.random_state,
             objective=self.objective,
+            **(
+                {"objective_alpha": self.objective_alpha}
+                if self.task == "regression"
+                else {}
+            ),
         )

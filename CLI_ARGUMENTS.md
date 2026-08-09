@@ -130,6 +130,7 @@ volume_ratio_5d
 | `--n-jobs` | `-1` | 训练线程数；`-1` 表示使用全部可用 CPU。共享机器上可设为固定正整数。 |
 | `--random-state` | `42` | 随机种子，用于复现实验结果。 |
 | `--objective` | 随 `--task` 选择 | LightGBM 目标函数。分类默认为 `binary`，还支持 `cross_entropy`、`cross_entropy_lambda`；回归默认为 `regression`，还支持 `regression_l1`、`huber`、`fair`、`quantile`。目标函数必须与任务类型兼容。 |
+| `--objective-alpha` | `0.9` | `huber` 的残差截断阈值，或 `quantile` 的目标分位点；其他目标函数忽略该参数。收益率以小数表示时，`huber` 阈值也使用相同单位，例如 `0.02` 表示 2%。 |
 
 ### 3.4 `factor_passthrough`
 
