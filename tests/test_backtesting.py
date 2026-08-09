@@ -532,12 +532,16 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         """
 
         predictions = self._predictions()
+        predictions.loc[
+            predictions["target_date"] == pd.Timestamp("2025-01-03"),
+            "target_date",
+        ] = pd.Timestamp("2025-02-03")
         backtest = run_top_n_intraday_backtest(
             predictions, "up_probability", top_n=2, slippage_bps=2, commission_bps=1
         )
         accuracy = pd.DataFrame(
             {
-                "target_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "target_date": pd.to_datetime(["2025-01-02", "2025-02-03"]),
                 "samples": [3, 3],
                 "accuracy": [1.0, 2 / 3],
                 "accuracy_change": [np.nan, -1 / 3],
@@ -574,7 +578,10 @@ class TopNIntradayBacktestTest(unittest.TestCase):
 
         self.assertIn("## Top N 日内策略回测", report)
         self.assertIn("### 每日 Top N 选股明细", report)
-        self.assertIn("| Top N 排名 | 2025-01-02 | 2025-01-03 |", report)
+        self.assertIn("#### 2025-01", report)
+        self.assertIn("#### 2025-02", report)
+        self.assertIn("| Top N 排名 | 2025-01-02 |", report)
+        self.assertIn("| Top N 排名 | 2025-02-03 |", report)
         self.assertIn(
             "`A`<br>预估：0.900000<br>实际：10.00%<br>前日：N/A",
             report,
@@ -583,11 +590,15 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             "`C`<br>预估：0.800000<br>实际：2.00%<br>前日：-5.00%",
             report,
         )
-        self.assertIn("## Top N 与横截面对照收益曲线", report)
-        self.assertIn("## Top N 基准与横截面对照", report)
-        self.assertIn("## Top N 超额与多空价差", report)
-        self.assertIn("## 预测分数十分位收益", report)
-        self.assertIn("## Top N 与其余股票命中对照", report)
+        self.assertIn("### Top N 与横截面对照收益曲线", report)
+        self.assertIn("### Top N 基准与横截面对照", report)
+        self.assertIn("### Top N 超额与多空价差", report)
+        self.assertIn("### 预测分数十分位收益", report)
+        self.assertIn("### Top N 与其余股票命中对照", report)
+        self.assertLess(
+            report.index("## Top N 日内策略回测"),
+            report.index("### 每日 Top N 选股明细"),
+        )
         self.assertIn("随机 Top N 年化收益率中位数", report)
         self.assertIn("| 夏普比率 |", report)
         self.assertIn("单边滑点：2.0000 bps", report)
@@ -601,6 +612,9 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn(">Mid N</text>", equity_svg)
         self.assertIn(">期初</text>", equity_svg)
         self.assertIn("每日 Top N 选股明细", html_report)
+        self.assertIn('class="toc-level-4"', html_report)
+        self.assertIn(">2025-01</a>", html_report)
+        self.assertIn(">2025-02</a>", html_report)
         self.assertIn("`A`", report)
         self.assertIn("<code>A</code><br>预估：0.900000", html_report)
         self.assertIn('class="table-scroll"', html_report)

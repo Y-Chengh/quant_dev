@@ -266,9 +266,9 @@ def _markdown_report_body(
 def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
     """将评估 Markdown 转换为带目录和响应式样式的自包含 HTML。
 
-    HTML 使用同目录的 SVG 图表相对路径；宽表支持横向滚动并冻结首列，目录在
-    桌面端固定显示，在窄屏设备上自动收起。所有报告动态文本默认进行 HTML
-    转义，避免 YAML 或参数快照被解释为可执行标签。
+    HTML 使用同目录的 SVG 图表相对路径；宽表支持横向滚动并冻结首列，目录收录
+    一至四级标题，在桌面端固定显示、窄屏设备上自动收起。所有报告动态文本默认
+    进行 HTML 转义，避免 YAML 或参数快照被解释为可执行标签。
 
     参数：
         markdown_text: 已生成的完整 Markdown 报告内容。
@@ -282,7 +282,7 @@ def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
     navigation = "\n".join(
         f'<a class="toc-level-{level}" href="#{anchor}">{escape(label)}</a>'
         for level, label, anchor in headings
-        if level <= 3
+        if level <= 4
     )
     source_name = escape(output_path.with_suffix(".md").name, quote=True)
     html = f"""<!doctype html>
@@ -294,7 +294,7 @@ def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
 <style>
 :root{{--bg:#f4f7fb;--panel:#fff;--ink:#172033;--muted:#64748b;--line:#dbe3ee;--brand:#2563eb;--brand-soft:#eff6ff;--shadow:0 14px 40px rgba(15,23,42,.08)}}
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Microsoft YaHei","PingFang SC",Arial,sans-serif;line-height:1.65}}
-.layout{{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}}aside{{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 22px;background:#0f172a;color:#e2e8f0}}aside h2{{margin:0 0 18px;font-size:17px;color:#fff}}nav{{display:flex;flex-direction:column;gap:4px}}nav a{{padding:7px 10px;border-radius:7px;color:#cbd5e1;text-decoration:none;font-size:13px}}nav a:hover{{background:#1e293b;color:#fff}}nav .toc-level-3{{padding-left:24px;font-size:12px;color:#94a3b8}}.source{{display:block;margin-top:24px;padding:9px 12px;border:1px solid #334155;border-radius:8px;color:#bfdbfe;text-align:center;text-decoration:none;font-size:12px}}
+.layout{{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}}aside{{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 22px;background:#0f172a;color:#e2e8f0}}aside h2{{margin:0 0 18px;font-size:17px;color:#fff}}nav{{display:flex;flex-direction:column;gap:4px}}nav a{{padding:7px 10px;border-radius:7px;color:#cbd5e1;text-decoration:none;font-size:13px}}nav a:hover{{background:#1e293b;color:#fff}}nav .toc-level-3{{padding-left:24px;font-size:12px;color:#94a3b8}}nav .toc-level-4{{padding-left:40px;font-size:12px;color:#94a3b8}}.source{{display:block;margin-top:24px;padding:9px 12px;border:1px solid #334155;border-radius:8px;color:#bfdbfe;text-align:center;text-decoration:none;font-size:12px}}
 main{{min-width:0;padding:34px}}article{{max-width:1500px;margin:0 auto;padding:38px 42px 70px;background:var(--panel);border:1px solid #e7edf5;border-radius:16px;box-shadow:var(--shadow)}}h1{{margin:0 0 22px;font-size:30px;line-height:1.25}}h2{{margin:42px 0 16px;padding-bottom:9px;border-bottom:2px solid var(--line);font-size:22px}}h3{{margin:30px 0 12px;font-size:18px}}h4{{margin:25px 0 10px;color:#334155}}.heading-anchor{{margin-left:-20px;padding-right:6px;color:#94a3b8;text-decoration:none;opacity:0}}h1:hover .heading-anchor,h2:hover .heading-anchor,h3:hover .heading-anchor,h4:hover .heading-anchor{{opacity:1}}p{{margin:10px 0;color:#334155}}ul{{margin:8px 0 20px;padding-left:22px}}code{{padding:.12em .38em;border-radius:5px;background:#eef2f7;color:#be123c;font-family:"Cascadia Code",Consolas,monospace;font-size:.9em}}pre{{overflow:auto;padding:18px;border-radius:10px;background:#111827;color:#e5e7eb}}pre code{{padding:0;background:transparent;color:inherit}}img{{display:block;max-width:100%;height:auto;margin:18px auto;border:1px solid var(--line);border-radius:10px;background:#fff}}
 .table-scroll{{max-width:100%;margin:14px 0 24px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}}table{{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45}}th,td{{min-width:108px;padding:10px 12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:2;background:#eaf1fb;color:#1e3a5f;font-weight:700}}th:first-child,td:first-child{{position:sticky;left:0;z-index:1;min-width:120px;background:#f8fafc}}th:first-child{{z-index:3;background:#dfeafb}}tbody tr:nth-child(even) td{{background:#f8fafc}}tbody tr:nth-child(even) td:first-child{{background:#eef2f7}}tbody tr:hover td{{background:#fff7ed}}tbody tr:hover td:first-child{{background:#ffedd5}}tr:last-child td{{border-bottom:0}}th:last-child,td:last-child{{border-right:0}}.align-right{{text-align:right;font-variant-numeric:tabular-nums}}
 @media(max-width:900px){{.layout{{display:block}}aside{{position:relative;width:auto;height:auto;padding:18px}}nav{{display:none}}.source{{margin-top:8px}}main{{padding:12px}}article{{padding:24px 18px;border-radius:10px}}h1{{font-size:25px}}h2{{font-size:20px}}}}
@@ -652,14 +652,6 @@ def write_evaluation_report(
     for key, value in result.metrics.items():
         lines.append(f"| {METRIC_LABELS.get(key, key)} | {_format_number(value)} |")
 
-    if backtest is not None:
-        lines.extend(
-            _render_top_selection_tables(
-                backtest.top_selections,
-                backtest.score_column,
-            )
-        )
-
     lines.extend(
         [
             "",
@@ -699,15 +691,21 @@ def write_evaluation_report(
                 f"| {metric_labels.get(key, key)} | {_format_number(value)} |"
             )
         lines.extend(
+            _render_top_selection_tables(
+                backtest.top_selections,
+                backtest.score_column,
+            )
+        )
+        lines.extend(
             [
                 "",
-                "## Top N 与横截面对照收益曲线",
+                "### Top N 与横截面对照收益曲线",
                 "",
                 f"![Top N、全市场平均、Bottom N 与 Mid N 收益曲线]({equity_chart_path.name})",
                 "",
                 "四组均按目标日开盘等权买入、收盘卖出并采用相同双边成本；Mid N 为预测排序居中的最多 N 只。",
                 "",
-                "## Top N 基准与横截面对照",
+                "### Top N 基准与横截面对照",
                 "",
                 "等权及随机组合采用与 Top N 相同的双边成本；随机基准按固定种子独立逐日抽样。",
                 "",
@@ -733,7 +731,7 @@ def write_evaluation_report(
         lines.extend(
             [
                 "",
-                "## Top N 超额与多空价差",
+                "### Top N 超额与多空价差",
                 "",
                 "收益差采用每日毛收益之差和算术年化；该口径用于检验选股能力，不作为可复利长仓净值。",
                 "",
@@ -757,7 +755,7 @@ def write_evaluation_report(
         lines.extend(
             [
                 "",
-                "## 预测分数十分位收益",
+                "### 预测分数十分位收益",
                 "",
                 "十分位 1 为最低预测分数组，十分位 10 为最高预测分数组；收益未扣成本。",
                 "",
@@ -785,7 +783,7 @@ def write_evaluation_report(
         lines.extend(
             [
                 "",
-                "## Top N 与其余股票命中对照",
+                "### Top N 与其余股票命中对照",
                 "",
                 "| 选股指标 | 数值 |",
                 "| --- | ---: |",
