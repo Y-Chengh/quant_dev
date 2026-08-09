@@ -27,11 +27,24 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 def records(frame):
+    """把行情表转换为可安全序列化的REST记录列表。
+
+    参数：
+        frame: 待输出的行情数据表；时间列会格式化到秒，所有缺失值转换为
+            JSON ``null``。
+
+    返回：
+        保持原行序和列名的字典列表。
+    """
     frame = frame.copy()
     for column in frame.columns:
         if str(frame[column].dtype).startswith("datetime"):
             frame[column] = frame[column].dt.strftime("%Y-%m-%d %H:%M:%S")
-    return frame.where(frame.notna(), None).to_dict(orient="records")
+    numeric_columns = frame.select_dtypes(include="number").columns
+    frame[numeric_columns] = frame[numeric_columns].where(
+        frame[numeric_columns].abs().lt(float("inf"))
+    )
+    return frame.astype(object).where(frame.notna(), None).to_dict(orient="records")
 
 
 @app.get("/")

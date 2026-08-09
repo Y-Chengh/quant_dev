@@ -48,12 +48,26 @@ class MarketDatabase:
         }
 
     def kline(self, code: str, start: datetime, end: datetime, period: str) -> pd.DataFrame:
+        """读取单只证券K线，并按相邻有效K线收盘价计算涨跌额和涨跌幅。
+
+        参数：
+            code: 证券代码；查询前会转为大写并去除首尾空白。
+            start: 查询起始时间，包含该时刻。
+            end: 查询结束时间，包含该时刻。
+            period: K线周期，可选值为 ``5m``、``15m``、``30m``、``60m``、
+                ``1d``、``1w`` 或 ``1mo``。
+
+        返回：
+            按时间升序排列的K线；``pre_close`` 为上一根有效K线收盘价，
+            ``change`` 和 ``pct_change`` 分别为涨跌额和百分比涨跌幅。查询区间
+            首根K线会向前查找最近收盘价，若不存在则三个派生字段均为空。
+        """
         if period not in PERIODS:
             raise ValueError(f"不支持的周期：{period}")
         code = code.upper().strip()
         with self.connect() as con:
             if period == "5m":
-                return con.execute(
+                frame = con.execute(
                     """
                     SELECT trade_time AS time, open, high, low, close, volume, amount
                     FROM bars_5m
@@ -62,25 +76,79 @@ class MarketDatabase:
                     """,
                     [code, start, end],
                 ).df()
-            bucket = PERIODS[period]
-            return con.execute(
-                f"""
-                WITH source AS (
-                    SELECT *, time_bucket(INTERVAL '{bucket}', trade_time) AS bucket
-                    FROM bars_5m
-                    WHERE code = ? AND trade_time BETWEEN ? AND ?
-                )
-                SELECT bucket AS time,
-                       arg_min(open, trade_time) AS open,
-                       max(high) AS high,
-                       min(low) AS low,
-                       arg_max(close, trade_time) AS close,
-                       sum(volume)::BIGINT AS volume,
-                       sum(amount) AS amount
-                FROM source GROUP BY bucket ORDER BY bucket
-                """,
-                [code, start, end],
-            ).df()
+            else:
+                bucket = PERIODS[period]
+                frame = con.execute(
+                    f"""
+                    WITH source AS (
+                        SELECT *, time_bucket(INTERVAL '{bucket}', trade_time) AS bucket
+                        FROM bars_5m
+                        WHERE code = ?
+                              AND trade_time BETWEEN
+                                  time_bucket(INTERVAL '{bucket}', CAST(? AS TIMESTAMP)) AND ?
+                    )
+                    SELECT bucket AS time,
+                           arg_min(open, trade_time) AS open,
+                           max(high) AS high,
+                           min(low) AS low,
+                           arg_max(close, trade_time) AS close,
+                           sum(volume)::BIGINT AS volume,
+                           sum(amount) AS amount
+                    FROM source GROUP BY bucket ORDER BY bucket
+                    """,
+                    [code, start, end],
+                ).df()
+            previous = None
+            if not frame.empty:
+                first_bucket = frame.iloc[0]["time"]
+                if period == "5m":
+                    previous = con.execute(
+                        """
+                        SELECT close
+                        FROM bars_5m
+                        WHERE code = ? AND trade_time < ?
+                              AND close IS NOT NULL AND isfinite(close) AND close <> 0
+                        ORDER BY trade_time DESC
+                        LIMIT 1
+                        """,
+                        [code, first_bucket],
+                    ).fetchone()
+                else:
+                    previous = con.execute(
+                        f"""
+                        WITH aggregated AS (
+                            SELECT time_bucket(INTERVAL '{bucket}', trade_time) AS bucket,
+                                   arg_max(close, trade_time) AS close
+                            FROM bars_5m
+                            WHERE code = ? AND trade_time < ?
+                            GROUP BY bucket
+                        )
+                        SELECT close
+                        FROM aggregated
+                        WHERE close IS NOT NULL AND isfinite(close) AND close <> 0
+                        ORDER BY bucket DESC
+                        LIMIT 1
+                        """,
+                        [code, first_bucket],
+                    ).fetchone()
+
+        close = pd.to_numeric(frame["close"], errors="coerce")
+        valid_close = close.notna() & close.abs().lt(float("inf")) & close.ne(0)
+        frame["pre_close"] = close.where(valid_close).ffill().shift(1)
+        if previous is not None and not frame.empty:
+            frame.at[frame.index[0], "pre_close"] = previous[0]
+            frame["pre_close"] = frame["pre_close"].ffill()
+        pre_close = pd.to_numeric(frame["pre_close"], errors="coerce")
+        valid = (
+            valid_close
+            & pre_close.notna()
+            & pre_close.abs().lt(float("inf"))
+            & pre_close.ne(0)
+        )
+        change = (close - pre_close).where(valid)
+        frame["change"] = change
+        frame["pct_change"] = (change / pre_close * 100).where(valid)
+        return frame
 
     def klines_5m(self, codes: Sequence[str], start: datetime, end: datetime) -> pd.DataFrame:
         """批量读取研究所需的原始5分钟行情。"""
