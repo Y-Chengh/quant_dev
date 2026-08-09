@@ -59,8 +59,9 @@ class MarketDatabase:
 
         返回：
             按时间升序排列的K线；``pre_close`` 为上一根有效K线收盘价，
-            ``change`` 和 ``pct_change`` 分别为涨跌额和百分比涨跌幅。查询区间
-            首根K线会向前查找最近收盘价，若不存在则三个派生字段均为空。
+            ``change`` 和 ``pct_change`` 分别为涨跌额和百分比涨跌幅，
+            ``intraday_pct_change`` 为本根K线开盘至收盘的百分比涨跌幅。查询区间
+            首根K线会向前查找最近收盘价，若不存在则前收相关派生字段为空。
         """
         if period not in PERIODS:
             raise ValueError(f"不支持的周期：{period}")
@@ -148,6 +149,11 @@ class MarketDatabase:
         change = (close - pre_close).where(valid)
         frame["change"] = change
         frame["pct_change"] = (change / pre_close * 100).where(valid)
+        open_price = pd.to_numeric(frame["open"], errors="coerce")
+        valid_open = open_price.notna() & open_price.abs().lt(float("inf")) & open_price.ne(0)
+        frame["intraday_pct_change"] = ((close / open_price - 1) * 100).where(
+            valid_close & valid_open
+        )
         return frame
 
     def klines_5m(self, codes: Sequence[str], start: datetime, end: datetime) -> pd.DataFrame:

@@ -12,6 +12,12 @@ async function loadMeta(){try{const m=await api('/api/meta');$('datasetStatus').
  */
 function formatPctChange(item){if(item.pct_change==null||item.pct_change==='')return'—';const raw=Number(item.pct_change);if(!Number.isFinite(raw))return'—';const value=Math.abs(raw)<.005?0:raw;return`${value>=0?'+':''}${value.toFixed(2)}%`}
 /**
+ * 格式化本根K线从开盘到收盘的日内涨跌幅。
+ * @param {object} item 当前周期的K线行情，日内涨跌幅由后端统一计算。
+ * @returns {string} 带正负号、保留两位小数的百分比文本；数值无效时返回破折号。
+ */
+function formatIntradayPctChange(item){if(item.intraday_pct_change==null||item.intraday_pct_change==='')return'—';const raw=Number(item.intraday_pct_change);if(!Number.isFinite(raw))return'—';const value=Math.abs(raw)<.005?0:raw;return`${value>=0?'+':''}${value.toFixed(2)}%`}
+/**
  * 格式化有限数值，避免把空值静默转换为零。
  * @param {*} value 待格式化的行情数值。
  * @param {object} options Intl.NumberFormat 使用的小数位配置；缺省为整数格式。
@@ -30,7 +36,7 @@ function escapeHtml(value){return String(value??'—').replace(/[&<>"']/g,char=>
  * @param {object[]} params ECharts 当前横轴位置命中的系列参数。
  * @returns {string} 可直接交给 ECharts tooltip 渲染的HTML文本。
  */
-function klineTooltip(items,params){if(!Array.isArray(params)||!params.length)return'';const point=params.find(x=>x.seriesType==='candlestick')||params[0],item=point&&items[point.dataIndex];if(!item)return'';const priceOptions={minimumFractionDigits:2,maximumFractionDigits:4},pct=formatPctChange(item),pctColor=pct==='—'?'#8291a5':pct.startsWith('-')?'#29c782':'#ef5b70';return`<strong>${escapeHtml(item.time)}</strong><br>开盘：${formatNumber(item.open,priceOptions)}<br>最高：${formatNumber(item.high,priceOptions)}<br>最低：${formatNumber(item.low,priceOptions)}<br>收盘：${formatNumber(item.close,priceOptions)}<br>涨跌幅：<span style="color:${pctColor};font-weight:700">${pct}</span><br>成交量：${formatNumber(item.volume)}`}
+function klineTooltip(items,params){if(!Array.isArray(params)||!params.length)return'';const point=params.find(x=>x.seriesType==='candlestick')||params[0],item=point&&items[point.dataIndex];if(!item)return'';const priceOptions={minimumFractionDigits:2,maximumFractionDigits:4},pct=formatPctChange(item),intradayPct=formatIntradayPctChange(item),pctColor=pct==='—'?'#8291a5':pct.startsWith('-')?'#29c782':'#ef5b70',intradayPctColor=intradayPct==='—'?'#8291a5':intradayPct.startsWith('-')?'#29c782':'#ef5b70';return`<strong>${escapeHtml(item.time)}</strong><br>开盘：${formatNumber(item.open,priceOptions)}<br>最高：${formatNumber(item.high,priceOptions)}<br>最低：${formatNumber(item.low,priceOptions)}<br>收盘：${formatNumber(item.close,priceOptions)}<br>涨跌幅：<span style="color:${pctColor};font-weight:700">${pct}</span><br>日内涨跌幅：<span style="color:${intradayPctColor};font-weight:700">${intradayPct}</span><br>成交量：${formatNumber(item.volume)}`}
 /**
  * 构造价格、成交量、缩放和悬停提示所需的完整ECharts配置。
  * @param {object[]} items 当前查询返回的全部K线行情。

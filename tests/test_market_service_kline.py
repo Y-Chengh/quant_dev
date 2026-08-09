@@ -46,6 +46,12 @@ class MarketServiceKlineTest(unittest.TestCase):
                     ("000001.SZ", "2026-08-09 10:25:00", 9.9, 10.0, 9.8, float("inf"), 160, 1_584.0),
                     ("000001.SZ", "2026-08-09 10:30:00", 9.9, 10.0, 0.0, 0.0, 170, 1_683.0),
                     ("000001.SZ", "2026-08-09 10:35:00", 12.0, 12.1, 11.9, 12.0, 180, 2_160.0),
+                    ("000002.SZ", "2026-08-09 09:55:00", 10.0, 10.0, 10.0, 10.0, 100, 1_000.0),
+                    ("000002.SZ", "2026-08-09 10:00:00", None, 11.2, 10.8, 11.0, 110, 1_210.0),
+                    ("000002.SZ", "2026-08-09 10:05:00", 0.0, 9.2, 8.8, 9.0, 120, 1_080.0),
+                    ("000002.SZ", "2026-08-09 10:10:00", float("inf"), 12.2, 11.8, 12.0, 130, 1_560.0),
+                    ("000002.SZ", "2026-08-09 10:15:00", float("-inf"), 8.2, 7.8, 8.0, 140, 1_120.0),
+                    ("000002.SZ", "2026-08-09 10:20:00", 10.0, 11.2, 9.9, 11.0, 150, 1_650.0),
                 ],
             )
         finally:
@@ -67,6 +73,8 @@ class MarketServiceKlineTest(unittest.TestCase):
         self.assertEqual(frame["change"].tolist(), [1.0, 1.0])
         self.assertAlmostEqual(frame.loc[0, "pct_change"], 10.0)
         self.assertAlmostEqual(frame.loc[1, "pct_change"], 100.0 / 11.0)
+        self.assertAlmostEqual(frame.loc[0, "intraday_pct_change"], 0.0)
+        self.assertAlmostEqual(frame.loc[1, "intraday_pct_change"], 100.0 / 11.0)
 
     def test_aggregated_change_uses_previous_aggregated_close(self) -> None:
         """聚合K线应逐周期衔接收盘价，且证券代码规范化不影响结果。"""
@@ -83,6 +91,8 @@ class MarketServiceKlineTest(unittest.TestCase):
         self.assertEqual(frame["pre_close"].tolist(), [10.0, 11.0])
         self.assertAlmostEqual(frame.loc[0, "pct_change"], 10.0)
         self.assertAlmostEqual(frame.loc[1, "pct_change"], -10.0)
+        self.assertAlmostEqual(frame.loc[0, "intraday_pct_change"], 0.0)
+        self.assertAlmostEqual(frame.loc[1, "intraday_pct_change"], 10.0)
 
     def test_invalid_close_does_not_break_previous_valid_close_chain(self) -> None:
         """区间内缺失、无穷或零收盘无效，后续K线仍应衔接最近有效收盘。"""
@@ -98,7 +108,9 @@ class MarketServiceKlineTest(unittest.TestCase):
         self.assertEqual(frame["pre_close"].tolist(), [9.9, 9.9, 9.9, 9.9])
         self.assertTrue(frame.loc[:2, "change"].isna().all())
         self.assertTrue(frame.loc[:2, "pct_change"].isna().all())
+        self.assertTrue(frame.loc[:2, "intraday_pct_change"].isna().all())
         self.assertAlmostEqual(frame.loc[3, "pct_change"], (12.0 / 9.9 - 1.0) * 100)
+        self.assertAlmostEqual(frame.loc[3, "intraday_pct_change"], 0.0)
 
     def test_aggregated_change_is_independent_of_query_start(self) -> None:
         """聚合K线首根应查找上一根同周期有效收盘，不得随查询起点改变口径。"""
@@ -124,7 +136,7 @@ class MarketServiceKlineTest(unittest.TestCase):
         self.assertAlmostEqual(full.loc[2, "pct_change"], direct.loc[0, "pct_change"])
 
     def test_missing_previous_close_serializes_as_json_null(self) -> None:
-        """没有更早行情时首根派生字段应缺失，并转换为JSON空值而非NaN。"""
+        """没有更早行情时前收相关字段应为JSON空值，日内涨跌幅仍可计算。"""
         with tempfile.TemporaryDirectory() as directory:
             database = self._create_database(Path(directory) / "market.duckdb")
             frame = database.kline(
@@ -138,6 +150,24 @@ class MarketServiceKlineTest(unittest.TestCase):
         self.assertIsNone(item["pre_close"])
         self.assertIsNone(item["change"])
         self.assertIsNone(item["pct_change"])
+        self.assertEqual(item["intraday_pct_change"], 0.0)
+
+    def test_invalid_open_produces_missing_intraday_change(self) -> None:
+        """开盘价缺失、为零或非有限时日内涨跌幅应缺失，有限开盘价精确计算。"""
+        with tempfile.TemporaryDirectory() as directory:
+            database = self._create_database(Path(directory) / "market.duckdb")
+            frame = database.kline(
+                "000002.SZ",
+                datetime(2026, 8, 9, 10, 0),
+                datetime(2026, 8, 9, 10, 20),
+                "5m",
+            )
+
+        self.assertTrue(frame.loc[:3, "intraday_pct_change"].isna().all())
+        self.assertAlmostEqual(frame.loc[4, "intraday_pct_change"], 10.0)
+        items = records(frame)
+        self.assertEqual([item["intraday_pct_change"] for item in items[:4]], [None] * 4)
+        self.assertAlmostEqual(items[4]["intraday_pct_change"], 10.0)
 
     def test_records_converts_all_non_finite_numbers_to_json_null(self) -> None:
         """REST记录必须把NaN及正负无穷统一转为JSON空值，有限值保持不变。"""
