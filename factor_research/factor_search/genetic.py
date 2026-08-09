@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from itertools import product
+from itertools import combinations, product
 import math
 from time import perf_counter
 from types import TracebackType
@@ -415,6 +415,22 @@ def _tree_paths(node: ExpressionNode, prefix: tuple[int, ...] = ()) -> list[tupl
     return paths
 
 
+def _tree_operators(node: ExpressionNode) -> frozenset[str]:
+    """返回表达式树实际使用的全部非终端算子名。
+
+    参数：
+        node: 要统计算子覆盖情况的表达式根节点。
+
+    返回：
+        不含 ``column`` 和 ``constant`` 终端的算子名集合。
+    """
+
+    operators = set().union(*(_tree_operators(child) for child in node.inputs))
+    if node.operator not in {"column", "constant"}:
+        operators.add(node.operator)
+    return frozenset(operators)
+
+
 def _node_at(node: ExpressionNode, path: tuple[int, ...]) -> ExpressionNode:
     """按输入下标路径返回表达式子树。
 
@@ -559,6 +575,178 @@ class _ExpressionGenerator:
             if self.valid(node):
                 return node
         return self._sources[int(rng.integers(len(self._sources)))]
+
+    def random_tree_covering_source(
+        self,
+        source: str,
+        rng: np.random.Generator,
+    ) -> ExpressionNode:
+        """随机生成明确引用指定数据源的合法表达式。
+
+        优先把指定源放入随机根算子的一个输入；如果结构约束或算子空间使包装
+        始终失败，则退回源列本身，保证补全候选仍然合法且可执行。
+
+        参数：
+            source: 下一代当前缺失且必须被表达式引用的数据源列名。
+            rng: 只由主进程持有的确定性 NumPy 随机数生成器。
+
+        返回：
+            满足全部复杂度限制并包含指定数据源的表达式。
+        """
+
+        if source not in self._config.sources:
+            raise ValueError(f"未知遗传搜索数据源 {source!r}")
+        terminal = ExpressionNode.column(source)
+        for _ in range(50):
+            operator = tuple(self._calls)[int(rng.integers(len(self._calls)))]
+            definition = get_operator(operator)
+            required_index = int(rng.integers(definition.arity))
+            children = tuple(
+                terminal
+                if index == required_index
+                else self.random_tree(rng, max(0, self._config.max_depth - 1))
+                for index in range(definition.arity)
+            )
+            parameters = self._calls[operator][
+                int(rng.integers(len(self._calls[operator])))
+            ]
+            try:
+                node = self._build(operator, children, parameters)
+            except ValueError:
+                continue
+            if self.valid(node):
+                return node
+        return terminal
+
+    def simple_child_pool(self) -> tuple[ExpressionNode, ...]:
+        """构造终端及其一层算子变换组成的最简单合法子表达式池。
+
+        该池用于单一数据源无法直接满足相关性等“输入不得相同”约束时，提供
+        规范字符串不同且复杂度尽可能低的候选输入。每个算子只使用最简单的
+        终端输入，避免为覆盖补全递归展开整个遗传搜索空间。
+
+        返回：
+            按回看长度、节点数、深度和规范字符串稳定排序的去重表达式元组。
+        """
+
+        nodes: dict[str, ExpressionNode] = {
+            source.canonical: source for source in self._sources
+        }
+        for operator, calls in self._calls.items():
+            definition = get_operator(operator)
+            if (
+                operator in self._config.disallow_same_input_operators
+                and definition.arity > len(self._sources)
+            ):
+                continue
+            if operator in self._config.disallow_same_input_operators:
+                children = self._sources[: definition.arity]
+            else:
+                children = (self._sources[0],) * definition.arity
+            for parameters in calls:
+                try:
+                    node = self._build(operator, children, parameters)
+                except ValueError:
+                    continue
+                if self.valid(node):
+                    nodes.setdefault(node.canonical, node)
+        return tuple(
+            sorted(
+                nodes.values(),
+                key=lambda node: (
+                    node.lookback,
+                    node.node_count,
+                    node.depth,
+                    node.canonical,
+                ),
+            )
+        )
+
+    def random_tree_with_root(
+        self,
+        operator: str,
+        rng: np.random.Generator,
+    ) -> ExpressionNode | None:
+        """随机生成以指定缺失算子为根节点的合法表达式。
+
+        参数：
+            operator: 下一代当前缺失且必须作为根节点出现的已配置算子名。
+            rng: 只由主进程持有的确定性 NumPy 随机数生成器。
+
+        返回：
+            找到时返回满足全部复杂度限制的表达式；若当前硬限制使该算子无法
+            构成合法候选，则返回 ``None``。
+        """
+
+        if operator not in self._calls:
+            raise ValueError(f"未知遗传搜索算子 {operator!r}")
+        definition = get_operator(operator)
+
+        # 先随机排列全部离散参数，并用终端子树逐一验证。终端结构拥有最小的
+        # 深度、节点数和回看长度；只要该算子存在直接可构造的合法形式，就不会
+        # 因有限次随机抽样没有命中短窗口而漏掉本轮覆盖。
+        parameter_order = rng.permutation(len(self._calls[operator]))
+        for parameter_index in parameter_order:
+            if (
+                operator in self._config.disallow_same_input_operators
+                and definition.arity > len(self._sources)
+            ):
+                break
+            if operator in self._config.disallow_same_input_operators:
+                source_indices = rng.choice(
+                    len(self._sources), size=definition.arity, replace=False
+                )
+            else:
+                source_indices = rng.integers(
+                    len(self._sources), size=definition.arity
+                )
+            children = tuple(
+                self._sources[int(index)] for index in source_indices
+            )
+            try:
+                node = self._build(
+                    operator,
+                    children,
+                    self._calls[operator][int(parameter_index)],
+                )
+            except ValueError:
+                continue
+            if self.valid(node):
+                return node
+
+        if operator in self._config.disallow_same_input_operators:
+            child_pool = self.simple_child_pool()
+            if len(child_pool) >= definition.arity:
+                for parameter_index in parameter_order:
+                    for children in combinations(child_pool, definition.arity):
+                        try:
+                            node = self._build(
+                                operator,
+                                children,
+                                self._calls[operator][int(parameter_index)],
+                            )
+                        except ValueError:
+                            continue
+                        if self.valid(node):
+                            return node
+
+        # 极少数配置可能只有一个数据源，却允许用不同的嵌套表达式组成二元
+        # 算子；终端快速路径无法覆盖这种情况，因此保留有限次递归随机尝试。
+        for _ in range(50):
+            children = tuple(
+                self.random_tree(rng, max(0, self._config.max_depth - 1))
+                for _ in range(definition.arity)
+            )
+            parameters = self._calls[operator][
+                int(rng.integers(len(self._calls[operator])))
+            ]
+            try:
+                node = self._build(operator, children, parameters)
+            except ValueError:
+                continue
+            if self.valid(node):
+                return node
+        return None
 
     def initial_population(self, rng: np.random.Generator) -> list[ExpressionNode]:
         """生成包含原始数据源和分层随机树的去重初始种群。
@@ -899,6 +1087,76 @@ class FactorGeneticSearch:
         indices = rng.choice(len(ranked), size=size, replace=False)
         return ranked[min(int(index) for index in indices)]
 
+    def _inject_missing_coverage(
+        self,
+        selected: dict[str, FactorCandidate],
+        provenance: dict[str, _Provenance],
+        generator: _ExpressionGenerator,
+        rng: np.random.Generator,
+        generation: int,
+    ) -> None:
+        """向下一代优先注入缺失数据源和缺失算子的随机候选。
+
+        数据源和算子分别按主进程随机顺序补全，并在每次注入后重新累计覆盖，
+        因而一个随机表达式可以同时补足多个缺失项。若种群容量或表达式硬限制
+        不足，则保持已获得的最大覆盖，不突破既有规模与复杂度约束。
+
+        参数：
+            selected: 已包含本轮精英、并将被原地补充的下一代候选映射。
+            provenance: 与 ``selected`` 同步记录首次生成方式的来源映射。
+            generator: 负责生成并校验覆盖候选的表达式生成器。
+            rng: 控制缺失项顺序和表达式结构的主进程随机数生成器。
+            generation: 正在构造的下一代零基代次编号。
+
+        返回：
+            无；通过原地修改 ``selected`` 和 ``provenance`` 返回补全结果。
+        """
+
+        covered_sources = set().union(
+            *(candidate.expression.columns for candidate in selected.values())
+        )
+        covered_operators = set().union(
+            *(_tree_operators(candidate.expression) for candidate in selected.values())
+        )
+
+        source_order = list(self.config.sources)
+        rng.shuffle(source_order)
+        for source in source_order:
+            if len(selected) >= self.config.population_size:
+                return
+            if source in covered_sources:
+                continue
+            node = generator.random_tree_covering_source(source, rng)
+            candidate = FactorCandidate(node)
+            if candidate.factor_id in selected:
+                continue
+            selected[candidate.factor_id] = candidate
+            provenance[candidate.factor_id] = _Provenance(
+                generation, "coverage_source"
+            )
+            covered_sources.update(node.columns)
+            covered_operators.update(_tree_operators(node))
+
+        operator_order = list(self.config.operator_parameters)
+        rng.shuffle(operator_order)
+        for operator in operator_order:
+            if len(selected) >= self.config.population_size:
+                return
+            if operator in covered_operators:
+                continue
+            node = generator.random_tree_with_root(operator, rng)
+            if node is None:
+                continue
+            candidate = FactorCandidate(node)
+            if candidate.factor_id in selected:
+                continue
+            selected[candidate.factor_id] = candidate
+            provenance[candidate.factor_id] = _Provenance(
+                generation, "coverage_operator"
+            )
+            covered_sources.update(node.columns)
+            covered_operators.update(_tree_operators(node))
+
     def _next_population(
         self,
         ranked: Sequence[FactorCandidate],
@@ -925,6 +1183,13 @@ class FactorGeneticSearch:
             )
             for candidate in ranked[:elite_count]
         }
+        self._inject_missing_coverage(
+            selected,
+            provenance,
+            generator,
+            rng,
+            generation,
+        )
         attempts = 0
         limit = self.config.population_size * 100
         boundaries = np.cumsum(

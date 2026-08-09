@@ -18,6 +18,7 @@ from factor_research.factor_search import (
     SearchContext,
     op,
 )
+from factor_research.factor_search.genetic import _ExpressionGenerator, _tree_operators
 
 
 def _genetic_context() -> SearchContext:
@@ -260,6 +261,162 @@ class GeneticSearchExecutionTest(unittest.TestCase):
         self.assertTrue(
             any(any(child.inputs for child in node.inputs) for node in correlations)
         )
+
+    def test_next_population_injects_missing_sources_and_operators(self) -> None:
+        """下一代容量充足时必须补齐当前精英未覆盖的数据源和算子。"""
+
+        config = replace(
+            _small_config(),
+            population_size=12,
+            crossover_probability=0.0,
+            subtree_mutation_probability=0.0,
+            parameter_mutation_probability=0.0,
+            reproduction_probability=1.0,
+        )
+        search = FactorGeneticSearch(config)
+        generator = _ExpressionGenerator(config)
+        ranked = [FactorCandidate(ExpressionNode.column("signal"))]
+
+        population, provenance = search._next_population(
+            ranked,
+            generator,
+            np.random.default_rng(23),
+            generation=1,
+        )
+
+        covered_sources = set().union(
+            *(candidate.expression.columns for candidate in population)
+        )
+        covered_operators = set().union(
+            *(_tree_operators(candidate.expression) for candidate in population)
+        )
+        self.assertEqual(covered_sources, set(config.sources))
+        self.assertEqual(covered_operators, set(config.operator_parameters))
+        self.assertIn(
+            "coverage_source",
+            {item.operation for item in provenance.values()},
+        )
+        self.assertIn(
+            "coverage_operator",
+            {item.operation for item in provenance.values()},
+        )
+        self.assertLessEqual(len(population), config.population_size)
+
+    def test_coverage_injection_is_deterministic_and_respects_small_population(self) -> None:
+        """相同种子应产生相同补全结果，小种群无法全覆盖时也不得超额。"""
+
+        config = replace(_small_config(), population_size=2)
+        search = FactorGeneticSearch(config)
+        generator = _ExpressionGenerator(config)
+        ranked = [FactorCandidate(ExpressionNode.column("signal"))]
+
+        first, _ = search._next_population(
+            ranked,
+            generator,
+            np.random.default_rng(31),
+            generation=1,
+        )
+        second, _ = search._next_population(
+            ranked,
+            generator,
+            np.random.default_rng(31),
+            generation=1,
+        )
+
+        self.assertEqual(
+            [candidate.factor_id for candidate in first],
+            [candidate.factor_id for candidate in second],
+        )
+        self.assertEqual(len(first), config.population_size)
+
+    def test_operator_coverage_exhausts_parameters_with_terminal_children(self) -> None:
+        """严格限制下只要存在简单合法参数，算子补全就不得因随机漏抽而失败。"""
+
+        config = GeneticSearchConfig(
+            sources=("signal", "volume"),
+            operator_parameters={
+                "delta": {"periods": (*range(100, 50, -1), 1)},
+            },
+            population_size=4,
+            max_generations=2,
+            max_evaluations=8,
+            initial_max_depth=0,
+            max_depth=1,
+            max_nodes=2,
+            max_lookback=1,
+            min_coverage=0.2,
+            target_coverage=0.5,
+            random_seed=5,
+        )
+        generator = _ExpressionGenerator(config)
+
+        node = generator.random_tree_with_root(
+            "delta", np.random.default_rng(5)
+        )
+
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(node.operator, "delta")
+        self.assertEqual(node.parameter_map["periods"], 1)
+        self.assertTrue(generator.valid(node))
+
+    def test_operator_coverage_skips_truly_unconstructable_operator(self) -> None:
+        """节点上限连单层算子都容不下时应安全跳过且不得生成非法候选。"""
+
+        config = GeneticSearchConfig(
+            sources=("signal",),
+            operator_parameters={"delta": {"periods": (1,)}},
+            population_size=2,
+            max_generations=2,
+            max_evaluations=4,
+            initial_max_depth=0,
+            max_depth=1,
+            max_nodes=1,
+            max_lookback=1,
+            min_coverage=0.2,
+            target_coverage=0.5,
+            random_seed=7,
+        )
+        generator = _ExpressionGenerator(config)
+
+        node = generator.random_tree_with_root(
+            "delta", np.random.default_rng(7)
+        )
+
+        self.assertIsNone(node)
+
+    def test_operator_coverage_uses_distinct_nested_input_for_single_source(self) -> None:
+        """单数据源下应穷尽简单嵌套输入并命中稀疏合法的相关窗口。"""
+
+        config = GeneticSearchConfig(
+            sources=("signal",),
+            operator_parameters={
+                "delta": {"periods": (1,)},
+                "ts_correlation": {"window": tuple(range(1001, 0, -1))},
+            },
+            population_size=4,
+            max_generations=2,
+            max_evaluations=8,
+            initial_max_depth=0,
+            max_depth=2,
+            max_nodes=4,
+            max_lookback=1,
+            min_coverage=0.2,
+            target_coverage=0.5,
+            random_seed=5,
+        )
+        generator = _ExpressionGenerator(config)
+
+        node = generator.random_tree_with_root(
+            "ts_correlation", np.random.default_rng(5)
+        )
+
+        self.assertIsNotNone(node)
+        assert node is not None
+        self.assertEqual(node.operator, "ts_correlation")
+        self.assertEqual(node.parameter_map["window"], 1)
+        self.assertEqual(len({child.canonical for child in node.inputs}), 2)
+        self.assertTrue(generator.valid(node))
 
     def test_length_penalty_and_cross_generation_cache_are_applied(self) -> None:
         """同一表达式只能评价一次，且超出免费节点数后按节点线性扣分。"""
