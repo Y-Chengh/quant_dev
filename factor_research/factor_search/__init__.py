@@ -3,7 +3,13 @@
 from .backends import ProcessBackend, SequentialBackend
 from .context import SearchContext
 from .evaluators import HoldoutIcEvaluator, IcEvaluator
-from .genetic import FactorGeneticSearch, GeneticSearchConfig, GeneticSearchResult
+from .genetic import (
+    FactorGeneticSearch,
+    GeneticProgressCallback,
+    GeneticProgressEvent,
+    GeneticSearchConfig,
+    GeneticSearchResult,
+)
 from .integration import prepare_search_context
 from .model_evaluator import ModelCandidateEvaluator
 from .result import FactorSearchResult
@@ -25,6 +31,8 @@ __all__ = [
     "FactorGridSearch",
     "FactorGeneticSearch",
     "FactorSearchResult",
+    "GeneticProgressCallback",
+    "GeneticProgressEvent",
     "GeneticSearchConfig",
     "GeneticSearchResult",
     "IcEvaluator",

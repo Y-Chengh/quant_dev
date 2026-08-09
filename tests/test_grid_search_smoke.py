@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import datetime
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -14,6 +16,7 @@ import pandas as pd
 from factor_research.factor_search import (
     FactorGeneticSearch,
     FactorGridSearch,
+    GeneticProgressEvent,
     HoldoutIcEvaluator,
     PipelineGrid,
     SearchContext,
@@ -25,6 +28,7 @@ from grid_search_smoke import (
     build_genetic_search_config,
     build_model_evaluator,
     build_search_space,
+    print_genetic_progress,
     resolve_report_output_dir,
     write_grid_search_report,
 )
@@ -80,6 +84,34 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(evaluator.model_factory.name, "factor_passthrough")
         self.assertEqual(evaluator.task, "regression")
         self.assertEqual(evaluator.training_mode, "single")
+
+    def test_console_progress_includes_batch_budget_failures_and_eta(self) -> None:
+        """smoke 进度输出应显示批次、selection 预算、失败数与 ETA。"""
+
+        output = StringIO()
+        event = GeneticProgressEvent(
+            stage="selection",
+            generation=2,
+            max_generations=8,
+            completed=16,
+            total=96,
+            successful=15,
+            failed=1,
+            selection_evaluations=112,
+            max_evaluations=500,
+            elapsed_seconds=4.0,
+            eta_seconds=20.0,
+        )
+
+        with redirect_stdout(output):
+            print_genetic_progress(event)
+
+        text = output.getvalue()
+        self.assertIn("第 2/8 代", text)
+        self.assertIn("16/96", text)
+        self.assertIn("失败 1", text)
+        self.assertIn("selection 112/500", text)
+        self.assertIn("ETA 20.0s", text)
 
     def test_smoke_genetic_config_covers_continuous_factor_operators(self) -> None:
         """smoke 配置应覆盖连续因子算子、长度惩罚和固定随机种子。"""

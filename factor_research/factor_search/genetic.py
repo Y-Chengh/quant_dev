@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import product
 import math
+from time import perf_counter
 from types import TracebackType
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -14,6 +15,7 @@ import pandas as pd
 from factor_research.factor_dsl import ExpressionNode, get_operator, operation_node
 
 from .backends import (
+    BatchProgressCallback,
     CandidateTaskResult,
     ExecutionBackend,
     ExecutionSession,
@@ -178,6 +180,27 @@ class GeneticSearchResult(FactorSearchResult):
 
 
 @dataclass(frozen=True)
+class GeneticProgressEvent:
+    """描述一个候选批次完成后的遗传搜索进度快照。"""
+
+    stage: str
+    generation: int | None
+    max_generations: int
+    completed: int
+    total: int
+    successful: int
+    failed: int
+    selection_evaluations: int
+    max_evaluations: int
+    elapsed_seconds: float
+    eta_seconds: float
+
+
+GeneticProgressCallback = Callable[[GeneticProgressEvent], None]
+"""遗传搜索进度回调，在主进程完成一个候选批次后触发。"""
+
+
+@dataclass(frozen=True)
 class _Provenance:
     """记录候选首次出现时的代次、生成方式和父代。"""
 
@@ -244,6 +267,120 @@ class _BackendSessionAdapter:
             self._evaluator,
             self._batch_size,
         )
+
+    def run_with_progress(
+        self,
+        candidates: Sequence[FactorCandidate],
+        progress_callback: BatchProgressCallback | None,
+    ) -> list[CandidateTaskResult]:
+        """通过旧后端评价候选，并在整批完成后至少报告一次进度。
+
+        参数：
+            candidates: 当前代尚未出现在跨代缓存中的候选。
+            progress_callback: 可选批次回调；旧后端只能在全部完成后调用一次。
+        """
+
+        results = self.run(candidates)
+        if progress_callback is not None and candidates:
+            progress_callback(
+                len(results),
+                len(candidates),
+                sum(result.error is not None for result in results),
+            )
+        return results
+
+
+class _ProgressReporter:
+    """把执行会话的批次计数转换为带阶段和 ETA 的公开进度事件。"""
+
+    def __init__(
+        self,
+        callback: GeneticProgressCallback,
+        *,
+        stage: str,
+        generation: int | None,
+        config: GeneticSearchConfig,
+        selection_base: int,
+    ) -> None:
+        """保存当前评价阶段生成进度事件所需的固定上下文。
+
+        参数：
+            callback: 接收公开进度事件的调用方回调。
+            stage: 当前阶段名称，只使用 selection、holdout 或 model。
+            generation: 当前 selection 的一基代次；后置阶段为空。
+            config: 提供总代数与 selection 候选预算的遗传配置。
+            selection_base: 本批开始前已经完成的 selection 候选数量。
+        """
+
+        self._callback = callback
+        self._stage = stage
+        self._generation = generation
+        self._config = config
+        self._selection_base = selection_base
+        self._started = perf_counter()
+
+    def __call__(self, completed: int, total: int, failed: int) -> None:
+        """根据当前批次累计数计算速率和阶段剩余时间并触发回调。
+
+        参数：
+            completed: 当前阶段累计完成的候选数量。
+            total: 当前阶段计划评价的候选总数。
+            failed: 当前阶段累计失败的候选数量。
+        """
+
+        elapsed = perf_counter() - self._started
+        eta = (
+            elapsed * max(0, total - completed) / completed
+            if completed > 0
+            else float("nan")
+        )
+        selection_evaluations = self._selection_base
+        if self._stage == "selection":
+            selection_evaluations += completed
+        self._callback(
+            GeneticProgressEvent(
+                stage=self._stage,
+                generation=self._generation,
+                max_generations=self._config.max_generations,
+                completed=completed,
+                total=total,
+                successful=completed - failed,
+                failed=failed,
+                selection_evaluations=selection_evaluations,
+                max_evaluations=self._config.max_evaluations,
+                elapsed_seconds=elapsed,
+                eta_seconds=eta,
+            )
+        )
+
+
+def _run_session_with_progress(
+    session: ExecutionSession,
+    candidates: Sequence[FactorCandidate],
+    progress_callback: BatchProgressCallback | None,
+) -> list[CandidateTaskResult]:
+    """优先使用细粒度会话接口，并兼容只实现旧 ``run`` 的自定义会话。
+
+    参数：
+        session: 已进入且负责实际候选评价的执行会话。
+        candidates: 当前阶段按稳定顺序排列的候选。
+        progress_callback: 可选批次回调；旧会话在全部完成后补报一次。
+
+    返回：
+        与候选输入顺序一致的评价结果。
+    """
+
+    run_with_progress = getattr(session, "run_with_progress", None)
+    if callable(run_with_progress):
+        return run_with_progress(candidates, progress_callback)
+    results = session.run(candidates)
+    if progress_callback is not None and candidates:
+        progress_callback(
+            len(results),
+            len(candidates),
+            sum(result.error is not None for result in results),
+        )
+    return results
 
 
 def _parameter_combinations(
@@ -801,6 +938,7 @@ class FactorGeneticSearch:
         holdout_top_k: int = 1,
         model_evaluator: CandidateEvaluator | None = None,
         model_top_k: int = 0,
+        progress_callback: GeneticProgressCallback | None = None,
     ) -> GeneticSearchResult:
         """并行进化，并在结束后评价 selection 入选候选的 holdout 和模型指标。
 
@@ -811,6 +949,7 @@ class FactorGeneticSearch:
             holdout_top_k: 搜索结束后披露 holdout 指标的 selection 前 K 名数量。
             model_evaluator: 可选的现有模型实验评价器；为空时跳过模型复验。
             model_top_k: 搜索结束后进行模型复验的 selection 前 K 名数量。
+            progress_callback: 可选主进程进度回调，每完成一个候选批次触发一次。
         """
 
         for name, value in {
@@ -819,6 +958,8 @@ class FactorGeneticSearch:
         }.items():
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError(f"{name} 必须是非负整数")
+        if progress_callback is not None and not callable(progress_callback):
+            raise TypeError("progress_callback 必须可调用或为 None")
         missing_sources = set(self.config.sources).difference(context.daily.columns)
         if missing_sources:
             raise ValueError(f"遗传搜索日频数据缺少源列: {sorted(missing_sources)}")
@@ -850,7 +991,20 @@ class FactorGeneticSearch:
                 if new_candidates:
                     for candidate in new_candidates:
                         candidates[candidate.factor_id] = candidate
-                    for result in session.run(new_candidates):
+                    reporter = (
+                        _ProgressReporter(
+                            progress_callback,
+                            stage="selection",
+                            generation=generation + 1,
+                            config=self.config,
+                            selection_base=len(cache),
+                        )
+                        if progress_callback is not None
+                        else None
+                    )
+                    for result in _run_session_with_progress(
+                        session, new_candidates, reporter
+                    ):
                         cache[result.factor_id] = result
                 population = [
                     candidate
@@ -938,7 +1092,20 @@ class FactorGeneticSearch:
             with self._open_session(
                 backend, context, holdout_evaluator or HoldoutIcEvaluator()
             ) as holdout_session:
-                holdout_results = holdout_session.run(holdout_candidates)
+                holdout_reporter = (
+                    _ProgressReporter(
+                        progress_callback,
+                        stage="holdout",
+                        generation=None,
+                        config=self.config,
+                        selection_base=len(cache),
+                    )
+                    if progress_callback is not None
+                    else None
+                )
+                holdout_results = _run_session_with_progress(
+                    holdout_session, holdout_candidates, holdout_reporter
+                )
             holdout_rows: list[dict[str, object]] = []
             for result in holdout_results:
                 if result.error is None:
@@ -980,7 +1147,20 @@ class FactorGeneticSearch:
             with self._open_session(
                 backend, context, model_evaluator
             ) as model_session:
-                model_results = model_session.run(model_candidates)
+                model_reporter = (
+                    _ProgressReporter(
+                        progress_callback,
+                        stage="model",
+                        generation=None,
+                        config=self.config,
+                        selection_base=len(cache),
+                    )
+                    if progress_callback is not None
+                    else None
+                )
+                model_results = _run_session_with_progress(
+                    model_session, model_candidates, model_reporter
+                )
             model_rows: list[dict[str, object]] = []
             for result in model_results:
                 if result.error is None:

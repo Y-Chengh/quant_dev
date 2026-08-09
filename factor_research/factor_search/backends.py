@@ -7,13 +7,17 @@ from dataclasses import dataclass
 import os
 from time import perf_counter
 from types import TracebackType
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 from factor_research.factor_dsl import DailyFactorFrame
 
 from .context import SearchContext
 from .evaluators import CandidateEvaluator
 from .space import FactorCandidate
+
+
+BatchProgressCallback = Callable[[int, int, int], None]
+"""批次进度回调：依次接收累计完成数、总数和累计失败数。"""
 
 
 @dataclass(frozen=True)
@@ -223,16 +227,33 @@ class SequentialExecutionSession:
             candidates: 当前要评价且已经确定顺序的候选因子。
         """
 
+        return self.run_with_progress(candidates, None)
+
+    def run_with_progress(
+        self,
+        candidates: Sequence[FactorCandidate],
+        progress_callback: BatchProgressCallback | None,
+    ) -> list[CandidateTaskResult]:
+        """按批次评价候选，并在每批结束后报告累计进度。
+
+        参数：
+            candidates: 当前要评价且已经确定顺序的候选因子。
+            progress_callback: 可选批次回调，接收完成数、总数和失败数。
+        """
+
         results: list[CandidateTaskResult] = []
+        failed = 0
         for start in range(0, len(candidates), self._batch_size):
-            results.extend(
-                _evaluate_batch(
-                    candidates[start : start + self._batch_size],
-                    self._frame,
-                    self._context,
-                    self._evaluator,
-                )
+            batch_results = _evaluate_batch(
+                candidates[start : start + self._batch_size],
+                self._frame,
+                self._context,
+                self._evaluator,
             )
+            results.extend(batch_results)
+            failed += sum(result.error is not None for result in batch_results)
+            if progress_callback is not None:
+                progress_callback(len(results), len(candidates), failed)
         return results
 
 
@@ -413,6 +434,20 @@ class ProcessExecutionSession:
             candidates: 当前要评价且已经确定顺序的候选因子。
         """
 
+        return self.run_with_progress(candidates, None)
+
+    def run_with_progress(
+        self,
+        candidates: Sequence[FactorCandidate],
+        progress_callback: BatchProgressCallback | None,
+    ) -> list[CandidateTaskResult]:
+        """并行评价候选，并在主进程收到每个批次后报告累计进度。
+
+        参数：
+            candidates: 当前要评价且已经确定顺序的候选因子。
+            progress_callback: 可选批次回调，接收完成数、总数和失败数。
+        """
+
         if not candidates:
             return []
         batches = [
@@ -429,7 +464,14 @@ class ProcessExecutionSession:
             )
         futures = [self._executor.submit(_worker_batch, batch) for batch in batches]
         by_id: dict[str, CandidateTaskResult] = {}
+        completed = 0
+        failed = 0
         for future in as_completed(futures):
-            for result in future.result():
+            batch_results = future.result()
+            for result in batch_results:
                 by_id[result.factor_id] = result
+            completed += len(batch_results)
+            failed += sum(result.error is not None for result in batch_results)
+            if progress_callback is not None:
+                progress_callback(completed, len(candidates), failed)
         return [by_id[candidate.factor_id] for candidate in candidates]

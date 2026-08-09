@@ -9,6 +9,7 @@ from factor_research.factor_dsl import ExpressionNode, operation_node
 from factor_research.factor_search import (
     FactorCandidate,
     FactorGeneticSearch,
+    GeneticProgressEvent,
     GeneticSearchConfig,
     IcEvaluator,
     PipelineGrid,
@@ -222,6 +223,10 @@ class GeneticExpressionTest(unittest.TestCase):
             FactorGeneticSearch(_small_config()).run(
                 _genetic_context(), model_top_k=True
             )
+        with self.assertRaisesRegex(TypeError, "progress_callback"):
+            FactorGeneticSearch(_small_config()).run(
+                _genetic_context(), progress_callback=True
+            )
 
 
 class GeneticSearchExecutionTest(unittest.TestCase):
@@ -307,6 +312,75 @@ class GeneticSearchExecutionTest(unittest.TestCase):
             process.leaderboard[columns],
         )
         pd.testing.assert_frame_equal(sequential.history, process.history)
+
+    def test_progress_callback_reports_completed_batches_across_all_stages(self) -> None:
+        """进度回调应按批次覆盖 selection、holdout 和模型复验阶段。"""
+
+        events: list[GeneticProgressEvent] = []
+        evaluation_events: list[str] = []
+        result = FactorGeneticSearch(
+            _small_config(), backend="sequential", batch_size=2
+        ).run(
+            _genetic_context(),
+            evaluator=_RecordingEvaluator("selection", evaluation_events),
+            holdout_evaluator=_RecordingEvaluator("holdout", evaluation_events),
+            holdout_top_k=2,
+            model_evaluator=_RecordingEvaluator("model", evaluation_events),
+            model_top_k=2,
+            progress_callback=events.append,
+        )
+
+        self.assertTrue(events)
+        self.assertEqual(
+            {event.stage for event in events}, {"selection", "holdout", "model"}
+        )
+        self.assertTrue(
+            any(
+                event.stage == "selection" and event.completed < event.total
+                for event in events
+            )
+        )
+        self.assertTrue(
+            all(
+                event.successful + event.failed == event.completed
+                and 0 < event.completed <= event.total
+                for event in events
+            )
+        )
+        final_by_stage_generation: dict[tuple[str, int | None], GeneticProgressEvent] = {}
+        for event in events:
+            final_by_stage_generation[(event.stage, event.generation)] = event
+        self.assertTrue(
+            all(
+                event.completed == event.total
+                for event in final_by_stage_generation.values()
+            )
+        )
+        selection_events = [event for event in events if event.stage == "selection"]
+        self.assertEqual(
+            selection_events[-1].selection_evaluations, len(result.candidates)
+        )
+
+    def test_process_progress_callback_runs_in_main_process_per_batch(self) -> None:
+        """多进程搜索应在主进程按完成批次触发细粒度进度事件。"""
+
+        events: list[GeneticProgressEvent] = []
+        result = FactorGeneticSearch(
+            replace(_small_config(), max_generations=1),
+            backend="process",
+            n_jobs=2,
+            batch_size=2,
+        ).run(
+            _genetic_context(),
+            evaluator=_CountingEvaluator(),
+            holdout_top_k=0,
+            progress_callback=events.append,
+        )
+
+        self.assertGreater(len(events), 1)
+        self.assertTrue(all(event.stage == "selection" for event in events))
+        self.assertEqual(events[-1].completed, events[-1].total)
+        self.assertEqual(events[-1].selection_evaluations, len(result.candidates))
 
     def test_persistent_pool_keeps_configured_capacity_after_small_first_batch(self) -> None:
         """小首批不能缩小 worker 上限，且后续调用必须复用同一个进程池。"""

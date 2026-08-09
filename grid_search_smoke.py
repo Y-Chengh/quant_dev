@@ -20,6 +20,7 @@ from factor_research.data import load_market_service
 from factor_research.factor_search import (
     FactorGeneticSearch,
     FactorSearchResult,
+    GeneticProgressEvent,
     GeneticSearchConfig,
     ModelCandidateEvaluator,
     PipelineGrid,
@@ -43,11 +44,41 @@ HOLDOUT_END = "2025-12-31"
 FIXED_FEATURES = ("return_1d", "volatility_5d")
 HOLDOUT_TOP_K = 3
 SEARCH_N_JOBS = 4
-SEARCH_BATCH_SIZE = 16
+SEARCH_BATCH_SIZE = 8
 GENETIC_POPULATION_SIZE = 96
 GENETIC_MAX_GENERATIONS = 8
 GENETIC_MAX_EVALUATIONS = 500
 GENETIC_RANDOM_SEED = 20260809
+
+
+def print_genetic_progress(event: GeneticProgressEvent) -> None:
+    """在主进程按候选批次打印搜索阶段、成功数、预算、耗时和 ETA。
+
+    参数：
+        event: 后端完成一个候选批次后生成的只读遗传搜索进度快照。
+    """
+
+    stage_labels = {
+        "selection": "进化筛选",
+        "holdout": "Holdout",
+        "model": "模型复验",
+    }
+    stage = stage_labels.get(event.stage, event.stage)
+    generation = (
+        f" 第 {event.generation}/{event.max_generations} 代"
+        if event.generation is not None
+        else ""
+    )
+    percentage = 100.0 * event.completed / event.total if event.total else 100.0
+    eta = f"{event.eta_seconds:.1f}s" if math.isfinite(event.eta_seconds) else "--"
+    print(
+        f"[{stage}{generation}] "
+        f"{event.completed}/{event.total} ({percentage:5.1f}%) | "
+        f"成功 {event.successful} 失败 {event.failed} | "
+        f"selection {event.selection_evaluations}/{event.max_evaluations} | "
+        f"耗时 {event.elapsed_seconds:.1f}s ETA {eta}",
+        flush=True,
+    )
 
 
 def build_model_evaluator(
@@ -808,6 +839,7 @@ def main() -> None:
         holdout_top_k=HOLDOUT_TOP_K,
         model_evaluator=build_model_evaluator(),
         model_top_k=HOLDOUT_TOP_K,
+        progress_callback=print_genetic_progress,
     )
     elapsed_seconds = time.perf_counter() - timer
 
