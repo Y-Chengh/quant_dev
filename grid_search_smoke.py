@@ -121,14 +121,45 @@ def build_genetic_search_config() -> GeneticSearchConfig:
         确定性遗传编程配置。
     """
 
+    periods = (1, 5, 10, 20)
+    windows = (5, 10, 20)
     return GeneticSearchConfig(
         sources=("close", "volume", "return_1d"),
         operator_parameters={
-            "delta": {"periods": (1, 5)},
-            "ts_stddev": {"window": (5, 10)},
-            "ts_argmax": {"window": (5, 10)},
-            "ts_correlation": {"window": (5, 10)},
+            # 逐元素算术与连续数值变换。
+            "add": {},
+            "subtract": {},
+            "multiply": {},
+            "divide": {},
+            "negative": {},
+            "absolute": {},
+            "log": {},
+            "sign": {},
+            "power": {"exponent": (0.5, 2.0)},
+            "signed_power": {"exponent": (0.5, 2.0)},
+            # 单证券历史变换；所有位移均只引用当日或过去数据。
+            "delay": {"periods": periods},
+            "delta": {"periods": periods},
+            "returns": {"periods": periods},
+            "ts_sum": {"window": windows},
+            "ts_mean": {"window": windows},
+            "ts_min": {"window": windows},
+            "ts_max": {"window": windows},
+            "ts_stddev": {"window": windows, "ddof": (0, 1)},
+            "ts_argmax": {"window": windows},
+            "ts_argmin": {"window": windows},
+            "ts_rank": {"window": windows},
+            "ts_correlation": {"window": windows},
+            "ts_covariance": {"window": windows},
+            # 同一交易日内的横截面变换。
             "cs_rank": {},
+            "cs_demean": {},
+            "cs_zscore": {},
+            "cs_scale": {},
+            "cs_winsorize": {
+                "lower": (0.01, 0.05),
+                "upper": (0.95, 0.99),
+            },
         },
         population_size=GENETIC_POPULATION_SIZE,
         max_generations=GENETIC_MAX_GENERATIONS,

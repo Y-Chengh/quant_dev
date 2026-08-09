@@ -81,18 +81,55 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(evaluator.task, "regression")
         self.assertEqual(evaluator.training_mode, "single")
 
-    def test_smoke_genetic_config_searches_correlation_inputs_recursively(self) -> None:
-        """smoke 配置应启用相关性、一元算子、长度惩罚和固定随机种子。"""
+    def test_smoke_genetic_config_covers_continuous_factor_operators(self) -> None:
+        """smoke 配置应覆盖连续因子算子、长度惩罚和固定随机种子。"""
 
         config = build_genetic_search_config()
 
-        self.assertIn("ts_correlation", config.operator_parameters)
-        self.assertIn("cs_rank", config.operator_parameters)
-        self.assertIn("delta", config.operator_parameters)
+        expected_operators = {
+            "add",
+            "subtract",
+            "multiply",
+            "divide",
+            "negative",
+            "absolute",
+            "log",
+            "sign",
+            "power",
+            "signed_power",
+            "delay",
+            "delta",
+            "returns",
+            "ts_sum",
+            "ts_mean",
+            "ts_min",
+            "ts_max",
+            "ts_stddev",
+            "ts_argmax",
+            "ts_argmin",
+            "ts_rank",
+            "ts_correlation",
+            "ts_covariance",
+            "cs_rank",
+            "cs_demean",
+            "cs_zscore",
+            "cs_scale",
+            "cs_winsorize",
+        }
+        self.assertEqual(set(config.operator_parameters), expected_operators)
+        self.assertEqual(
+            config.operator_parameters["ts_stddev"]["ddof"], (0, 1)
+        )
+        self.assertEqual(
+            config.operator_parameters["cs_winsorize"]["lower"], (0.01, 0.05)
+        )
         self.assertGreater(config.length_penalty, 0.0)
         self.assertGreater(config.max_nodes, config.free_node_count)
         self.assertEqual(config.random_seed, 20260809)
-        self.assertEqual(build_search_space().estimate_size(), 90)
+        legacy_space = build_search_space()
+        self.assertEqual(
+            legacy_space.estimate_size(), 30 * len(legacy_space.sources)
+        )
 
     @staticmethod
     def _daily_frame() -> pd.DataFrame:
