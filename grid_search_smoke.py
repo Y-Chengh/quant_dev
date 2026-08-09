@@ -1,4 +1,4 @@
-"""执行小规模真实因子网格搜索，并输出可审计的完整报告。"""
+"""执行真实行情遗传编程因子搜索，并输出可审计的完整报告。"""
 
 from __future__ import annotations
 
@@ -18,8 +18,9 @@ from market_service.client import MarketDataClient
 
 from factor_research.data import load_market_service
 from factor_research.factor_search import (
-    FactorGridSearch,
+    FactorGeneticSearch,
     FactorSearchResult,
+    GeneticSearchConfig,
     ModelCandidateEvaluator,
     PipelineGrid,
     SearchContext,
@@ -41,6 +42,12 @@ HOLDOUT_START = "2025-07-01"
 HOLDOUT_END = "2025-12-31"
 FIXED_FEATURES = ("return_1d", "volatility_5d")
 HOLDOUT_TOP_K = 3
+SEARCH_N_JOBS = 4
+SEARCH_BATCH_SIZE = 16
+GENETIC_POPULATION_SIZE = 96
+GENETIC_MAX_GENERATIONS = 8
+GENETIC_MAX_EVALUATIONS = 500
+GENETIC_RANDOM_SEED = 20260809
 
 
 def build_model_evaluator(
@@ -86,29 +93,55 @@ def resolve_report_output_dir(
 
 
 def build_search_space() -> PipelineGrid:
-    """构造本次 smoke 搜索的确定性流水线网格。
+    """保留原单输入网格构造入口，供既有调用方和报告测试继续复用。
 
     返回：
-        包含 3 个数据源和 3 个算子阶段的搜索空间；去重前上界为 90 个候选。
+        包含 3 个数据源和 3 个算子阶段的旧网格空间；主函数已改用遗传搜索。
     """
 
     return PipelineGrid(
         sources=["close", "volume", "return_1d"],
         stages=[
-            [
-                identity(),
-                op("delta", periods=[1, 5]),
-            ],
+            [identity(), op("delta", periods=[1, 5])],
             [
                 identity(),
                 op("ts_stddev", window=[5, 10]),
                 op("ts_argmax", window=[5, 10]),
             ],
-            [
-                identity(),
-                op("cs_rank"),
-            ],
+            [identity(), op("cs_rank")],
         ],
+    )
+
+
+def build_genetic_search_config() -> GeneticSearchConfig:
+    """构造支持一元与多输入表达式递归组合的遗传搜索配置。
+
+    返回：
+        使用收盘价、成交量和一日收益率为终端，并允许相关性输入继续递归搜索的
+        确定性遗传编程配置。
+    """
+
+    return GeneticSearchConfig(
+        sources=("close", "volume", "return_1d"),
+        operator_parameters={
+            "delta": {"periods": (1, 5)},
+            "ts_stddev": {"window": (5, 10)},
+            "ts_argmax": {"window": (5, 10)},
+            "ts_correlation": {"window": (5, 10)},
+            "cs_rank": {},
+        },
+        population_size=GENETIC_POPULATION_SIZE,
+        max_generations=GENETIC_MAX_GENERATIONS,
+        max_evaluations=GENETIC_MAX_EVALUATIONS,
+        initial_max_depth=2,
+        max_depth=4,
+        max_nodes=12,
+        max_lookback=30,
+        min_coverage=0.6,
+        target_coverage=0.9,
+        free_node_count=3,
+        length_penalty=0.0005,
+        random_seed=GENETIC_RANDOM_SEED,
     )
 
 
@@ -379,7 +412,7 @@ def write_grid_search_report(
     *,
     holdout_top_k: int,
 ) -> Path:
-    """输出网格搜索主报告及完整、可复核的明细附件。
+    """输出网格或遗传搜索主报告及完整、可复核的明细附件。
 
     参数：
         result: 搜索返回的候选、完整排行榜、错误表和 selection 排名目标。
@@ -403,6 +436,7 @@ def write_grid_search_report(
     candidates_path = output_dir / "candidates.json"
     metadata_path = output_dir / "run_metadata.json"
     chart_path = output_dir / "selection_ranking.svg"
+    history_path = output_dir / "evolution_history.csv"
     report_path = output_dir / "report.md"
 
     leaderboard = result.leaderboard.copy()
@@ -463,6 +497,10 @@ def write_grid_search_report(
             )
     leaderboard.to_csv(leaderboard_path, index=False, encoding="utf-8-sig")
     _write_objective_chart(leaderboard, chart_path, result.objective)
+    history = getattr(result, "history", None)
+    has_history = isinstance(history, pd.DataFrame) and not history.empty
+    if has_history:
+        history.to_csv(history_path, index=False, encoding="utf-8-sig")
 
     best = result.best_candidate
     best_daily = result.materialize(context, factor_id=best.factor_id, oriented=True)
@@ -474,6 +512,7 @@ def write_grid_search_report(
             "factor_id": candidate.factor_id,
             "canonical": candidate.canonical,
             "expression_str": candidate.expression_str,
+            "node_count": candidate.node_count,
             "depth": candidate.depth,
             "lookback": candidate.lookback,
             "expression": candidate.expression.to_dict(),
@@ -501,6 +540,11 @@ def write_grid_search_report(
         "selection": selection,
         "holdout": holdout,
     }
+    if has_history:
+        enriched_metadata["evolution_generations"] = len(history)
+        enriched_metadata["evolution_evaluations"] = int(
+            history.iloc[-1]["total_evaluations"]
+        )
     metadata_path.write_text(
         json.dumps(enriched_metadata, ensure_ascii=False, indent=2, default=_json_default),
         encoding="utf-8",
@@ -533,9 +577,13 @@ def write_grid_search_report(
         "factor_id",
         "expression_str",
         "canonical",
+        "node_count",
         "depth",
         "lookback",
+        "first_generation",
         "eligible",
+        "fitness",
+        "length_penalty",
         "selection_coverage",
         "selection_oriented_ic",
         "selection_oriented_rank_ic",
@@ -580,12 +628,41 @@ def write_grid_search_report(
     elapsed_seconds = float(metadata.get("elapsed_seconds", float("nan")))
     requested_codes = list(metadata.get("codes", []))
     evaluated_codes = max(int(selection["codes"]), int(holdout["codes"]))
+    search_algorithm = str(metadata.get("search_algorithm", "grid"))
+    report_title = (
+        "因子遗传编程搜索报告"
+        if search_algorithm == "genetic_programming"
+        else "因子网格搜索报告"
+    )
+    evolution_lines = (
+        [
+            "",
+            "## 遗传进化轨迹",
+            "",
+            _markdown_table(
+                history,
+                [
+                    "generation",
+                    "population",
+                    "new_evaluations",
+                    "total_evaluations",
+                    "eligible",
+                    "best_fitness",
+                    "best_factor_id",
+                ],
+            ),
+            "",
+            "完整逐代记录见 [evolution_history.csv](evolution_history.csv)。",
+        ]
+        if has_history
+        else []
+    )
     lines = [
-        "# 因子网格搜索报告",
+        f"# {report_title}",
         "",
         f"生成时间：{datetime.now().astimezone().isoformat(timespec='seconds')}",
         "",
-        f"> 本报告请求 {len(requested_codes)} 只证券，实际有 {evaluated_codes} 只进入目标评价区间，属于小规模真实行情 smoke 搜索。其统计功效有限，不应直接视为可交易结论。",
+        f"> 本报告请求 {len(requested_codes)} 只证券，实际有 {evaluated_codes} 只进入目标评价区间，属于受限候选预算的真实行情 smoke 搜索。其统计功效有限，不应直接视为可交易结论。",
         "",
         "## 执行摘要",
         "",
@@ -615,6 +692,7 @@ def write_grid_search_report(
         _markdown_table(leaderboard.head(10), top_columns),
         "",
         "完整榜单见 [leaderboard.csv](leaderboard.csv)。",
+        *evolution_lines,
         "",
         "## 预先入选候选的 Holdout 表现",
         "",
@@ -641,9 +719,14 @@ def write_grid_search_report(
         "- [run_metadata.json](run_metadata.json)：数据范围、证券、搜索参数、运行耗时和切分统计。",
         "- [candidates.json](candidates.json)：全部候选的规范表达式及可反序列化表达式树。",
         "- [leaderboard.csv](leaderboard.csv)：全部成功候选及所有汇总指标。",
-        "- [errors.csv](errors.csv)：selection、holdout 各阶段的隔离错误。",
+        "- [errors.csv](errors.csv)：selection、holdout、model 各阶段的隔离错误。",
         "- [best_factor_values.csv](best_factor_values.csv)：已按 selection 方向调整的最优因子日频值。",
         "- [top_candidates_daily_ic.csv](top_candidates_daily_ic.csv)：预先入选 Top K 的逐日 selection/holdout IC。",
+        *(
+            ["- [evolution_history.csv](evolution_history.csv)：遗传搜索逐代种群和最优适应度。"]
+            if has_history
+            else []
+        ),
         "",
         "复现命令：",
         "",
@@ -656,7 +739,7 @@ def write_grid_search_report(
 
 
 def main() -> None:
-    """加载真实分钟行情、执行网格搜索并生成带时间戳的完整报告目录。
+    """加载真实分钟行情、并行执行遗传搜索并生成带时间戳的完整报告目录。
 
     返回：
         无；报告写入 ``logs/_search/<date>/<date_time>_<randomID>/`` 并打印路径。
@@ -682,17 +765,15 @@ def main() -> None:
         holdout_start=HOLDOUT_START,
         holdout_end=HOLDOUT_END,
     )
-    space = build_search_space()
-    search = FactorGridSearch(
-        backend="sequential",
-        max_candidates=500,
-        max_depth=4,
-        max_lookback=30,
-        min_coverage=0.6,
+    genetic_config = build_genetic_search_config()
+    search = FactorGeneticSearch(
+        genetic_config,
+        backend="process",
+        n_jobs=SEARCH_N_JOBS,
+        batch_size=SEARCH_BATCH_SIZE,
     )
     result = search.run(
         context,
-        space,
         holdout_top_k=HOLDOUT_TOP_K,
         model_evaluator=build_model_evaluator(),
         model_top_k=HOLDOUT_TOP_K,
@@ -716,13 +797,22 @@ def main() -> None:
             "holdout_end": HOLDOUT_END,
             "fixed_features": FIXED_FEATURES,
             "bar_rows": len(bars),
-            "search_space_estimated_size": space.estimate_size(),
+            "search_algorithm": "genetic_programming",
             "search": {
-                "backend": "sequential",
-                "max_candidates": 500,
-                "max_depth": 4,
-                "max_lookback": 30,
-                "min_coverage": 0.6,
+                "backend": "process",
+                "n_jobs": SEARCH_N_JOBS,
+                "batch_size": SEARCH_BATCH_SIZE,
+                "population_size": genetic_config.population_size,
+                "max_generations": genetic_config.max_generations,
+                "max_evaluations": genetic_config.max_evaluations,
+                "max_nodes": genetic_config.max_nodes,
+                "max_depth": genetic_config.max_depth,
+                "max_lookback": genetic_config.max_lookback,
+                "min_coverage": genetic_config.min_coverage,
+                "free_node_count": genetic_config.free_node_count,
+                "length_penalty": genetic_config.length_penalty,
+                "random_seed": genetic_config.random_seed,
+                "operator_parameters": genetic_config.operator_parameters,
                 "holdout_top_k": HOLDOUT_TOP_K,
                 "model": "factor_passthrough",
                 "model_task": "regression",

@@ -156,6 +156,8 @@ class _RecordingEvaluator:
         self.events.append(self.period)
         if self.period == "holdout":
             return {"holdout_ic": 0.02, "holdout_rank_ic": 0.03}
+        if self.period == "model":
+            return {"model_ic": 0.02, "model_rank_ic": 0.03}
         return {
             "selection_oriented_rank_ic": 0.05,
             "selection_rank_ic": 0.05,
@@ -215,6 +217,10 @@ class GeneticExpressionTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "holdout_top_k"):
             FactorGeneticSearch(_small_config()).run(
                 _genetic_context(), holdout_top_k=1.5
+            )
+        with self.assertRaisesRegex(ValueError, "model_top_k"):
+            FactorGeneticSearch(_small_config()).run(
+                _genetic_context(), model_top_k=True
             )
 
 
@@ -396,13 +402,21 @@ class GeneticSearchExecutionTest(unittest.TestCase):
             evaluator=_RecordingEvaluator("selection", events),
             holdout_evaluator=_RecordingEvaluator("holdout", events),
             holdout_top_k=2,
+            model_evaluator=_RecordingEvaluator("model", events),
+            model_top_k=2,
         )
 
         first_holdout = events.index("holdout")
+        first_model = events.index("model")
         self.assertTrue(all(event == "selection" for event in events[:first_holdout]))
-        self.assertTrue(all(event == "holdout" for event in events[first_holdout:]))
+        self.assertTrue(
+            all(event == "holdout" for event in events[first_holdout:first_model])
+        )
+        self.assertTrue(all(event == "model" for event in events[first_model:]))
         self.assertEqual(events.count("holdout"), 2)
+        self.assertEqual(events.count("model"), 2)
         self.assertEqual(result.leaderboard["holdout_rank_ic"].notna().sum(), 2)
+        self.assertEqual(result.leaderboard["model_rank_ic"].notna().sum(), 2)
 
 
 if __name__ == "__main__":

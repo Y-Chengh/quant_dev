@@ -365,6 +365,11 @@ length_penalty_value =
 交换律算子会规范化输入顺序；默认禁止 `ts_correlation(x, x)`。所有进化和停止
 判断都只使用 selection，搜索完全结束后才计算预先指定数量候选的 holdout 指标。
 
+仓库中的 `grid_search_smoke.py` 已使用该遗传搜索入口：主进程按固定种子进化，
+4 个 worker 并行评价，最多搜索 8 代和 500 个唯一表达式。报告目录会额外生成
+`evolution_history.csv`，记录每代新增/累计评价数、合格候选数和最优适应度；Top K
+模型复验与 holdout 一样只在进化结束后运行，不参与适应度或父代选择。
+
 ## 8. 指标和排行榜
 
 ```python

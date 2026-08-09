@@ -1,9 +1,10 @@
-"""网格搜索完整报告产出测试。"""
+"""网格与遗传搜索完整报告产出测试。"""
 
 from __future__ import annotations
 
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -11,6 +12,7 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 
 from factor_research.factor_search import (
+    FactorGeneticSearch,
     FactorGridSearch,
     HoldoutIcEvaluator,
     PipelineGrid,
@@ -20,7 +22,9 @@ from factor_research.factor_search import (
 )
 from grid_search_smoke import (
     _powershell_single_quoted,
+    build_genetic_search_config,
     build_model_evaluator,
+    build_search_space,
     resolve_report_output_dir,
     write_grid_search_report,
 )
@@ -76,6 +80,19 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(evaluator.model_factory.name, "factor_passthrough")
         self.assertEqual(evaluator.task, "regression")
         self.assertEqual(evaluator.training_mode, "single")
+
+    def test_smoke_genetic_config_searches_correlation_inputs_recursively(self) -> None:
+        """smoke 配置应启用相关性、一元算子、长度惩罚和固定随机种子。"""
+
+        config = build_genetic_search_config()
+
+        self.assertIn("ts_correlation", config.operator_parameters)
+        self.assertIn("cs_rank", config.operator_parameters)
+        self.assertIn("delta", config.operator_parameters)
+        self.assertGreater(config.length_penalty, 0.0)
+        self.assertGreater(config.max_nodes, config.free_node_count)
+        self.assertEqual(config.random_seed, 20260809)
+        self.assertEqual(build_search_space().estimate_size(), 90)
 
     @staticmethod
     def _daily_frame() -> pd.DataFrame:
@@ -234,6 +251,66 @@ class GridSearchReportTests(unittest.TestCase):
             daily_ic = pd.read_csv(output_dir / "top_candidates_daily_ic.csv")
             self.assertLessEqual(daily_ic["factor_id"].nunique(), 2)
             self.assertEqual(set(daily_ic["period"]), {"selection", "holdout"})
+
+    def test_genetic_report_writes_evolution_history(self) -> None:
+        """遗传搜索报告应额外保存逐代轨迹、复杂度字段和遗传算法元数据。"""
+
+        daily = self._daily_frame()
+        context = SearchContext.from_daily(
+            daily,
+            selection_start="2025-01-02",
+            holdout_start="2025-01-08",
+            holdout_end="2025-01-10",
+        )
+        config = replace(
+            build_genetic_search_config(),
+            sources=("close", "volume"),
+            operator_parameters={
+                "cs_rank": {},
+                "ts_correlation": {"window": (3,)},
+            },
+            population_size=12,
+            max_generations=2,
+            max_evaluations=20,
+            initial_max_depth=1,
+            max_depth=2,
+            max_nodes=5,
+            max_lookback=3,
+            min_coverage=0.2,
+            target_coverage=0.5,
+        )
+        result = FactorGeneticSearch(config).run(
+            context,
+            holdout_top_k=1,
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            output_dir = Path(temporary_directory) / "genetic-report"
+            report_path = write_grid_search_report(
+                result,
+                context,
+                output_dir,
+                {
+                    "codes": ["AAA", "BBB", "CCC"],
+                    "bar_rows": 30,
+                    "elapsed_seconds": 0.5,
+                    "search_algorithm": "genetic_programming",
+                },
+                holdout_top_k=1,
+            )
+
+            history = pd.read_csv(output_dir / "evolution_history.csv")
+            leaderboard = pd.read_csv(output_dir / "leaderboard.csv")
+            metadata = json.loads(
+                (output_dir / "run_metadata.json").read_text(encoding="utf-8")
+            )
+            report_text = report_path.read_text(encoding="utf-8")
+            self.assertEqual(len(history), len(result.history))
+            self.assertIn("node_count", leaderboard)
+            self.assertIn("length_penalty", leaderboard)
+            self.assertEqual(metadata["evolution_generations"], len(result.history))
+            self.assertIn("# 因子遗传编程搜索报告", report_text)
+            self.assertIn("evolution_history.csv", report_text)
 
     def test_passthrough_model_excludes_the_same_missing_holdout_values_as_ic(self) -> None:
         """候选含缺失值时，模型复验与搜索 IC 应排除完全相同的样本。"""

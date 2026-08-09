@@ -799,22 +799,26 @@ class FactorGeneticSearch:
         evaluator: CandidateEvaluator | None = None,
         holdout_evaluator: CandidateEvaluator | None = None,
         holdout_top_k: int = 1,
+        model_evaluator: CandidateEvaluator | None = None,
+        model_top_k: int = 0,
     ) -> GeneticSearchResult:
-        """并行执行遗传进化，并在搜索结束后才评价 selection 入选候选的 holdout。
+        """并行进化，并在结束后评价 selection 入选候选的 holdout 和模型指标。
 
         参数：
             context: 一次性准备的日频行情、目标和严格隔离的日期掩码。
             evaluator: 每代候选的 selection 评价器；缺省使用横截面 IC。
             holdout_evaluator: 最终候选的 holdout 评价器；缺省使用横截面 IC。
             holdout_top_k: 搜索结束后披露 holdout 指标的 selection 前 K 名数量。
+            model_evaluator: 可选的现有模型实验评价器；为空时跳过模型复验。
+            model_top_k: 搜索结束后进行模型复验的 selection 前 K 名数量。
         """
 
-        if (
-            isinstance(holdout_top_k, bool)
-            or not isinstance(holdout_top_k, int)
-            or holdout_top_k < 0
-        ):
-            raise ValueError("holdout_top_k 必须是非负整数")
+        for name, value in {
+            "holdout_top_k": holdout_top_k,
+            "model_top_k": model_top_k,
+        }.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"{name} 必须是非负整数")
         missing_sources = set(self.config.sources).difference(context.daily.columns)
         if missing_sources:
             raise ValueError(f"遗传搜索日频数据缺少源列: {sorted(missing_sources)}")
@@ -828,7 +832,7 @@ class FactorGeneticSearch:
         }
         candidates: dict[str, FactorCandidate] = {}
         cache: dict[str, CandidateTaskResult] = {}
-        errors: dict[str, dict[str, object]] = {}
+        errors: dict[tuple[str, str], dict[str, object]] = {}
         history: list[dict[str, object]] = []
         best_fitness = float("-inf")
         stale_generations = 0
@@ -864,7 +868,8 @@ class FactorGeneticSearch:
                 ranked_rows = self._sort_rows(rows)
                 for row in ranked_rows:
                     if "error" in row:
-                        errors[str(row["factor_id"])] = {
+                        factor_id = str(row["factor_id"])
+                        errors[(factor_id, "screening")] = {
                             **row,
                             "stage": "screening",
                         }
@@ -945,7 +950,7 @@ class FactorGeneticSearch:
                         }
                     )
                 else:
-                    errors[result.factor_id] = {
+                    errors[(result.factor_id, "holdout")] = {
                         "factor_id": result.factor_id,
                         "stage": "holdout",
                         "error": result.error,
@@ -963,6 +968,40 @@ class FactorGeneticSearch:
                     leaderboard["holdout_oriented_ic"] = (
                         leaderboard["holdout_ic"] * leaderboard["direction"]
                     )
+            error_frame = pd.DataFrame(list(errors.values()))
+
+        if model_evaluator is not None and model_top_k > 0 and not leaderboard.empty:
+            model_ids = leaderboard.loc[
+                leaderboard["eligible"], "factor_id"
+            ].head(model_top_k)
+            model_candidates = [
+                candidates[str(factor_id)] for factor_id in model_ids
+            ]
+            with self._open_session(
+                backend, context, model_evaluator
+            ) as model_session:
+                model_results = model_session.run(model_candidates)
+            model_rows: list[dict[str, object]] = []
+            for result in model_results:
+                if result.error is None:
+                    model_rows.append(
+                        {
+                            "factor_id": result.factor_id,
+                            "model_elapsed_seconds": result.elapsed_seconds,
+                            **result.metrics,
+                        }
+                    )
+                else:
+                    errors[(result.factor_id, "model")] = {
+                        "factor_id": result.factor_id,
+                        "stage": "model",
+                        "error": result.error,
+                        "elapsed_seconds": result.elapsed_seconds,
+                    }
+            if model_rows:
+                leaderboard = leaderboard.merge(
+                    pd.DataFrame(model_rows), on="factor_id", how="left"
+                )
             error_frame = pd.DataFrame(list(errors.values()))
 
         return GeneticSearchResult(
