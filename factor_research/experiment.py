@@ -94,6 +94,7 @@ class DirectionExperiment:
         使用 ``target_date < T`` 的全部样本重新训练；单次模式仅使用固定训练集
         拟合一次，并预测整个验证集。
         """
+        dataset = self._filter_required_finite_features(dataset)
         split = split_by_date(dataset, self.validation_start)
         validation_dates = pd.Index(split.validation["target_date"].drop_duplicates().sort_values())
         if self.training_mode == "rolling":
@@ -142,6 +143,51 @@ class DirectionExperiment:
             task=self.task,
             daily_ic_trend=daily_ic,
         )
+
+    def _filter_required_finite_features(
+        self,
+        dataset: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """删除模型声明不能填充的非有限特征样本。
+
+        普通模型仍由矩阵预处理统一填充缺失值。模型工厂可通过
+        ``required_finite_feature_indices`` 声明必须保留原始有限值的列；例如
+        因子直出模型声明末列后，搜索和主实验都会排除同一批缺失候选样本。
+
+        参数：
+            dataset: 含全部模型特征、目标和日期的待切分样本表。
+
+        返回：
+            保留声明特征均为有限数值的副本；没有声明时原样返回输入表。
+        """
+
+        indices = tuple(
+            getattr(self.model_factory, "required_finite_feature_indices", ())
+        )
+        if not indices:
+            return dataset
+        feature_count = len(self.feature_columns)
+        normalized: list[int] = []
+        for index in indices:
+            resolved = index if index >= 0 else feature_count + index
+            if resolved < 0 or resolved >= feature_count:
+                raise ValueError(
+                    "模型必须有限的特征索引越界: "
+                    f"index={index} feature_count={feature_count}"
+                )
+            normalized.append(resolved)
+        columns = [self.feature_columns[index] for index in normalized]
+        values = dataset.loc[:, columns].to_numpy(dtype=float)
+        finite = np.isfinite(values).all(axis=1)
+        dropped = int((~finite).sum())
+        if dropped:
+            logger.info(
+                "按模型有限值约束过滤样本: features=%s dropped=%d retained=%d",
+                columns,
+                dropped,
+                int(finite.sum()),
+            )
+        return dataset.loc[finite].copy()
 
     def _target(self, frame: pd.DataFrame) -> np.ndarray:
         """按任务选择训练目标；两种目标都只属于对应的 target_date。"""

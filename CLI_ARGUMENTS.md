@@ -43,8 +43,8 @@ python run_factor_demo.py --model lightgbm --help
 | `--codes` | 一个或多个证券代码 | 未指定 | 明确选择证券，例如 `000001.SZ 600000.SH`。未指定时按 `--symbol-limit` 自动选择。 |
 | `--symbol-limit` | 整数，1～100 | `20` | 未指定 `--codes` 时，从代码表中选取的证券数。程序始终校验该值在 1～100 内。 |
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
-| `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务当前需搭配 `--model lightgbm`。 |
-| `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
+| `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务可搭配 `lightgbm` 或用于因子口径核对的 `factor_passthrough`。 |
+| `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm`、`factor_passthrough` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
 | `--factors` | 零个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的正式因子。显式写出空的 `--factors` 可只使用 `--factor-expressions`；两者不能同时为空。 |
 | `--factor-expressions` | 一个或多个 DSL 字符串 | 空 | 直接加载搜索报告中的 `canonical`/`expression_str`，并按稳定 `fg_...` ID 加入模型。PowerShell 应使用外层单引号；内部单引号写成两个，或直接复制搜索报告生成的命令。 |
 | `--factor-cache-dir` | 路径 | `.factor_cache` | 因子 Parquet 缓存目录。 |
@@ -122,6 +122,13 @@ volume_ratio_5d
 | `--n-jobs` | `-1` | 训练线程数；`-1` 表示使用全部可用 CPU。共享机器上可设为固定正整数。 |
 | `--random-state` | `42` | 随机种子，用于复现实验结果。 |
 | `--objective` | 随 `--task` 选择 | LightGBM 目标函数。分类默认为 `binary`，还支持 `cross_entropy`、`cross_entropy_lambda`；回归默认为 `regression`，还支持 `regression_l1`、`huber`、`fair`、`quantile`。目标函数必须与任务类型兼容。 |
+
+### 3.4 `factor_passthrough`
+
+仅用于核对搜索因子与主实验的指标口径。该模型不学习参数，固定把模型特征矩阵
+最后一列原样作为连续预测值，因此必须搭配 `--task regression`。它没有专属参数；
+当同时提供正式因子和搜索表达式时，搜索表达式位于特征矩阵末列。直出列中的
+NaN/无穷值样本会在日期切分前排除，与搜索 IC 的有效样本口径一致。
 
 ## 4. 常用设置与命令
 

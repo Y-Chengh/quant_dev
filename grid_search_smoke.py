@@ -20,6 +20,7 @@ from factor_research.data import load_market_service
 from factor_research.factor_search import (
     FactorGridSearch,
     FactorSearchResult,
+    ModelCandidateEvaluator,
     PipelineGrid,
     SearchContext,
     identity,
@@ -27,6 +28,7 @@ from factor_research.factor_search import (
     prepare_search_context,
 )
 from factor_research.metrics import daily_cross_sectional_ic
+from factor_research.models.factor_passthrough import FactorPassthroughModelFactory
 
 
 DATABASE = Path(r"D:\量化\market.duckdb")
@@ -39,6 +41,26 @@ HOLDOUT_START = "2025-07-01"
 HOLDOUT_END = "2025-12-31"
 FIXED_FEATURES = ("return_1d", "volatility_5d")
 HOLDOUT_TOP_K = 3
+
+
+def build_model_evaluator(
+    validation_start: str | pd.Timestamp = HOLDOUT_START,
+) -> ModelCandidateEvaluator:
+    """构造与主实验共用模型抽象的候选直出评价器。
+
+    参数：
+        validation_start: 模型验证区间首个目标日期；缺省使用搜索 holdout 起点。
+
+    返回：
+        使用 ``factor_passthrough`` 回归模型、并原样输出末列候选值的评价器。
+    """
+
+    return ModelCandidateEvaluator(
+        model_factory=FactorPassthroughModelFactory(),
+        validation_start=validation_start,
+        training_mode="single",
+        task="regression",
+    )
 
 
 def resolve_report_output_dir(
@@ -139,6 +161,58 @@ def _powershell_single_quoted(value: str) -> str:
     """
 
     return "'" + value.replace("'", "''") + "'"
+
+
+def _reproduction_command(
+    expression: str,
+    context: SearchContext,
+    metadata: Mapping[str, Any],
+) -> str:
+    """生成与搜索数据范围、证券池和直出模型一致的主实验命令。
+
+    参数：
+        expression: 要在主实验复验的候选因子规范表达式。
+        context: 提供 holdout 验证起点的搜索上下文。
+        metadata: 可选包含数据库、数据起止日期、证券列表和证券数量上限的元数据。
+
+    返回：
+        可直接粘贴到 PowerShell 的单行 ``run_factor_demo.py`` 命令。
+    """
+
+    parts = [
+        "python",
+        "run_factor_demo.py",
+        "--model",
+        "factor_passthrough",
+        "--task",
+        "regression",
+        "--training-mode",
+        "single",
+        "--validation-start",
+        _powershell_single_quoted(context.holdout_start.strftime("%Y-%m-%d")),
+    ]
+    for option, key in (
+        ("--database", "database"),
+        ("--start", "data_start"),
+        ("--end", "data_end"),
+    ):
+        value = metadata.get(key)
+        if value is not None:
+            parts.extend([option, _powershell_single_quoted(str(value))])
+    codes = list(metadata.get("codes", ()))
+    if codes:
+        parts.append("--codes")
+        parts.extend(_powershell_single_quoted(str(code)) for code in codes)
+    elif metadata.get("code_limit") is not None:
+        parts.extend(["--symbol-limit", str(metadata["code_limit"])])
+    parts.extend(
+        [
+            "--factors",
+            "--factor-expressions",
+            _powershell_single_quoted(expression),
+        ]
+    )
+    return " ".join(parts)
 
 
 def _markdown_table(frame: pd.DataFrame, columns: Sequence[str]) -> str:
@@ -474,6 +548,10 @@ def write_grid_search_report(
         "selection_oriented_rank_ic",
         "selection_oriented_rank_ic_rank",
         "holdout_coverage",
+        "holdout_ic",
+        "model_ic",
+        "holdout_rank_ic",
+        "model_rank_ic",
         "holdout_oriented_ic",
         "holdout_oriented_ic_rank",
         "holdout_oriented_rank_ic",
@@ -484,6 +562,16 @@ def write_grid_search_report(
     disclosed = leaderboard.loc[
         leaderboard["factor_id"].isin(completed_holdout_ids)
     ]
+    model_metrics_available = (
+        "model_ic" in disclosed
+        and disclosed["model_ic"].notna().any()
+    )
+    model_note = (
+        "`model_ic`/`model_rank_ic` 是 `factor_passthrough` 对原始候选值的主实验口径复验，"
+        "应分别与未定向的 `holdout_ic`/`holdout_rank_ic` 一致。"
+        if model_metrics_available
+        else "本次结果没有成功完成 `factor_passthrough` 模型复验。"
+    )
     error_summary = (
         errors.groupby("stage", dropna=False).size().rename("count").reset_index()
         if not errors.empty
@@ -510,8 +598,7 @@ def write_grid_search_report(
         "可把上面的字符串直接加入 `run_factor_demo.py`：",
         "",
         "```powershell\n"
-        "python run_factor_demo.py --factors --factor-expressions "
-        f"{_powershell_single_quoted(best.expression_str)}\n```",
+        f"{_reproduction_command(best.expression_str, context, metadata)}\n```",
         "",
         "![selection 排名图](selection_ranking.svg)",
         "",
@@ -533,7 +620,7 @@ def write_grid_search_report(
         "",
         _markdown_table(disclosed, holdout_columns),
         "",
-        f"在报告披露上限 Top {holdout_top_k} 内，共识别到 {len(completed_holdout_ids)} 个已由搜索阶段成功完成 holdout 评价的候选。逐日 IC/Rank IC 见 [top_candidates_daily_ic.csv](top_candidates_daily_ic.csv)。报告只重建这些冻结候选的明细，不会扩大 holdout 范围；holdout 结果不用于重排候选。",
+        f"在报告披露上限 Top {holdout_top_k} 内，共识别到 {len(completed_holdout_ids)} 个已由搜索阶段成功完成 holdout 评价的候选。{model_note}逐日 IC/Rank IC 见 [top_candidates_daily_ic.csv](top_candidates_daily_ic.csv)。报告只重建这些冻结候选的明细，不会扩大 holdout 范围；holdout 结果不用于重排候选。",
         "",
         "## 失败与覆盖率",
         "",
@@ -603,7 +690,13 @@ def main() -> None:
         max_lookback=30,
         min_coverage=0.6,
     )
-    result = search.run(context, space, holdout_top_k=HOLDOUT_TOP_K)
+    result = search.run(
+        context,
+        space,
+        holdout_top_k=HOLDOUT_TOP_K,
+        model_evaluator=build_model_evaluator(),
+        model_top_k=HOLDOUT_TOP_K,
+    )
     elapsed_seconds = time.perf_counter() - timer
 
     report_path = write_grid_search_report(
@@ -631,6 +724,9 @@ def main() -> None:
                 "max_lookback": 30,
                 "min_coverage": 0.6,
                 "holdout_top_k": HOLDOUT_TOP_K,
+                "model": "factor_passthrough",
+                "model_task": "regression",
+                "model_top_k": HOLDOUT_TOP_K,
             },
         },
         holdout_top_k=HOLDOUT_TOP_K,

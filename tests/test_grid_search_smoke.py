@@ -20,6 +20,7 @@ from factor_research.factor_search import (
 )
 from grid_search_smoke import (
     _powershell_single_quoted,
+    build_model_evaluator,
     resolve_report_output_dir,
     write_grid_search_report,
 )
@@ -67,6 +68,15 @@ class GridSearchReportTests(unittest.TestCase):
             "'column(\"quote''s-$value`tick\")'",
         )
 
+    def test_model_evaluator_uses_registered_passthrough_regressor(self) -> None:
+        """smoke 搜索应通过与主实验相同的模型工厂直出候选末列。"""
+
+        evaluator = build_model_evaluator("2025-01-08")
+
+        self.assertEqual(evaluator.model_factory.name, "factor_passthrough")
+        self.assertEqual(evaluator.task, "regression")
+        self.assertEqual(evaluator.training_mode, "single")
+
     @staticmethod
     def _daily_frame() -> pd.DataFrame:
         """构造三个证券、十个交易日且横截面收益有差异的日频样本。
@@ -112,7 +122,13 @@ class GridSearchReportTests(unittest.TestCase):
             max_depth=3,
             max_lookback=5,
             min_coverage=0.5,
-        ).run(context, space, holdout_top_k=2)
+        ).run(
+            context,
+            space,
+            holdout_top_k=2,
+            model_evaluator=build_model_evaluator("2025-01-08"),
+            model_top_k=2,
+        )
 
         with TemporaryDirectory() as temporary_directory:
             output_dir = Path(temporary_directory) / "report"
@@ -149,6 +165,16 @@ class GridSearchReportTests(unittest.TestCase):
             completed = leaderboard.loc[
                 leaderboard["holdout_elapsed_seconds"].notna()
             ]
+            pd.testing.assert_series_equal(
+                completed["model_ic"],
+                completed["holdout_ic"],
+                check_names=False,
+            )
+            pd.testing.assert_series_equal(
+                completed["model_rank_ic"],
+                completed["holdout_rank_ic"],
+                check_names=False,
+            )
             for metric in (
                 "selection_oriented_rank_ic",
                 "holdout_oriented_ic",
@@ -193,9 +219,53 @@ class GridSearchReportTests(unittest.TestCase):
             )
             self.assertEqual(metadata["best_expression_str"], result.best_candidate.canonical)
             self.assertIn("--factor-expressions", report_path.read_text(encoding="utf-8"))
+            self.assertIn(
+                "--model factor_passthrough --task regression",
+                report_path.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "--training-mode single --validation-start '2025-01-08'",
+                report_path.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "--codes 'AAA' 'BBB' 'CCC'",
+                report_path.read_text(encoding="utf-8"),
+            )
             daily_ic = pd.read_csv(output_dir / "top_candidates_daily_ic.csv")
             self.assertLessEqual(daily_ic["factor_id"].nunique(), 2)
             self.assertEqual(set(daily_ic["period"]), {"selection", "holdout"})
+
+    def test_passthrough_model_excludes_the_same_missing_holdout_values_as_ic(self) -> None:
+        """候选含缺失值时，模型复验与搜索 IC 应排除完全相同的样本。"""
+
+        daily = self._daily_frame()
+        daily["candidate"] = daily["close"]
+        missing_row = (
+            daily["code"].eq("AAA")
+            & daily["trade_date"].eq(pd.Timestamp("2025-01-08"))
+        )
+        daily.loc[missing_row, "candidate"] = float("nan")
+        context = SearchContext.from_daily(
+            daily,
+            selection_start="2025-01-02",
+            holdout_start="2025-01-08",
+            holdout_end="2025-01-10",
+        )
+        result = FactorGridSearch(
+            max_candidates=2,
+            min_coverage=0.5,
+        ).run(
+            context,
+            PipelineGrid(sources=["candidate"], stages=[[identity()]]),
+            holdout_top_k=1,
+            model_evaluator=build_model_evaluator("2025-01-08"),
+            model_top_k=1,
+        )
+
+        row = result.leaderboard.iloc[0]
+        self.assertEqual(row["model_samples"], row["holdout_valid_values"])
+        self.assertAlmostEqual(row["model_ic"], row["holdout_ic"])
+        self.assertAlmostEqual(row["model_rank_ic"], row["holdout_rank_ic"])
 
     def test_report_cannot_expand_or_bypass_completed_holdout_candidates(self) -> None:
         """报告只能披露搜索阶段成功完成 holdout 的冻结候选，不能自行扩展 K。"""

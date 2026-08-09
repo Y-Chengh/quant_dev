@@ -69,6 +69,16 @@ python run_factor_demo.py --model gradient_boosting_tree --n-estimators 100 --le
 python run_factor_demo.py --model lightgbm --n-estimators 300 --learning-rate 0.03 --num-leaves 15 --n-jobs -1
 ```
 
+原样输出最后一个搜索因子，以复核网格搜索与主实验的 IC 口径：
+
+```powershell
+python run_factor_demo.py --model factor_passthrough --task regression --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
+```
+
+`factor_passthrough` 不拟合目标，只能用于指标核对，不是可部署的预测模型。复核
+搜索报告时应直接复制报告生成的完整命令，确保数据库、日期范围、验证起点和证券池
+均与搜索一致。
+
 新增模型时，在 `factor_research/models/` 中增加具体模型和工厂，并使用
 `@register_model_factory` 注册。工厂通过 `add_arguments()` 声明自己的命令行
 参数，通过 `from_args()` 从 `args` 构建实例；无需修改 `run_factor_demo.py`。

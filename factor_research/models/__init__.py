@@ -1,6 +1,10 @@
 """方向预测模型的公共接口及内置实现。"""
 
 from .base import DirectionModel, DirectionModelFactory
+from .factor_passthrough import (
+    FactorPassthroughModelFactory,
+    FactorPassthroughRegressor,
+)
 from .registry import (
     DEFAULT_MODEL,
     MODEL_FACTORY_TYPES,
@@ -18,6 +22,8 @@ from .simple_decision_tree import (
 __all__ = [
     "DirectionModel",
     "DirectionModelFactory",
+    "FactorPassthroughModelFactory",
+    "FactorPassthroughRegressor",
     "SimpleDecisionTreeClassifier",
     "SimpleDecisionTreeModelFactory",
     "DEFAULT_MODEL",

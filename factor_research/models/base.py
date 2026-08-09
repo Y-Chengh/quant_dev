@@ -29,6 +29,7 @@ class DirectionModelFactory(ABC):
 
     name: str
     supported_tasks: tuple[str, ...] = ("classification",)
+    required_finite_feature_indices: tuple[int, ...] = ()
 
     @classmethod
     def add_arguments(cls, parser: argparse.ArgumentParser) -> None:

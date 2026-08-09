@@ -77,6 +77,9 @@
 - 回归模型还需实现 `predict(X)`，返回与输入样本数相同的一维有限涨跌幅数组。
 - `feature_importances_` 是可选能力。模型可以不定义该属性或将其设为 `None`；
   如果提供，必须是与输入特征数相同的一维有限数值数组。
+- 模型工厂可通过 `required_finite_feature_indices` 声明不得填充缺失值的特征列
+  下标；实验会在日期切分前删除这些列含 NaN 或无穷值的样本。缺省为空元组，
+  仍沿用通用缺失值填充流程。
 - 模型工厂继承 `DirectionModelFactory`，定义唯一的 `name` 并实现 `create()`。
 - 模型工厂使用 `@register_model_factory` 注册，并负责通过 `add_arguments()` 声明
   自身 CLI 参数、通过 `from_args()` 从命令行参数构建工厂。主程序不得为具体
