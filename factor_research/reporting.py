@@ -312,13 +312,14 @@ def _render_top_selection_tables(
 ) -> list[str]:
     """按月份生成以交易日期为横轴的每日 Top N Markdown 明细表。
 
-    每个排名占一行，单元格依次显示证券代码、模型预估值、当日实际涨幅和同一
-    证券上一可见交易日的实际涨幅。按月份拆表以限制单表宽度，但日期始终位于
-    横轴；某日不足 N 只时对应排名显示为 ``-``。
+    每个排名占一行，单元格依次显示证券代码、模型预估值、当日实际涨幅，以及
+    前日收盘相对前前日收盘、前日收盘相对前日开盘的收益率。按月份拆表以限制
+    单表宽度，但日期始终位于横轴；某日不足 N 只时对应排名显示为 ``-``。
 
     参数：
-        selections: 含目标日期、日内排名、证券代码、预估值、实际收益和前日
-            实际收益的 Top N 选股明细。
+        selections: 含目标日期、日内排名、证券代码、预估值、实际收益及两个
+            前日收益口径的 Top N 选股明细；旧数据可仅含
+            ``previous_actual_return``，此时按前日开盘至收盘口径兼容显示。
         score_column: 原始模型分数字段名，用于在表格说明中标明预估值口径。
 
     返回：
@@ -334,13 +335,28 @@ def _render_top_selection_tables(
         "code",
         "predicted_value",
         "actual_return",
-        "previous_actual_return",
     }
     missing = required.difference(selections.columns)
     if missing:
         raise ValueError(f"Top N 选股明细缺少列: {sorted(missing)}")
 
     frame = selections.loc[:, list(required)].copy()
+    if "previous_open_to_close_return" in selections.columns:
+        frame["previous_open_to_close_return"] = selections[
+            "previous_open_to_close_return"
+        ]
+    elif "previous_actual_return" in selections.columns:
+        frame["previous_open_to_close_return"] = selections[
+            "previous_actual_return"
+        ]
+    else:
+        frame["previous_open_to_close_return"] = np.nan
+    if "previous_close_to_close_return" in selections.columns:
+        frame["previous_close_to_close_return"] = selections[
+            "previous_close_to_close_return"
+        ]
+    else:
+        frame["previous_close_to_close_return"] = np.nan
     frame["target_date"] = pd.to_datetime(frame["target_date"], errors="coerce")
     if frame["target_date"].isna().any():
         raise ValueError("Top N 选股明细的 target_date 包含缺失或无效日期")
@@ -352,7 +368,7 @@ def _render_top_selection_tables(
         "",
         "### 每日 Top N 选股明细",
         "",
-        f"日期为横轴；预估结果使用 `{score_column}`。实际涨幅均为开盘至收盘收益率，前日实际涨幅按同一股票的上一可见交易日计算。",
+        f"日期为横轴；预估结果使用 `{score_column}`。实际为当日收盘价相对开盘价的收益率；两个前日指标均按同一股票的上一可见交易日计算。",
     ]
     for month, month_frame in frame.groupby("month", sort=True):
         dates = pd.Index(month_frame["target_date"].drop_duplicates().sort_values())
@@ -381,7 +397,8 @@ def _render_top_selection_tables(
                 cells.append(
                     f"`{code}`<br>预估：{_format_number(row['predicted_value'])}"
                     f"<br>实际：{_format_percentage(row['actual_return'])}"
-                    f"<br>前日：{_format_percentage(row['previous_actual_return'])}"
+                    f"<br>前日收盘价对比前前日收盘价：{_format_percentage(row['previous_close_to_close_return'])}"
+                    f"<br>前日收盘价对比前日开盘价：{_format_percentage(row['previous_open_to_close_return'])}"
                 )
             lines.append(f"| Top {rank} | " + " | ".join(cells) + " |")
     return lines

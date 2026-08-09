@@ -125,7 +125,8 @@ def run_top_n_intraday_backtest(
 
     返回：
         回测参数、按日组合收益、年化夏普等汇总指标，以及每日 Top N 证券的
-        预测值、当日实际收益和前日实际收益明细。
+        预测值、当日实际收益、前日收盘相对前前日收盘收益，以及前日收盘相对
+        前日开盘收益明细。
     """
 
     if top_n < 1:
@@ -141,8 +142,23 @@ def run_top_n_intraday_backtest(
     if missing:
         raise ValueError(f"Top N 回测缺少列: {sorted(missing)}")
 
+    previous_return_columns = [
+        column
+        for column in (
+            "previous_close_to_close_return",
+            "previous_open_to_close_return",
+        )
+        if column in predictions.columns
+    ]
     frame = predictions.loc[
-        :, ["target_date", "code", "target_return", score_column]
+        :,
+        [
+            "target_date",
+            "code",
+            "target_return",
+            score_column,
+            *previous_return_columns,
+        ],
     ].copy()
     frame["target_date"] = pd.to_datetime(frame["target_date"], errors="coerce")
     if frame["target_date"].isna().any():
@@ -151,6 +167,8 @@ def run_top_n_intraday_backtest(
     frame["target_return"] = pd.to_numeric(
         frame["target_return"], errors="coerce"
     )
+    for column in previous_return_columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
     frame["code"] = frame["code"].astype(str)
     frame["_row_id"] = np.arange(len(frame), dtype=np.int64)
     # 前日收益按证券和日期独立后移；重复键采用最高有限分数记录，避免依赖输入顺序。
@@ -185,17 +203,25 @@ def run_top_n_intraday_backtest(
         .drop_duplicates(["code", "target_date"], keep="first")
         .loc[:, ["code", "target_date", "target_return"]]
     )
-    return_history["previous_actual_return"] = return_history.groupby(
+    return_history["_legacy_previous_open_to_close_return"] = return_history.groupby(
         "code", sort=False
     )["target_return"].shift(1)
     frame = frame.merge(
         return_history.loc[
-            :, ["code", "target_date", "previous_actual_return"]
+            :, ["code", "target_date", "_legacy_previous_open_to_close_return"]
         ],
         on=["code", "target_date"],
         how="left",
         validate="many_to_one",
     )
+    if "previous_open_to_close_return" not in frame.columns:
+        frame["previous_open_to_close_return"] = frame[
+            "_legacy_previous_open_to_close_return"
+        ]
+    if "previous_close_to_close_return" not in frame.columns:
+        frame["previous_close_to_close_return"] = np.nan
+    # 保留旧字段作为兼容别名；新报告只使用两个明确口径的字段。
+    frame["previous_actual_return"] = frame["previous_open_to_close_return"]
     valid_score = np.isfinite(frame[score_column].to_numpy(dtype=float))
     frame = frame.loc[valid_score].copy()
     if frame.empty:
@@ -387,6 +413,8 @@ def run_top_n_intraday_backtest(
                 "code",
                 score_column,
                 "target_return",
+                "previous_close_to_close_return",
+                "previous_open_to_close_return",
                 "previous_actual_return",
             ],
         ]

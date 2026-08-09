@@ -12,6 +12,11 @@ from .timing import log_elapsed
 
 logger = logging.getLogger(__name__)
 
+PREVIOUS_RETURN_COLUMNS = (
+    "previous_close_to_close_return",
+    "previous_open_to_close_return",
+)
+
 
 @dataclass(frozen=True)
 class DatasetSplit:
@@ -34,6 +39,11 @@ def _with_forward_targets(daily: pd.DataFrame) -> pd.DataFrame:
         raise ValueError(f"构建预测目标缺少列: {sorted(missing)}")
     data = daily.sort_values(["code", "trade_date"]).copy()
     grouped = data.groupby("code", sort=False)
+    # 两个报告口径都以特征日（即目标日的前一有效交易日）为“前日”。收盘对收盘
+    # 先在证券内后移一期；首个观测没有前前日收盘，因此保持缺失，不跨证券填充。
+    previous_close = grouped["close"].shift(1)
+    data["previous_close_to_close_return"] = data["close"] / previous_close - 1
+    data["previous_open_to_close_return"] = data["close"] / data["open"] - 1
     data["target_date"] = grouped["trade_date"].shift(-1)
     next_open = grouped["open"].shift(-1)
     next_close = grouped["close"].shift(-1)
@@ -70,17 +80,31 @@ def build_direction_dataset(
 ) -> pd.DataFrame:
     """用 D 日收盘后的特征预测下一有效交易日从开盘到收盘的方向。
 
+    输出额外保留 D 日收盘相对 D-1 日收盘、D 日收盘相对 D 日开盘的收益率，
+    供预测报告展示；两列不属于 ``feature_columns``，不会进入模型输入。
+
     参数：
         daily_features: 已合并日频行情和因子列的特征表。
         feature_columns: 要输出的因子列名；缺省时使用默认因子集。
         args: 为兼容调用链保留的命令行命名空间，不参与目标计算。
+
+    返回：
+        按目标日期和证券排序的监督学习样本，包含模型特征、目标及前日行情上下文。
     """
     feature_columns = feature_columns or DEFAULT_FEATURES
     missing = set(feature_columns).difference(daily_features.columns)
     if missing:
         raise ValueError(f"缺少因子列: {sorted(missing)}")
     data = _with_forward_targets(daily_features)
-    columns = ["trade_date", "target_date", "code", *feature_columns, "target_return", "label"]
+    columns = [
+        "trade_date",
+        "target_date",
+        "code",
+        *feature_columns,
+        *PREVIOUS_RETURN_COLUMNS,
+        "target_return",
+        "label",
+    ]
     return (
         data.loc[data["target_date"].notna(), columns]
         .rename(columns={"trade_date": "feature_date"})

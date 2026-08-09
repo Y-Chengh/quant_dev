@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .dataset import split_by_date
+from .dataset import PREVIOUS_RETURN_COLUMNS, split_by_date
 from .factors import DEFAULT_FEATURES
 from .metrics import (
     classification_metrics,
@@ -195,6 +195,29 @@ class DirectionExperiment:
             return frame["label"].to_numpy(dtype=int)
         return frame["target_return"].to_numpy(dtype=float)
 
+    @staticmethod
+    def _prediction_columns(frame: pd.DataFrame) -> list[str]:
+        """返回预测结果需保留的基础列和可用报告上下文列。
+
+        参数：
+            frame: 待预测样本；可包含前一交易日两种收益口径的报告上下文列。
+
+        返回：
+            基础标识、标签、目标收益，以及输入中存在的前日收益上下文列名。
+        """
+
+        base_columns = [
+            "feature_date",
+            "target_date",
+            "code",
+            "label",
+            "target_return",
+        ]
+        return [
+            *base_columns,
+            *(column for column in PREVIOUS_RETURN_COLUMNS if column in frame.columns),
+        ]
+
     def _add_model_predictions(
         self,
         predictions: pd.DataFrame,
@@ -241,7 +264,7 @@ class DirectionExperiment:
         )
 
         predictions = validation_frame[
-            ["feature_date", "target_date", "code", "label", "target_return"]
+            self._prediction_columns(validation_frame)
         ].copy()
         self._add_model_predictions(predictions, model, validation_matrix, timings)
         predictions["training_samples"] = len(train_frame)
@@ -344,7 +367,7 @@ class DirectionExperiment:
                 train_matrix,
                 self._target(train_frame),
             )
-            daily = predict_frame[["feature_date", "target_date", "code", "label", "target_return"]].copy()
+            daily = predict_frame[self._prediction_columns(predict_frame)].copy()
             self._add_model_predictions(daily, model, predict_matrix, timings)
             daily["training_samples"] = len(train_frame)
             daily["training_end_date"] = train_frame["target_date"].max()

@@ -37,6 +37,22 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                 ),
                 "code": ["C", "A", "B", "A", "B", "C"],
                 "target_return": [-0.05, 0.10, 0.00, -0.02, 0.10, 0.02],
+                "previous_close_to_close_return": [
+                    0.01,
+                    0.03,
+                    0.05,
+                    -0.01,
+                    0.07,
+                    -0.04,
+                ],
+                "previous_open_to_close_return": [
+                    0.02,
+                    0.04,
+                    0.06,
+                    -0.02,
+                    0.08,
+                    -0.05,
+                ],
                 "up_probability": [0.1, 0.9, 0.8, 0.7, 0.1, 0.8],
                 "label": [0, 1, 0, 0, 1, 1],
                 "prediction": [0, 1, 1, 1, 0, 1],
@@ -77,6 +93,8 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                 "code",
                 "predicted_value",
                 "actual_return",
+                "previous_close_to_close_return",
+                "previous_open_to_close_return",
                 "previous_actual_return",
             ],
         )
@@ -93,9 +111,16 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             result.top_selections["actual_return"], [0.10, 0.00, 0.02, -0.02]
         )
         np.testing.assert_allclose(
+            result.top_selections["previous_close_to_close_return"],
+            [0.03, 0.05, -0.04, -0.01],
+        )
+        np.testing.assert_allclose(
+            result.top_selections["previous_open_to_close_return"],
+            [0.04, 0.06, -0.05, -0.02],
+        )
+        np.testing.assert_allclose(
             result.top_selections["previous_actual_return"],
-            [np.nan, np.nan, -0.05, 0.10],
-            equal_nan=True,
+            [0.04, 0.06, -0.05, -0.02],
         )
         expected_control_gross = {
             "universe": np.array([1 / 60, 1 / 30]),
@@ -583,11 +608,15 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("| Top N 排名 | 2025-01-02 |", report)
         self.assertIn("| Top N 排名 | 2025-02-03 |", report)
         self.assertIn(
-            "`A`<br>预估：0.900000<br>实际：10.00%<br>前日：N/A",
+            "`A`<br>预估：0.900000<br>实际：10.00%"
+            "<br>前日收盘价对比前前日收盘价：3.00%"
+            "<br>前日收盘价对比前日开盘价：4.00%",
             report,
         )
         self.assertIn(
-            "`C`<br>预估：0.800000<br>实际：2.00%<br>前日：-5.00%",
+            "`C`<br>预估：0.800000<br>实际：2.00%"
+            "<br>前日收盘价对比前前日收盘价：-4.00%"
+            "<br>前日收盘价对比前日开盘价：-5.00%",
             report,
         )
         self.assertIn("### Top N 与横截面对照收益曲线", report)

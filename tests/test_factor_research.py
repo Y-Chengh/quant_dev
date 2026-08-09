@@ -80,6 +80,15 @@ class FactorResearchTest(unittest.TestCase):
             dataset[["target_date", "code", "target_return", "label"]],
             expected,
         )
+        np.testing.assert_allclose(
+            dataset["previous_open_to_close_return"],
+            [1.9, 1.05, 0.1, -0.1],
+        )
+        np.testing.assert_allclose(
+            dataset["previous_close_to_close_return"],
+            [np.nan, np.nan, 33 / 29 - 1, 36 / 41 - 1],
+            equal_nan=True,
+        )
         self.assertEqual(len(dataset), 4)
 
     def test_selected_factors_are_cached_separately(self):
@@ -206,6 +215,8 @@ class FactorResearchTest(unittest.TestCase):
         self.assertEqual(result.model_name, "simple_decision_tree")
         self.assertGreater(len(result.predictions), 0)
         self.assertTrue(np.isfinite(result.predictions["up_probability"]).all())
+        self.assertIn("previous_close_to_close_return", result.predictions.columns)
+        self.assertIn("previous_open_to_close_return", result.predictions.columns)
         self.assertIsNotNone(result.feature_importance)
         self.assertAlmostEqual(float(result.feature_importance.sum()), 1.0, places=6)
         self.assertIn("auc", result.metrics)
