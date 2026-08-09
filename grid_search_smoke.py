@@ -41,7 +41,6 @@ DATA_END = "2025-12-31"
 SELECTION_START = "2024-06-01"
 HOLDOUT_START = "2025-07-01"
 HOLDOUT_END = "2025-12-31"
-FIXED_FEATURES = ("return_1d", "volatility_5d")
 HOLDOUT_TOP_K = 3
 SEARCH_N_JOBS = 4
 SEARCH_BATCH_SIZE = 8
@@ -877,11 +876,9 @@ def main() -> None:
         end=DATA_END,
     )
 
-    # 分钟聚合、固定因子和目标都只在这里计算一次。
+    # 分钟聚合和目标都只在这里计算一次。
     context = prepare_search_context(
         bars,
-        fixed_features=FIXED_FEATURES,
-        cache_dir=".factor_cache",
         selection_start=SELECTION_START,
         holdout_start=HOLDOUT_START,
         holdout_end=HOLDOUT_END,
@@ -917,7 +914,6 @@ def main() -> None:
             "selection_start": SELECTION_START,
             "holdout_start": HOLDOUT_START,
             "holdout_end": HOLDOUT_END,
-            "fixed_features": FIXED_FEATURES,
             "bar_rows": len(bars),
             "search_algorithm": "genetic_programming",
             "search": {
