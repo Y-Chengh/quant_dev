@@ -133,6 +133,29 @@ def _implementation_fingerprint(factory: FactorFactory) -> str:
     return digest.hexdigest()[:16]
 
 
+def _expression_implementation_fingerprint(node: ExpressionNode) -> str:
+    """根据表达式、DSL 实现及正式因子依赖生成代码版本指纹。
+
+    参数：
+        node: 要标识实现版本的已校验运行时表达式节点。
+
+    返回：
+        可用于表达式缓存文件名的稳定短指纹。
+    """
+
+    digest = hashlib.sha256(node.canonical.encode("utf-8"))
+    dsl_directory = Path(inspect.getfile(DailyFactorFrame)).parent
+    for module_path in sorted(dsl_directory.glob("*.py")):
+        digest.update(module_path.name.encode("utf-8"))
+        digest.update(module_path.read_bytes())
+    digest.update(inspect.getsource(_build_daily_bars).encode("utf-8"))
+    for dependency_name in sorted(node.columns.intersection(FACTOR_FACTORIES)):
+        dependency = get_factor_factory(dependency_name)
+        digest.update(dependency_name.encode("utf-8"))
+        digest.update(_implementation_fingerprint(dependency).encode("ascii"))
+    return digest.hexdigest()[:16]
+
+
 class FactorCache:
     """按因子实现版本和行情输入版本安全读写独立的 Parquet 缓存。"""
 
@@ -160,22 +183,61 @@ class FactorCache:
         """
 
         path = self._path(factory, input_fingerprint)
+        return self._load_series(factory.name, path, daily)
+
+    def load_expression(
+        self,
+        node: ExpressionNode,
+        input_fingerprint: str,
+        daily: pd.DataFrame,
+    ) -> pd.Series | None:
+        """读取并校验一个运行时表达式因子的持久化缓存。
+
+        参数：
+            node: 决定稳定因子 ID 和表达式实现版本的节点。
+            input_fingerprint: 当前分钟行情内容的稳定短指纹。
+            daily: 用于校验缓存行数和主键的当前日频表。
+
+        返回：
+            命中且校验通过的逐行因子值；缓存不存在或失效时返回 ``None``。
+        """
+
+        path = self._expression_path(node, input_fingerprint)
+        return self._load_series(node.factor_id, path, daily)
+
+    def _load_series(
+        self,
+        factor_name: str,
+        path: Path,
+        daily: pd.DataFrame,
+    ) -> pd.Series | None:
+        """按给定路径读取并严格校验一个因子缓存序列。
+
+        参数：
+            factor_name: 缓存值列使用的正式因子名或稳定表达式因子 ID。
+            path: 已包含实现版本与行情指纹的 Parquet 缓存路径。
+            daily: 用于校验缓存行数和主键的当前日频表。
+
+        返回：
+            命中且校验通过的逐行因子值；缓存不存在或失效时返回 ``None``。
+        """
+
         if not path.exists():
-            logger.debug("因子 %s 缓存不存在: %s", factory.name, path)
+            logger.debug("因子 %s 缓存不存在: %s", factor_name, path)
             return None
         try:
             cached = pd.read_parquet(path)
         except Exception as exc:
-            logger.warning("因子 %s 缓存读取失败，将重新计算: %s (%s)", factory.name, path, exc)
+            logger.warning("因子 %s 缓存读取失败，将重新计算: %s (%s)", factor_name, path, exc)
             return None
-        expected_columns = [*KEY_COLUMNS, factory.name]
+        expected_columns = [*KEY_COLUMNS, factor_name]
         if list(cached.columns) != expected_columns:
-            logger.warning("因子 %s 缓存列校验失败，将重新计算: %s", factory.name, path)
+            logger.warning("因子 %s 缓存列校验失败，将重新计算: %s", factor_name, path)
             return None
         if len(cached) != len(daily):
             logger.warning(
                 "因子 %s 缓存行数不匹配，将重新计算: cached=%d expected=%d",
-                factory.name,
+                factor_name,
                 len(cached),
                 len(daily),
             )
@@ -187,15 +249,15 @@ class FactorCache:
             first = int(different.idxmax()) if different.any() else -1
             logger.warning(
                 "因子 %s 缓存日期或代码不匹配，将重新计算: %s first_difference=%d cached=%s expected=%s",
-                factory.name,
+                factor_name,
                 path,
                 first,
                 cached_keys.iloc[first].to_dict() if first >= 0 else None,
                 expected_keys.iloc[first].to_dict() if first >= 0 else None,
             )
             return None
-        logger.debug("因子 %s 缓存校验通过: %s", factory.name, path)
-        return pd.Series(cached[factory.name].to_numpy(), index=daily.index, name=factory.name)
+        logger.debug("因子 %s 缓存校验通过: %s", factor_name, path)
+        return pd.Series(cached[factor_name].to_numpy(), index=daily.index, name=factor_name)
 
     def save(
         self,
@@ -214,13 +276,56 @@ class FactorCache:
         """
 
         path = self._path(factory, input_fingerprint)
+        return self._save_series(factory.name, path, daily, values)
+
+    def save_expression(
+        self,
+        node: ExpressionNode,
+        input_fingerprint: str,
+        daily: pd.DataFrame,
+        values: pd.Series,
+    ) -> Path:
+        """原子写入一个运行时表达式因子的持久化缓存。
+
+        参数：
+            node: 决定稳定因子 ID 和表达式实现版本的节点。
+            input_fingerprint: 当前分钟行情内容的稳定短指纹。
+            daily: 要与缓存因子值共同写入的日频主键表。
+            values: 与 ``daily`` 逐行对齐的表达式因子值序列。
+
+        返回：
+            最终写入的版本化 Parquet 缓存路径。
+        """
+
+        path = self._expression_path(node, input_fingerprint)
+        return self._save_series(node.factor_id, path, daily, values)
+
+    def _save_series(
+        self,
+        factor_name: str,
+        path: Path,
+        daily: pd.DataFrame,
+        values: pd.Series,
+    ) -> Path:
+        """按给定路径原子写入一个因子缓存序列。
+
+        参数：
+            factor_name: 缓存值列使用的正式因子名或稳定表达式因子 ID。
+            path: 已包含实现版本与行情指纹的 Parquet 缓存路径。
+            daily: 要与缓存因子值共同写入的日频主键表。
+            values: 与 ``daily`` 逐行对齐的因子值序列。
+
+        返回：
+            最终写入的版本化 Parquet 缓存路径。
+        """
+
         path.parent.mkdir(parents=True, exist_ok=True)
         frame = daily[KEY_COLUMNS].copy()
-        frame[factory.name] = values.to_numpy()
+        frame[factor_name] = values.to_numpy()
         temporary = path.with_suffix(".tmp.parquet")
         frame.to_parquet(temporary, index=False)
         temporary.replace(path)
-        logger.debug("因子 %s 缓存已写入: %s", factory.name, path)
+        logger.debug("因子 %s 缓存已写入: %s", factor_name, path)
         return path
 
     def _path(self, factory: FactorFactory, input_fingerprint: str) -> Path:
@@ -233,6 +338,24 @@ class FactorCache:
 
         implementation = _implementation_fingerprint(factory)
         return self.root / factory.name / f"{implementation}-{input_fingerprint}.parquet"
+
+    def _expression_path(
+        self,
+        node: ExpressionNode,
+        input_fingerprint: str,
+    ) -> Path:
+        """组合表达式 ID、实现指纹和输入指纹得到唯一缓存路径。
+
+        参数：
+            node: 提供稳定表达式因子 ID 和实现指纹的节点。
+            input_fingerprint: 用于区分行情版本的稳定短指纹。
+
+        返回：
+            该表达式因子当前实现和行情版本对应的 Parquet 路径。
+        """
+
+        implementation = _expression_implementation_fingerprint(node)
+        return self.root / node.factor_id / f"{implementation}-{input_fingerprint}.parquet"
 
 
 @log_elapsed(logger, "因子构建阶段")
@@ -310,16 +433,50 @@ def build_daily_features(
         timings.append((factory.name, mode, perf_counter() - factor_started))
 
     if expression_nodes:
-        frame = DailyFactorFrame(daily)
+        frame: DailyFactorFrame | None = None
         for position, node in enumerate(expression_nodes, start=1):
+            factor_started = perf_counter()
             logger.info(
-                "[%d/%d] 计算运行时表达式因子 %s: %s",
+                "[%d/%d] 处理运行时表达式因子 %s: %s",
                 position,
                 len(expression_nodes),
                 node.factor_id,
                 node.canonical,
             )
-            daily[node.factor_id] = frame.evaluate(node, name=node.factor_id)
+            values = (
+                cache.load_expression(node, input_fingerprint, daily)
+                if cache is not None
+                else None
+            )
+            if values is None:
+                logger.info(
+                    "[%d/%d] 计算运行时表达式因子 %s",
+                    position,
+                    len(expression_nodes),
+                    node.factor_id,
+                )
+                if frame is None:
+                    frame = DailyFactorFrame(daily)
+                values = frame.evaluate(node, name=node.factor_id)
+                if cache is not None:
+                    cache.save_expression(node, input_fingerprint, daily, values)
+                mode = "computed"
+                logger.info(
+                    "[%d/%d] 运行时表达式因子 %s 计算完成",
+                    position,
+                    len(expression_nodes),
+                    node.factor_id,
+                )
+            else:
+                mode = "cached"
+                logger.info(
+                    "[%d/%d] 运行时表达式因子 %s 命中缓存",
+                    position,
+                    len(expression_nodes),
+                    node.factor_id,
+                )
+            daily[node.factor_id] = values
+            timings.append((node.factor_id, mode, perf_counter() - factor_started))
 
     slowest = sorted(timings, key=lambda item: item[2], reverse=True)
     logger.info(

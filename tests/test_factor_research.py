@@ -3,14 +3,17 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
+import factor_research.factors as factors_module
 from factor_research.dataset import build_direction_dataset, split_by_date
 from factor_research.experiment import DirectionExperiment
 from factor_research.factor_factories import FACTOR_FACTORIES
 from factor_research.factor_dsl import ExpressionNode
+from factor_research.factor_dsl.frame import DailyFactorFrame
 from factor_research.factors import build_daily_features
 from factor_research.models import DirectionModel, DirectionModelFactory
 from factor_research.reporting import write_evaluation_report
@@ -155,6 +158,104 @@ class FactorResearchTest(unittest.TestCase):
                 feature_columns=[],
                 factor_expressions=["column(future_return)"],
             )
+
+    def test_runtime_expression_factors_are_cached_separately(self):
+        """运行时表达式应各自持久化，并在相同行情下跳过再次求值。"""
+
+        bars = synthetic_bars(days=6, symbols=2)
+        expressions = [
+            "delta(column(close),periods=1)",
+            "delta(column(close),periods=2)",
+        ]
+        nodes = [ExpressionNode.from_string(expression) for expression in expressions]
+        with TemporaryDirectory() as cache_dir:
+            first = build_daily_features(
+                bars,
+                feature_columns=[],
+                cache_dir=cache_dir,
+                factor_expressions=expressions,
+            )
+            cache_files = list(Path(cache_dir).rglob("*.parquet"))
+            self.assertEqual(
+                {path.parent.name for path in cache_files},
+                {node.factor_id for node in nodes},
+            )
+            self.assertEqual(len(cache_files), len(nodes))
+
+            with patch.object(
+                DailyFactorFrame,
+                "evaluate",
+                side_effect=AssertionError("缓存命中时不应再次计算表达式"),
+            ):
+                second = build_daily_features(
+                    bars,
+                    feature_columns=[],
+                    cache_dir=cache_dir,
+                    factor_expressions=expressions,
+                )
+
+            pd.testing.assert_frame_equal(first, second)
+
+            changed_bars = bars.copy()
+            changed_bars.loc[0, "volume"] += 1
+            build_daily_features(
+                changed_bars,
+                feature_columns=[],
+                cache_dir=cache_dir,
+                factor_expressions=expressions,
+            )
+            self.assertEqual(
+                len(list(Path(cache_dir).rglob("*.parquet"))),
+                2 * len(nodes),
+            )
+
+    def test_expression_cache_tracks_registered_factor_implementation(self):
+        """表达式引用的正式因子实现变化后必须重新计算并写入新版本缓存。"""
+
+        bars = synthetic_bars(days=6, symbols=2)
+        expression = "delta(column(return_1d),periods=1)"
+        node = ExpressionNode.from_string(expression)
+        with TemporaryDirectory() as cache_dir:
+            first = build_daily_features(
+                bars,
+                feature_columns=[],
+                cache_dir=cache_dir,
+                factor_expressions=[expression],
+            )
+            original_fingerprint = factors_module._implementation_fingerprint
+
+            def changed_dependency_fingerprint(factory):
+                """仅模拟被表达式引用的正式因子实现发生变化。
+
+                参数：
+                    factory: 当前正在生成实现指纹的正式因子工厂实例。
+
+                返回：
+                    ``return_1d`` 的模拟新版本指纹，或其他工厂的真实实现指纹。
+                """
+
+                fingerprint = original_fingerprint(factory)
+                if factory.name == "return_1d":
+                    return "changed000000000"
+                return fingerprint
+
+            with patch.object(
+                factors_module,
+                "_implementation_fingerprint",
+                side_effect=changed_dependency_fingerprint,
+            ):
+                second = build_daily_features(
+                    bars,
+                    feature_columns=[],
+                    cache_dir=cache_dir,
+                    factor_expressions=[expression],
+                )
+
+            expression_cache_files = list(
+                (Path(cache_dir) / node.factor_id).glob("*.parquet")
+            )
+            self.assertEqual(len(expression_cache_files), 2)
+            pd.testing.assert_frame_equal(first, second)
 
     def test_all_factory_modules_are_auto_registered(self):
         self.assertEqual(
