@@ -117,8 +117,24 @@ class InformationCoefficientTest(unittest.TestCase):
         self.assertTrue(pd.isna(daily.loc[2, "rank_ic"]))
         self.assertAlmostEqual(summary["ic"], 0.5)
         self.assertAlmostEqual(summary["rank_ic"], 0.5)
+        self.assertAlmostEqual(summary["icir"], 1 / np.sqrt(2))
+        self.assertEqual(summary["ic_win_rate"], 0.5)
         self.assertEqual(summary["ic_dates"], 2.0)
         self.assertEqual(summary["rank_ic_dates"], 2.0)
+
+    def test_icir_and_win_rate_are_nan_without_valid_variation(self):
+        """有效日不足或日 IC 无波动时，ICIR 应缺失但胜率仍应可计算。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        summary = cross_sectional_ic_metrics(
+            pd.DataFrame({"ic": [0.2, 0.2, np.nan], "rank_ic": [0.1, 0.1, np.nan]})
+        )
+
+        self.assertTrue(np.isnan(summary["icir"]))
+        self.assertEqual(summary["ic_win_rate"], 1.0)
 
     def test_rank_ic_uses_average_ranks_for_ties(self):
         score = np.array([0.1, 0.1, 0.9, 0.5])

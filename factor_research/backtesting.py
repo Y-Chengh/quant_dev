@@ -157,11 +157,9 @@ def run_top_n_intraday_backtest(
         ["target_date", score_column, "code"],
         ascending=[True, False, True],
         kind="mergesort",
-    )
+    ).reset_index(drop=True)
     grouped = frame.groupby("target_date", sort=True, group_keys=False)
-    selected = (
-        grouped.head(top_n).copy()
-    )
+    selected = grouped.head(top_n).copy()
     selected["target_return"] = pd.to_numeric(
         selected["target_return"], errors="coerce"
     )
@@ -192,6 +190,12 @@ def run_top_n_intraday_backtest(
         (1.0 + frame["target_return"]) * execution_multiplier - 1.0
     )
     bottom = grouped.tail(top_n).copy()
+    rank_position = grouped.cumcount()
+    group_size = grouped["code"].transform("size")
+    mid_count = group_size.clip(upper=top_n)
+    mid_start = (group_size - mid_count) // 2
+    mid_mask = rank_position.ge(mid_start) & rank_position.lt(mid_start + mid_count)
+    mid = frame.loc[mid_mask].copy()
     daily = (
         selected.groupby("target_date", as_index=False, sort=True)
         .agg(
@@ -213,10 +217,19 @@ def run_top_n_intraday_backtest(
     bottom_daily = bottom.groupby("target_date", sort=True).agg(
         bottom_count=("code", "size"),
         bottom_gross_return=("target_return", "mean"),
+        bottom_net_return=("net_return", "mean"),
+    )
+    mid_daily = mid.groupby("target_date", sort=True).agg(
+        mid_count=("code", "size"),
+        mid_gross_return=("target_return", "mean"),
+        mid_net_return=("net_return", "mean"),
     )
     daily = daily.merge(universe_daily, on="target_date", validate="one_to_one")
     daily = daily.merge(bottom_daily, on="target_date", validate="one_to_one")
+    daily = daily.merge(mid_daily, on="target_date", validate="one_to_one")
     daily["universe_equity"] = (1.0 + daily["universe_net_return"]).cumprod()
+    daily["bottom_equity"] = (1.0 + daily["bottom_net_return"]).cumprod()
+    daily["mid_equity"] = (1.0 + daily["mid_net_return"]).cumprod()
     daily["top_minus_universe_return"] = (
         daily["gross_return"] - daily["universe_gross_return"]
     )
@@ -279,7 +292,6 @@ def run_top_n_intraday_backtest(
         ),
     }
 
-    group_size = grouped["code"].transform("size")
     ascending_position = grouped.cumcount().rsub(group_size - 1)
     decile = (ascending_position * 10 // group_size + 1).astype(int)
     # 少于十只证券时无法形成十个等频组，用跨越 1 至 10 的有序标签明确两端。

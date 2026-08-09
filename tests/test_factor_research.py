@@ -212,6 +212,8 @@ class FactorResearchTest(unittest.TestCase):
         self.assertTrue(np.isfinite(result.metrics["auc"]))
         self.assertIn("ic", result.metrics)
         self.assertIn("rank_ic", result.metrics)
+        self.assertIn("icir", result.metrics)
+        self.assertIn("ic_win_rate", result.metrics)
         self.assertIn("pooled_ic", result.metrics)
         self.assertAlmostEqual(
             result.metrics["pooled_ic"],
@@ -251,6 +253,8 @@ class FactorResearchTest(unittest.TestCase):
             self.assertIn("ROC AUC", report)
             self.assertIn("| IC |", report)
             self.assertIn("| Rank IC |", report)
+            self.assertIn("| ICIR |", report)
+            self.assertIn("| IC 胜率 |", report)
             self.assertIn("## 每日横截面 IC", report)
             self.assertIn(chart_path.name, report)
             self.assertGreater(report.index("## 每日预估汇总"), report.index("## 运行参数"))

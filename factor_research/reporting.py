@@ -20,6 +20,8 @@ METRIC_LABELS = {
     "auc": "ROC AUC",
     "ic": "IC",
     "rank_ic": "Rank IC",
+    "icir": "ICIR",
+    "ic_win_rate": "IC 胜率",
     "pooled_ic": "全样本 Pearson IC",
     "ic_dates": "有效 IC 交易日数",
     "rank_ic_dates": "有效 Rank IC 交易日数",
@@ -100,17 +102,23 @@ def render_equity_curve_svg(
     daily_returns: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """将 Top N 策略的日度净值曲线渲染为独立 SVG。
+    """将 Top N 及三组横截面对照的日度净值曲线渲染为独立 SVG。
 
     参数：
-        daily_returns: 按目标交易日排序且含 ``target_date`` 和 ``equity`` 的
-            日度回测结果。
+        daily_returns: 按目标交易日排序且至少含日期与 Top N 累计净值的日度回测
+            结果；全市场平均、Bottom N 和 Mid N 净值列可选，以兼容旧结果。
         output_path: SVG 收益曲线的写入路径。
 
     返回：
         无；函数将 SVG 内容写入 ``output_path``。
     """
 
+    equity_columns = {
+        "equity": ("Top N", "equity"),
+        "universe_equity": ("全市场平均", "universe"),
+        "bottom_equity": ("Bottom N", "bottom"),
+        "mid_equity": ("Mid N", "mid"),
+    }
     required = {"target_date", "equity"}
     missing = required.difference(daily_returns.columns)
     if missing:
@@ -122,14 +130,29 @@ def render_equity_curve_svg(
     left, right, top, bottom = 82, 28, 38, 66
     plot_width = width - left - right
     plot_height = height - top - bottom
-    closing_equity = daily_returns["equity"].to_numpy(dtype=float)
-    if not np.isfinite(closing_equity).all():
+    available_equity_columns = {
+        column: metadata
+        for column, metadata in equity_columns.items()
+        if column in daily_returns.columns
+    }
+    closing_equities = daily_returns.loc[
+        :, list(available_equity_columns)
+    ].to_numpy(
+        dtype=float
+    )
+    if not np.isfinite(closing_equities).all():
         raise ValueError("收益曲线净值包含 NaN 或无穷值")
     # 显式加入期初净值，确保单日回测也能画出一条可见线段。
-    equity = np.concatenate(([1.0], closing_equity))
-    count = len(equity)
-    lower = min(1.0, float(equity.min()))
-    upper = max(1.0, float(equity.max()))
+    equities = {
+        column: np.concatenate(
+            ([1.0], daily_returns[column].to_numpy(dtype=float))
+        )
+        for column in available_equity_columns
+    }
+    count = len(next(iter(equities.values())))
+    all_equities = np.concatenate(list(equities.values()))
+    lower = min(1.0, float(all_equities.min()))
+    upper = max(1.0, float(all_equities.max()))
     padding = max((upper - lower) * 0.08, max(abs(lower), abs(upper), 1.0) * 0.01)
     y_min, y_max = lower - padding, upper + padding
 
@@ -157,10 +180,13 @@ def render_equity_curve_svg(
 
         return top + (y_max - value) / (y_max - y_min) * plot_height
 
-    points = " ".join(
-        f"{x_at(index):.2f},{y_at(value):.2f}"
-        for index, value in enumerate(equity)
-    )
+    curve_points = {
+        column: " ".join(
+            f"{x_at(index):.2f},{y_at(value):.2f}"
+            for index, value in enumerate(values)
+        )
+        for column, values in equities.items()
+    }
     date_labels = [
         "期初",
         *(date.strftime("%Y-%m-%d") for date in pd.to_datetime(daily_returns["target_date"])),
@@ -169,10 +195,10 @@ def render_equity_curve_svg(
     y_ticks = np.linspace(y_min, y_max, 5)
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
-        '<title id="title">Top N 日内策略收益曲线</title>',
-        '<desc id="desc">每日按模型分数选择证券并计入双边滑点和手续费后的累计净值</desc>',
+        '<title id="title">Top N 与横截面对照收益曲线</title>',
+        '<desc id="desc">Top N、全市场平均、Bottom N 和 Mid N 计入相同双边成本后的累计净值</desc>',
         '<rect width="100%" height="100%" fill="#ffffff"/>',
-        '<style>text{font-family:Arial,"Microsoft YaHei",sans-serif;fill:#334155}.grid{stroke:#e2e8f0;stroke-width:1}.axis{stroke:#64748b;stroke-width:1.2}.baseline{stroke:#94a3b8;stroke-width:1;stroke-dasharray:5 4}.equity{fill:none;stroke:#059669;stroke-width:2.5}</style>',
+        '<style>text{font-family:Arial,"Microsoft YaHei",sans-serif;fill:#334155}.grid{stroke:#e2e8f0;stroke-width:1}.axis{stroke:#64748b;stroke-width:1.2}.baseline{stroke:#94a3b8;stroke-width:1;stroke-dasharray:5 4}.equity,.universe,.bottom,.mid{fill:none;stroke-width:2.3}.equity{stroke:#059669}.universe{stroke:#2563eb}.bottom{stroke:#dc2626}.mid{stroke:#d97706}</style>',
     ]
     for value in y_ticks:
         y = y_at(float(value))
@@ -187,15 +213,27 @@ def render_equity_curve_svg(
             f'<line class="axis" x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}"/>',
             f'<line class="axis" x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}"/>',
             f'<line class="baseline" x1="{left}" y1="{y_at(1.0):.2f}" x2="{width - right}" y2="{y_at(1.0):.2f}"/>',
-            f'<polyline class="equity" points="{points}"/>',
         ]
     )
+    for column, (_, css_class) in available_equity_columns.items():
+        svg.append(
+            f'<polyline class="{css_class}" points="{curve_points[column]}"/>'
+        )
     for index in tick_indices:
         x = x_at(int(index))
         label = escape(date_labels[int(index)])
         svg.append(
             f'<text x="{x:.2f}" y="{height - bottom + 25}" font-size="12" text-anchor="middle">{label}</text>'
         )
+    legend_x = width - 430
+    for position, (_, (label, css_class)) in enumerate(
+        available_equity_columns.items()
+    ):
+        x = legend_x + position * 108
+        svg.append(
+            f'<line class="{css_class}" x1="{x}" y1="19" x2="{x + 28}" y2="19"/>'
+        )
+        svg.append(f'<text x="{x + 34}" y="23" font-size="12">{label}</text>')
     svg.append("</svg>")
     output_path.write_text("\n".join(svg), encoding="utf-8")
 
@@ -307,9 +345,11 @@ def write_evaluation_report(
         lines.extend(
             [
                 "",
-                "## Top N 收益曲线",
+                "## Top N 与横截面对照收益曲线",
                 "",
-                f"![Top N 日内策略收益曲线]({equity_chart_path.name})",
+                f"![Top N、全市场平均、Bottom N 与 Mid N 收益曲线]({equity_chart_path.name})",
+                "",
+                "四组均按目标日开盘等权买入、收盘卖出并采用相同双边成本；Mid N 为预测排序居中的最多 N 只。",
                 "",
                 "## Top N 基准与横截面对照",
                 "",

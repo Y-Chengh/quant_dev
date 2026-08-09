@@ -79,7 +79,19 @@ def daily_cross_sectional_ic(
 
 
 def cross_sectional_ic_metrics(daily_ic: pd.DataFrame) -> dict[str, float]:
-    """汇总每日横截面 IC；均值只使用对应 IC 为有限值的交易日。"""
+    """汇总每日横截面 IC、ICIR 和 IC 胜率。
+
+    ICIR 使用有效交易日日 IC 均值除以样本标准差，不做年化；少于两个有效日或
+    标准差为零时返回 NaN。IC 胜率为有效交易日中 IC 大于数值零容差的比例，
+    避免理论零相关因浮点舍入被误计为胜出。
+
+    参数：
+        daily_ic: 含 ``ic`` 和 ``rank_ic`` 列的逐日横截面指标表；非有限值不参与
+            对应指标计算。
+
+    返回：
+        IC、Rank IC、ICIR、IC 胜率及对应有效交易日数的汇总字典。
+    """
     required = {"ic", "rank_ic"}
     missing = required.difference(daily_ic.columns)
     if missing:
@@ -88,11 +100,28 @@ def cross_sectional_ic_metrics(daily_ic: pd.DataFrame) -> dict[str, float]:
     rank_ic = daily_ic["rank_ic"].to_numpy(dtype=float)
     valid_ic = np.isfinite(ic)
     valid_rank_ic = np.isfinite(rank_ic)
+    finite_ic = ic[valid_ic]
+    ic_mean = float(np.mean(finite_ic)) if finite_ic.size else float("nan")
+    ic_std = (
+        float(np.std(finite_ic, ddof=1))
+        if finite_ic.size >= 2
+        else float("nan")
+    )
     return {
-        "ic": float(np.mean(ic[valid_ic])) if valid_ic.any() else float("nan"),
+        "ic": ic_mean,
         "rank_ic": (
             float(np.mean(rank_ic[valid_rank_ic]))
             if valid_rank_ic.any()
+            else float("nan")
+        ),
+        "icir": (
+            float(ic_mean / ic_std)
+            if np.isfinite(ic_std) and ic_std > 0.0
+            else float("nan")
+        ),
+        "ic_win_rate": (
+            float(np.mean(finite_ic > 1e-12))
+            if finite_ic.size
             else float("nan")
         ),
         "ic_dates": float(valid_ic.sum()),

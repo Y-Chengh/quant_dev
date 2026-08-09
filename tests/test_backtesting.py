@@ -13,7 +13,10 @@ from factor_research.backtesting import (
     run_top_n_intraday_backtest,
 )
 from factor_research.experiment import ExperimentResult
-from factor_research.reporting import write_evaluation_report
+from factor_research.reporting import (
+    render_equity_curve_svg,
+    write_evaluation_report,
+)
 from run_factor_demo import parse_args, resolve_equity_chart_path
 
 
@@ -66,6 +69,21 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         np.testing.assert_allclose(
             result.daily_returns["equity"], np.cumprod(1.0 + expected_net)
         )
+        expected_control_gross = {
+            "universe": np.array([1 / 60, 1 / 30]),
+            "bottom": np.array([-0.025, 0.04]),
+            "mid": expected_gross,
+        }
+        for prefix, gross_returns in expected_control_gross.items():
+            expected_control_net = (1.0 + gross_returns) * multiplier - 1.0
+            np.testing.assert_allclose(
+                result.daily_returns[f"{prefix}_net_return"],
+                expected_control_net,
+            )
+            np.testing.assert_allclose(
+                result.daily_returns[f"{prefix}_equity"],
+                np.cumprod(1.0 + expected_control_net),
+            )
         expected_sharpe = (
             np.sqrt(TRADING_DAYS_PER_YEAR)
             * expected_net.mean()
@@ -142,6 +160,16 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertAlmostEqual(
             result.relative_metrics["top_minus_bottom_annualized_return"],
             0.008 * TRADING_DAYS_PER_YEAR,
+        )
+        np.testing.assert_allclose(result.daily_returns["bottom_net_return"], 0.0005)
+        np.testing.assert_allclose(result.daily_returns["mid_net_return"], 0.0045)
+        np.testing.assert_allclose(
+            result.daily_returns["bottom_equity"],
+            np.cumprod(np.full(2, 1.0005)),
+        )
+        np.testing.assert_allclose(
+            result.daily_returns["mid_equity"],
+            np.cumprod(np.full(2, 1.0045)),
         )
         top_decile = result.decile_returns.set_index("predicted_decile").loc[10]
         self.assertEqual(top_decile["samples"], 2)
@@ -439,6 +467,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             equity_svg = equity_path.read_text(encoding="utf-8")
 
         self.assertIn("## Top N 日内策略回测", report)
+        self.assertIn("## Top N 与横截面对照收益曲线", report)
         self.assertIn("## Top N 基准与横截面对照", report)
         self.assertIn("## Top N 超额与多空价差", report)
         self.assertIn("## 预测分数十分位收益", report)
@@ -448,7 +477,36 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("单边滑点：2.0000 bps", report)
         self.assertIn(equity_path.name, report)
         self.assertIn('<polyline class="equity"', equity_svg)
+        self.assertIn('<polyline class="universe"', equity_svg)
+        self.assertIn('<polyline class="bottom"', equity_svg)
+        self.assertIn('<polyline class="mid"', equity_svg)
+        self.assertIn(">全市场平均</text>", equity_svg)
+        self.assertIn(">Bottom N</text>", equity_svg)
+        self.assertIn(">Mid N</text>", equity_svg)
         self.assertIn(">期初</text>", equity_svg)
+
+    def test_equity_renderer_accepts_legacy_top_only_frame(self) -> None:
+        """旧调用方只提供 Top N 净值时仍应生成单曲线 SVG。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        legacy_daily = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "equity": [1.01, 0.99],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "legacy_equity.svg"
+            render_equity_curve_svg(legacy_daily, output_path)
+            equity_svg = output_path.read_text(encoding="utf-8")
+
+        self.assertIn('<polyline class="equity"', equity_svg)
+        self.assertNotIn('<polyline class="universe"', equity_svg)
+        self.assertNotIn('<polyline class="bottom"', equity_svg)
+        self.assertNotIn('<polyline class="mid"', equity_svg)
 
 
 if __name__ == "__main__":
