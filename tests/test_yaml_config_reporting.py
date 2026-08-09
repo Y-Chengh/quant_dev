@@ -14,7 +14,10 @@ import numpy as np
 import pandas as pd
 
 from factor_research.experiment import ExperimentResult
-from factor_research.reporting import write_evaluation_report
+from factor_research.reporting import (
+    render_markdown_report_html,
+    write_evaluation_report,
+)
 import run_factor_demo
 
 
@@ -104,6 +107,60 @@ class YamlConfigReportingTest(unittest.TestCase):
         report = self._render(None)
 
         self.assertIn("## YAML 配置\n\n未使用 YAML 配置文件。", report)
+
+    def test_report_automatically_writes_readable_safe_html(self):
+        """Markdown 报告应自动生成带目录、宽表样式和安全转义的 HTML。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "evaluation.md"
+            chart_path = root / "accuracy.svg"
+            write_evaluation_report(
+                _result(),
+                report_path,
+                chart_path,
+                "html-run",
+                {"description": "<unsafe>"},
+                yaml_config="description: <script>alert(1)</script>\n",
+            )
+            html = report_path.with_suffix(".html").read_text(encoding="utf-8")
+
+        self.assertIn('<html lang="zh-CN">', html)
+        self.assertIn("<aside><h2>报告目录</h2>", html)
+        self.assertIn('class="table-scroll"', html)
+        self.assertIn("position:sticky", html)
+        self.assertIn('src="accuracy.svg"', html)
+        self.assertIn('href="evaluation.md"', html)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+
+    def test_standalone_html_renderer_supports_long_fences_and_escaped_pipes(self):
+        """独立转换器应支持长代码围栏，并正确解析表格中的转义竖线。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        markdown_text = (
+            "# 示例报告\n\n"
+            "| 字段 | 内容 |\n"
+            "| --- | --- |\n"
+            "| 代码 | `A\\|B`<br>第二行 |\n\n"
+            "````yaml\nvalue: ```\nunsafe: <tag>\n````\n"
+        )
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "standalone.html"
+            render_markdown_report_html(markdown_text, output_path)
+            html = output_path.read_text(encoding="utf-8")
+
+        self.assertIn("<code>A|B</code><br>第二行", html)
+        self.assertIn('class="language-yaml"', html)
+        self.assertIn("value: ```", html)
+        self.assertIn("unsafe: &lt;tag&gt;", html)
 
     def test_regression_result_is_reported_without_probabilities(self):
         target_date = pd.Timestamp("2025-06-02")

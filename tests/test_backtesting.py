@@ -568,6 +568,9 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             )
             report = report_path.read_text(encoding="utf-8")
             equity_svg = equity_path.read_text(encoding="utf-8")
+            html_report = report_path.with_suffix(".html").read_text(
+                encoding="utf-8"
+            )
 
         self.assertIn("## Top N 日内策略回测", report)
         self.assertIn("### 每日 Top N 选股明细", report)
@@ -597,6 +600,10 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn(">Bottom N</text>", equity_svg)
         self.assertIn(">Mid N</text>", equity_svg)
         self.assertIn(">期初</text>", equity_svg)
+        self.assertIn("每日 Top N 选股明细", html_report)
+        self.assertIn("`A`", report)
+        self.assertIn("<code>A</code><br>预估：0.900000", html_report)
+        self.assertIn('class="table-scroll"', html_report)
 
     def test_equity_renderer_accepts_legacy_top_only_frame(self) -> None:
         """旧调用方只提供 Top N 净值时仍应生成单曲线 SVG。

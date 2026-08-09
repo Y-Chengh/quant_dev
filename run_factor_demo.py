@@ -502,6 +502,7 @@ def main() -> None:
         equity_chart_path=resolve_equity_chart_path(chart_file),
     )
     logger.info("评估报告: %s", report_file.resolve())
+    logger.info("HTML 报告: %s", report_file.with_suffix(".html").resolve())
 
 
 if __name__ == "__main__":

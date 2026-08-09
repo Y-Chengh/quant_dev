@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from html import escape
 from pathlib import Path
+import re
 from typing import Any
 
 import numpy as np
@@ -51,6 +52,258 @@ def _format_percentage(value: Any) -> str:
 
     number = float(value)
     return "N/A" if not np.isfinite(number) else f"{number:.2%}"
+
+
+def _render_inline_markdown(text: str, allow_breaks: bool = False) -> str:
+    """安全渲染报告使用的图片和行内代码 Markdown 子集。
+
+    参数：
+        text: 单个标题、段落或表格单元格的 Markdown 文本。
+        allow_breaks: 是否保留报告生成器写入的 ``<br>`` 换行标签；仅表格
+            单元格应启用，其他原始 HTML 一律转义。
+
+    返回：
+        已完成 HTML 转义并替换受支持行内标记的文本。
+    """
+
+    token_pattern = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)|`([^`]+)`")
+
+    def escaped_text(value: str) -> str:
+        """转义普通文本，并按调用口径选择性保留换行标签。
+
+        参数：
+            value: 不包含图片或行内代码 token 的普通 Markdown 片段。
+
+        返回：
+            可安全嵌入 HTML 的文本片段。
+        """
+
+        if not allow_breaks:
+            return escape(value)
+        return "<br>".join(escape(part) for part in value.split("<br>"))
+
+    rendered: list[str] = []
+    cursor = 0
+    for match in token_pattern.finditer(text):
+        rendered.append(escaped_text(text[cursor : match.start()]))
+        if match.group(1) is not None:
+            alt = escape(match.group(1), quote=True)
+            source = escape(match.group(2), quote=True)
+            rendered.append(
+                f'<img src="{source}" alt="{alt}" loading="lazy">'
+            )
+        else:
+            rendered.append(f"<code>{escape(match.group(3))}</code>")
+        cursor = match.end()
+    rendered.append(escaped_text(text[cursor:]))
+    return "".join(rendered)
+
+
+def _split_markdown_table_row(line: str) -> list[str]:
+    """拆分一行 Markdown 表格并保留转义后的竖线字符。
+
+    参数：
+        line: 以竖线分隔的 Markdown 表头、分隔行或数据行。
+
+    返回：
+        去除单元格两侧空白后的字段列表。
+    """
+
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells: list[str] = []
+    current: list[str] = []
+    index = 0
+    while index < len(stripped):
+        character = stripped[index]
+        if character == "\\" and index + 1 < len(stripped):
+            following = stripped[index + 1]
+            if following == "|":
+                current.append("|")
+                index += 2
+                continue
+        if character == "|":
+            cells.append("".join(current).strip())
+            current = []
+        else:
+            current.append(character)
+        index += 1
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    """判断文本行是否为 Markdown 表格的对齐分隔行。
+
+    参数：
+        line: 待识别的 Markdown 文本行。
+
+    返回：
+        所有单元格都只含冒号和至少三个连字符时返回 ``True``。
+    """
+
+    cells = _split_markdown_table_row(line)
+    return bool(cells) and all(
+        re.fullmatch(r":?-{3,}:?", cell) is not None for cell in cells
+    )
+
+
+def _markdown_report_body(
+    markdown_text: str,
+) -> tuple[str, list[tuple[int, str, str]], str]:
+    """将框架生成的 Markdown 报告转换为安全的语义化 HTML 主体。
+
+    参数：
+        markdown_text: ``write_evaluation_report`` 生成的完整 Markdown 文本。
+
+    返回：
+        HTML 主体、目录标题元组列表及文档标题。
+    """
+
+    lines = markdown_text.splitlines()
+    body: list[str] = []
+    headings: list[tuple[int, str, str]] = []
+    document_title = "量化因子研究报告"
+    index = 0
+    heading_number = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if not stripped:
+            index += 1
+            continue
+
+        fence_match = re.fullmatch(r"(`{3,})([A-Za-z0-9_-]*)", stripped)
+        if fence_match is not None:
+            delimiter = fence_match.group(1)
+            language = fence_match.group(2)
+            code_lines: list[str] = []
+            index += 1
+            while index < len(lines) and lines[index].strip() != delimiter:
+                code_lines.append(lines[index])
+                index += 1
+            if index < len(lines):
+                index += 1
+            language_class = (
+                f' class="language-{escape(language, quote=True)}"'
+                if language
+                else ""
+            )
+            body.append(
+                f"<pre><code{language_class}>"
+                f"{escape(chr(10).join(code_lines))}</code></pre>"
+            )
+            continue
+
+        heading_match = re.fullmatch(r"(#{1,6})\s+(.+)", stripped)
+        if heading_match is not None:
+            level = len(heading_match.group(1))
+            label = heading_match.group(2)
+            heading_number += 1
+            anchor = f"section-{heading_number}"
+            plain_label = re.sub(r"`([^`]+)`", r"\1", label)
+            if level == 1:
+                document_title = plain_label
+            headings.append((level, plain_label, anchor))
+            body.append(
+                f'<h{level} id="{anchor}">'
+                f'<a class="heading-anchor" href="#{anchor}">#</a>'
+                f"{_render_inline_markdown(label)}</h{level}>"
+            )
+            index += 1
+            continue
+
+        if (
+            stripped.startswith("|")
+            and index + 1 < len(lines)
+            and _is_markdown_table_separator(lines[index + 1])
+        ):
+            headers = _split_markdown_table_row(line)
+            alignments = _split_markdown_table_row(lines[index + 1])
+            body.append('<div class="table-scroll"><table><thead><tr>')
+            for cell, alignment in zip(headers, alignments):
+                align_class = " align-right" if alignment.endswith(":") else ""
+                body.append(
+                    f'<th class="{align_class.strip()}">'
+                    f"{_render_inline_markdown(cell, allow_breaks=True)}</th>"
+                )
+            body.append("</tr></thead><tbody>")
+            index += 2
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                cells = _split_markdown_table_row(lines[index])
+                body.append("<tr>")
+                for position, cell in enumerate(cells):
+                    alignment = (
+                        alignments[position] if position < len(alignments) else ""
+                    )
+                    align_class = " align-right" if alignment.endswith(":") else ""
+                    body.append(
+                        f'<td class="{align_class.strip()}">'
+                        f"{_render_inline_markdown(cell, allow_breaks=True)}</td>"
+                    )
+                body.append("</tr>")
+                index += 1
+            body.append("</tbody></table></div>")
+            continue
+
+        if stripped.startswith("- "):
+            body.append("<ul>")
+            while index < len(lines) and lines[index].strip().startswith("- "):
+                item = lines[index].strip()[2:]
+                body.append(f"<li>{_render_inline_markdown(item)}</li>")
+                index += 1
+            body.append("</ul>")
+            continue
+
+        body.append(f"<p>{_render_inline_markdown(stripped)}</p>")
+        index += 1
+    return "\n".join(body), headings, document_title
+
+
+def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
+    """将评估 Markdown 转换为带目录和响应式样式的自包含 HTML。
+
+    HTML 使用同目录的 SVG 图表相对路径；宽表支持横向滚动并冻结首列，目录在
+    桌面端固定显示，在窄屏设备上自动收起。所有报告动态文本默认进行 HTML
+    转义，避免 YAML 或参数快照被解释为可执行标签。
+
+    参数：
+        markdown_text: 已生成的完整 Markdown 报告内容。
+        output_path: HTML 报告写入路径，通常与 Markdown 同名且后缀为 ``.html``。
+
+    返回：
+        无；函数将完整 HTML 文档写入指定路径。
+    """
+
+    body, headings, document_title = _markdown_report_body(markdown_text)
+    navigation = "\n".join(
+        f'<a class="toc-level-{level}" href="#{anchor}">{escape(label)}</a>'
+        for level, label, anchor in headings
+        if level <= 3
+    )
+    source_name = escape(output_path.with_suffix(".md").name, quote=True)
+    html = f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{escape(document_title)}</title>
+<style>
+:root{{--bg:#f4f7fb;--panel:#fff;--ink:#172033;--muted:#64748b;--line:#dbe3ee;--brand:#2563eb;--brand-soft:#eff6ff;--shadow:0 14px 40px rgba(15,23,42,.08)}}
+*{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Microsoft YaHei","PingFang SC",Arial,sans-serif;line-height:1.65}}
+.layout{{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}}aside{{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 22px;background:#0f172a;color:#e2e8f0}}aside h2{{margin:0 0 18px;font-size:17px;color:#fff}}nav{{display:flex;flex-direction:column;gap:4px}}nav a{{padding:7px 10px;border-radius:7px;color:#cbd5e1;text-decoration:none;font-size:13px}}nav a:hover{{background:#1e293b;color:#fff}}nav .toc-level-3{{padding-left:24px;font-size:12px;color:#94a3b8}}.source{{display:block;margin-top:24px;padding:9px 12px;border:1px solid #334155;border-radius:8px;color:#bfdbfe;text-align:center;text-decoration:none;font-size:12px}}
+main{{min-width:0;padding:34px}}article{{max-width:1500px;margin:0 auto;padding:38px 42px 70px;background:var(--panel);border:1px solid #e7edf5;border-radius:16px;box-shadow:var(--shadow)}}h1{{margin:0 0 22px;font-size:30px;line-height:1.25}}h2{{margin:42px 0 16px;padding-bottom:9px;border-bottom:2px solid var(--line);font-size:22px}}h3{{margin:30px 0 12px;font-size:18px}}h4{{margin:25px 0 10px;color:#334155}}.heading-anchor{{margin-left:-20px;padding-right:6px;color:#94a3b8;text-decoration:none;opacity:0}}h1:hover .heading-anchor,h2:hover .heading-anchor,h3:hover .heading-anchor,h4:hover .heading-anchor{{opacity:1}}p{{margin:10px 0;color:#334155}}ul{{margin:8px 0 20px;padding-left:22px}}code{{padding:.12em .38em;border-radius:5px;background:#eef2f7;color:#be123c;font-family:"Cascadia Code",Consolas,monospace;font-size:.9em}}pre{{overflow:auto;padding:18px;border-radius:10px;background:#111827;color:#e5e7eb}}pre code{{padding:0;background:transparent;color:inherit}}img{{display:block;max-width:100%;height:auto;margin:18px auto;border:1px solid var(--line);border-radius:10px;background:#fff}}
+.table-scroll{{max-width:100%;margin:14px 0 24px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}}table{{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45}}th,td{{min-width:108px;padding:10px 12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:2;background:#eaf1fb;color:#1e3a5f;font-weight:700}}th:first-child,td:first-child{{position:sticky;left:0;z-index:1;min-width:120px;background:#f8fafc}}th:first-child{{z-index:3;background:#dfeafb}}tbody tr:nth-child(even) td{{background:#f8fafc}}tbody tr:nth-child(even) td:first-child{{background:#eef2f7}}tbody tr:hover td{{background:#fff7ed}}tbody tr:hover td:first-child{{background:#ffedd5}}tr:last-child td{{border-bottom:0}}th:last-child,td:last-child{{border-right:0}}.align-right{{text-align:right;font-variant-numeric:tabular-nums}}
+@media(max-width:900px){{.layout{{display:block}}aside{{position:relative;width:auto;height:auto;padding:18px}}nav{{display:none}}.source{{margin-top:8px}}main{{padding:12px}}article{{padding:24px 18px;border-radius:10px}}h1{{font-size:25px}}h2{{font-size:20px}}}}
+@media print{{body{{background:#fff}}.layout{{display:block}}aside{{display:none}}main{{padding:0}}article{{max-width:none;padding:0;border:0;box-shadow:none}}.table-scroll{{overflow:visible}}th,td{{white-space:normal}}}}
+</style>
+</head>
+<body><div class="layout"><aside><h2>报告目录</h2><nav>{navigation}</nav><a class="source" href="{source_name}">查看原始 Markdown</a></aside><main><article>{body}</article></main></div></body>
+</html>"""
+    output_path.write_text(html, encoding="utf-8")
 
 
 def _render_top_selection_tables(
@@ -343,7 +596,7 @@ def write_evaluation_report(
     backtest: TopNBacktestResult | None = None,
     equity_chart_path: Path | None = None,
 ) -> None:
-    """写入模型评估、可选 Top N 回测以及对应 SVG 图表。
+    """写入模型评估、可选 Top N 回测、HTML 副本以及对应 SVG 图表。
 
     参数：
         result: 模型验证结果及逐证券预测。
@@ -356,7 +609,7 @@ def write_evaluation_report(
         equity_chart_path: 收益曲线 SVG 路径；提供回测结果时必须同时提供。
 
     返回：
-        无；函数写入 Markdown 报告及配置的 SVG 图表。
+        无；函数写入 Markdown、同名 HTML 报告及配置的 SVG 图表。
     """
     report_path.parent.mkdir(parents=True, exist_ok=True)
     render_accuracy_trend_svg(result.daily_accuracy_trend, chart_path)
@@ -596,4 +849,6 @@ def write_evaluation_report(
         )
 
     lines.append("")
-    report_path.write_text("\n".join(lines), encoding="utf-8")
+    markdown_text = "\n".join(lines)
+    report_path.write_text(markdown_text, encoding="utf-8")
+    render_markdown_report_html(markdown_text, report_path.with_suffix(".html"))
