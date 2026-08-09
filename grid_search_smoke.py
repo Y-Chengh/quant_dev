@@ -49,8 +49,8 @@ GENETIC_POPULATION_SIZE = 96
 GENETIC_MAX_GENERATIONS = 8
 GENETIC_MAX_EVALUATIONS = 500
 GENETIC_RANDOM_SEED = 20260809
-GENETIC_FREE_NODE_COUNT = 2
-GENETIC_LENGTH_PENALTY = 0.002
+GENETIC_FREE_NODE_COUNT = 3
+GENETIC_LENGTH_PENALTY = 0.001
 
 
 def print_genetic_progress(event: GeneticProgressEvent) -> None:
@@ -591,11 +591,31 @@ def write_grid_search_report(
 
     selection = _period_summary(context, context.selection_mask)
     holdout = _period_summary(context, context.holdout_mask)
+    equivalence_columns = {
+        "selection_oriented_value_fingerprint",
+        "selection_oriented_rank_fingerprint",
+    }
+    equivalence_enabled = equivalence_columns.issubset(leaderboard.columns)
+    screening_failures = (
+        int(errors["stage"].eq("screening").sum())
+        if "stage" in errors.columns
+        else 0
+    )
+    equivalent_candidates_removed = (
+        max(
+            0,
+            len(result.candidates) - screening_failures - len(leaderboard),
+        )
+        if equivalence_enabled
+        else 0
+    )
     enriched_metadata = {
         **dict(metadata),
         "objective": result.objective,
         "generated_candidates": len(result.candidates),
         "leaderboard_rows": len(leaderboard),
+        "equivalence_deduplication_enabled": equivalence_enabled,
+        "equivalent_candidates_removed": equivalent_candidates_removed,
         "eligible_candidates": int(leaderboard["eligible"].sum()),
         "failed_evaluations": len(errors),
         "successful_holdout_candidates": completed_holdout_ids,
@@ -618,10 +638,14 @@ def write_grid_search_report(
     best_row = leaderboard.loc[
         leaderboard["factor_id"].eq(best.factor_id)
     ].iloc[0]
-    overview = pd.DataFrame(
+    overview_rows: list[tuple[str, object]] = [
+        ("候选表达式", len(result.candidates)),
+        ("成功进入排行榜", len(leaderboard)),
+    ]
+    if equivalence_enabled:
+        overview_rows.append(("selection 等价去重", equivalent_candidates_removed))
+    overview_rows.extend(
         [
-            ("候选表达式", len(result.candidates)),
-            ("成功进入排行榜", len(leaderboard)),
             ("合格候选", int(leaderboard["eligible"].sum())),
             ("失败评价", len(errors)),
             ("selection 排名目标", result.objective),
@@ -629,9 +653,9 @@ def write_grid_search_report(
             ("最优目标值", best_row[result.objective]),
             ("报告 holdout 披露上限", holdout_top_k),
             ("成功完成 holdout 评价", len(completed_holdout_ids)),
-        ],
-        columns=["项目", "结果"],
+        ]
     )
+    overview = pd.DataFrame(overview_rows, columns=["项目", "结果"])
     split_table = pd.DataFrame(
         [
             {"period": "selection", **selection},
@@ -722,6 +746,26 @@ def write_grid_search_report(
         if has_history
         else []
     )
+    equivalence_lines = (
+        [
+            f"遗传搜索仅在 selection 上按方向调整后的候选值和逐日横截面 Rank 指纹去重，本次移除 {equivalent_candidates_removed} 个等价表达式；`candidates.json` 仍保留全部已评价候选供审计。",
+            "",
+        ]
+        if equivalence_enabled
+        else []
+    )
+    equivalence_constraint_lines = (
+        [
+            "- 等价候选只依据 selection 方向值及逐日横截面 Rank 判断，每个等价类只保留节点最少者进入排行榜和后续 holdout。"
+        ]
+        if equivalence_enabled
+        else []
+    )
+    leaderboard_attachment = (
+        "- [leaderboard.csv](leaderboard.csv)：selection 等价去重后的候选及所有汇总指标。"
+        if equivalence_enabled
+        else "- [leaderboard.csv](leaderboard.csv)：全部成功候选及所有汇总指标。"
+    )
     lines = [
         f"# {report_title}",
         "",
@@ -751,7 +795,7 @@ def write_grid_search_report(
         f"原始分钟行数：{metadata.get('bar_rows', '—')}；日频行数：{len(context.daily)}；请求证券：{', '.join(map(str, requested_codes))}。",
         "",
         "切分按 `target_date` 执行。selection 用于排名和锁定方向；holdout 只报告运行前确定的 Top K，未对其他候选计算 holdout 指标属于预期行为。",
-        "",
+        *equivalence_lines,
         "## Selection 排名前 10",
         "",
         _markdown_table(leaderboard.head(10), top_columns),
@@ -776,6 +820,7 @@ def write_grid_search_report(
         "- 特征只使用特征日收盘时已可见的数据；滚动窗口以当日为右端点。",
         "- 目标为每只证券下一有效交易日开盘至收盘收益率。",
         "- 因子方向只依据 selection Rank IC 锁定，holdout 沿用同一方向。",
+        *equivalence_constraint_lines,
         "- 横截面 IC 和 Rank IC 按目标交易日独立计算；报告中的 ICIR 未年化。",
         "- 本报告没有依据 holdout 结果增减候选或改变排名。",
         "",
@@ -783,7 +828,7 @@ def write_grid_search_report(
         "",
         "- [run_metadata.json](run_metadata.json)：数据范围、证券、搜索参数、运行耗时和切分统计。",
         "- [candidates.json](candidates.json)：全部候选的规范表达式及可反序列化表达式树。",
-        "- [leaderboard.csv](leaderboard.csv)：全部成功候选及所有汇总指标。",
+        leaderboard_attachment,
         "- [errors.csv](errors.csv)：selection、holdout、model 各阶段的隔离错误。",
         "- [best_factor_values.csv](best_factor_values.csv)：已按 selection 方向调整的最优因子日频值。",
         "- [top_candidates_daily_ic.csv](top_candidates_daily_ic.csv)：预先入选 Top K 的逐日 selection/holdout IC。",

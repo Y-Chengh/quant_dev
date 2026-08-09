@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 import unittest
 
+import numpy as np
 import pandas as pd
 
 from factor_research.factor_dsl import ExpressionNode, operation_node
@@ -282,6 +283,104 @@ class GeneticSearchExecutionTest(unittest.TestCase):
             result.history["total_evaluations"].is_monotonic_increasing
         )
 
+    def test_selection_fingerprints_are_directional_and_grouped_by_date(self) -> None:
+        """方向等价值及逐日横截面秩应稳定识别等价与缺失差异。"""
+
+        context = _genetic_context()
+        evaluator = IcEvaluator(include_equivalence_fingerprints=True)
+        candidate = FactorCandidate(ExpressionNode.column("signal"))
+        signal = context.daily["signal"].copy()
+
+        base = evaluator.evaluate(candidate, signal, context)
+        reversed_metrics = evaluator.evaluate(candidate, -signal, context)
+        date_offsets = (
+            pd.factorize(context.daily["trade_date"])[0].astype(float) * 100.0
+        )
+        shifted = evaluator.evaluate(candidate, signal + date_offsets, context)
+        missing = signal.copy()
+        first_selection_position = int(
+            context.target_positions[np.flatnonzero(context.selection_mask)[0]]
+        )
+        missing.iloc[first_selection_position] = np.nan
+        missing_metrics = evaluator.evaluate(candidate, missing, context)
+
+        value_column = "selection_oriented_value_fingerprint"
+        rank_column = "selection_oriented_rank_fingerprint"
+        self.assertEqual(base[value_column], reversed_metrics[value_column])
+        self.assertEqual(base[rank_column], reversed_metrics[rank_column])
+        self.assertNotEqual(base[value_column], shifted[value_column])
+        self.assertEqual(base[rank_column], shifted[rank_column])
+        self.assertNotEqual(base[rank_column], missing_metrics[rank_column])
+
+    def test_equivalent_selection_candidates_keep_the_simplest_expression(
+        self,
+    ) -> None:
+        """方向值或逐日秩相同的候选只能保留节点最少者进入排行榜。"""
+
+        context = _genetic_context()
+        for operator in ("negative", "cs_rank"):
+            with self.subTest(operator=operator):
+                config = GeneticSearchConfig(
+                    sources=("signal",),
+                    operator_parameters={operator: {}},
+                    population_size=2,
+                    max_generations=1,
+                    max_evaluations=2,
+                    initial_max_depth=1,
+                    max_depth=1,
+                    max_nodes=2,
+                    max_lookback=0,
+                    min_coverage=0.2,
+                    target_coverage=0.5,
+                    patience=1,
+                    random_seed=17,
+                )
+
+                result = FactorGeneticSearch(config).run(
+                    context, holdout_top_k=0
+                )
+
+                self.assertEqual(len(result.candidates), 2)
+                self.assertEqual(len(result.leaderboard), 1)
+                self.assertEqual(
+                    result.leaderboard.iloc[0]["expression_str"],
+                    "column(signal)",
+                )
+                self.assertEqual(int(result.leaderboard.iloc[0]["node_count"]), 1)
+
+    def test_equivalence_representative_prioritizes_size_over_eligibility(
+        self,
+    ) -> None:
+        """同指纹候选必须无条件先保留节点更少者，再考虑评价资格。"""
+
+        shared = {
+            "selection_oriented_value_fingerprint": "same-value",
+            "selection_oriented_rank_fingerprint": "same-rank",
+        }
+        rows = [
+            {
+                "factor_id": "complex_eligible",
+                "node_count": 3,
+                "depth": 2,
+                "eligible": True,
+                "fitness": 0.1,
+                **shared,
+            },
+            {
+                "factor_id": "simple_ineligible",
+                "node_count": 2,
+                "depth": 1,
+                "eligible": False,
+                "fitness": float("-inf"),
+                **shared,
+            },
+        ]
+
+        retained = FactorGeneticSearch._deduplicate_equivalent_rows(rows)
+
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0]["factor_id"], "simple_ineligible")
+
     def test_process_and_sequential_searches_are_identical(self) -> None:
         """相同种子下串行和持久化多进程搜索应产生完全相同的进化轨迹。"""
 
@@ -303,6 +402,8 @@ class GeneticSearchExecutionTest(unittest.TestCase):
             "genetic_operation",
             "parent_ids",
             "selection_rank_ic",
+            "selection_oriented_value_fingerprint",
+            "selection_oriented_rank_fingerprint",
             "length_penalty",
             "fitness",
             "eligible",

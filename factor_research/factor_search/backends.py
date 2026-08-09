@@ -25,7 +25,7 @@ class CandidateTaskResult:
     """一个候选在 worker 内的指标或隔离后的错误。"""
 
     factor_id: str
-    metrics: dict[str, float]
+    metrics: dict[str, float | str]
     elapsed_seconds: float
     error: str | None = None
 

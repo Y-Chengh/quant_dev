@@ -155,8 +155,8 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(
             config.operator_parameters["cs_winsorize"]["lower"], (0.01, 0.05)
         )
-        self.assertEqual(config.free_node_count, 2)
-        self.assertEqual(config.length_penalty, 0.002)
+        self.assertEqual(config.free_node_count, 3)
+        self.assertEqual(config.length_penalty, 0.001)
         self.assertGreater(config.max_nodes, config.free_node_count)
         self.assertEqual(config.random_seed, 20260809)
         legacy_space = build_search_space()
@@ -304,6 +304,8 @@ class GridSearchReportTests(unittest.TestCase):
             metadata = json.loads(
                 (output_dir / "run_metadata.json").read_text(encoding="utf-8")
             )
+            self.assertFalse(metadata["equivalence_deduplication_enabled"])
+            self.assertNotIn("selection 等价去重", report_text)
             self.assertEqual(metadata["best_expression_str"], result.best_candidate.canonical)
             self.assertIn("--factor-expressions", report_path.read_text(encoding="utf-8"))
             self.assertIn(
@@ -379,7 +381,13 @@ class GridSearchReportTests(unittest.TestCase):
             self.assertIn("node_count", leaderboard)
             self.assertIn("length_penalty", leaderboard)
             self.assertEqual(metadata["evolution_generations"], len(result.history))
+            self.assertTrue(metadata["equivalence_deduplication_enabled"])
+            self.assertEqual(
+                metadata["equivalent_candidates_removed"],
+                len(result.candidates) - len(result.leaderboard),
+            )
             self.assertIn("# 因子遗传编程搜索报告", report_text)
+            self.assertIn("selection 上按方向调整后的候选值", report_text)
             self.assertIn("evolution_history.csv", report_text)
 
     def test_passthrough_model_excludes_the_same_missing_holdout_values_as_ic(self) -> None:

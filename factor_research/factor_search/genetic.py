@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import product
 import math
 from time import perf_counter
@@ -837,6 +837,52 @@ class FactorGeneticSearch:
             ),
         )
 
+    @staticmethod
+    def _deduplicate_equivalent_rows(
+        rows: Sequence[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        """按 selection 方向值或逐日秩指纹保留最简单候选。
+
+        参数：
+            rows: 已计算适应度的当前代或全量候选排行榜行；没有等价指纹的
+                自定义评价结果保持原样。
+
+        返回：
+            每个等价类只保留节点数最少、再按深度和适应度稳定决胜的排行榜行，
+            最终仍按正式适应度顺序排列。
+        """
+
+        simplest_first = sorted(
+            rows,
+            key=lambda row: (
+                int(row["node_count"]),
+                int(row["depth"]),
+                not bool(row["eligible"]),
+                -float(row["fitness"]),
+                str(row["factor_id"]),
+            ),
+        )
+        retained: list[dict[str, object]] = []
+        seen_values: set[str] = set()
+        seen_ranks: set[str] = set()
+        for row in simplest_first:
+            value_key = str(
+                row.get("selection_oriented_value_fingerprint", "")
+            )
+            rank_key = str(
+                row.get("selection_oriented_rank_fingerprint", "")
+            )
+            if (value_key and value_key in seen_values) or (
+                rank_key and rank_key in seen_ranks
+            ):
+                continue
+            retained.append(row)
+            if value_key:
+                seen_values.add(value_key)
+            if rank_key:
+                seen_ranks.add(rank_key)
+        return FactorGeneticSearch._sort_rows(retained)
+
     def _tournament(
         self,
         ranked: Sequence[FactorCandidate],
@@ -978,8 +1024,14 @@ class FactorGeneticSearch:
         best_fitness = float("-inf")
         stale_generations = 0
         backend = self._backend()
+        selection_evaluator = evaluator or IcEvaluator()
+        if isinstance(selection_evaluator, IcEvaluator):
+            selection_evaluator = replace(
+                selection_evaluator,
+                include_equivalence_fingerprints=True,
+            )
         with self._open_session(
-            backend, context, evaluator or IcEvaluator()
+            backend, context, selection_evaluator
         ) as session:
             for generation in range(self.config.max_generations):
                 remaining = self.config.max_evaluations - len(cache)
@@ -1019,7 +1071,7 @@ class FactorGeneticSearch:
                     )
                     for candidate in population
                 ]
-                ranked_rows = self._sort_rows(rows)
+                ranked_rows = self._deduplicate_equivalent_rows(rows)
                 for row in ranked_rows:
                     if "error" in row:
                         factor_id = str(row["factor_id"])
@@ -1074,7 +1126,7 @@ class FactorGeneticSearch:
             for factor_id, candidate in candidates.items()
             if factor_id in cache and cache[factor_id].error is None
         ]
-        final_rows = self._sort_rows(all_rows)
+        final_rows = self._deduplicate_equivalent_rows(all_rows)
         leaderboard = pd.DataFrame(final_rows)
         error_frame = pd.DataFrame(list(errors.values()))
 
