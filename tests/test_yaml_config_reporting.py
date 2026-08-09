@@ -19,6 +19,12 @@ import run_factor_demo
 
 
 def _result() -> ExperimentResult:
+    """构造用于报告及主流程 mock 的最小分类实验结果。
+
+    返回：
+        含单日单证券预测、准确率趋势和因子重要性的实验结果。
+    """
+
     target_date = pd.Timestamp("2025-06-02")
     return ExperimentResult(
         model=None,  # type: ignore[arg-type]
@@ -28,7 +34,9 @@ def _result() -> ExperimentResult:
         predictions=pd.DataFrame(
             {
                 "target_date": [target_date],
+                "code": ["000001.SZ"],
                 "label": [1],
+                "target_return": [0.01],
                 "up_probability": [0.75],
             }
         ),

@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+
+import numpy as np
+import pandas as pd
+
+from factor_research.backtesting import (
+    TRADING_DAYS_PER_YEAR,
+    run_top_n_intraday_backtest,
+)
+from factor_research.experiment import ExperimentResult
+from factor_research.reporting import write_evaluation_report
+from run_factor_demo import parse_args, resolve_equity_chart_path
+
+
+class TopNIntradayBacktestTest(unittest.TestCase):
+    """验证 Top N 日内回测的选股、成本、指标和报告输出。"""
+
+    def _predictions(self) -> pd.DataFrame:
+        """构造两个交易日、每日三个证券的确定性预测样本。
+
+        返回：
+            含日期、代码、实际收益、模型分数和方向标签的预测表。
+        """
+
+        return pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(
+                    ["2025-01-02"] * 3 + ["2025-01-03"] * 3
+                ),
+                "code": ["C", "A", "B", "A", "B", "C"],
+                "target_return": [-0.05, 0.10, 0.00, -0.02, 0.10, 0.02],
+                "up_probability": [0.1, 0.9, 0.8, 0.7, 0.1, 0.8],
+                "label": [0, 1, 0, 0, 1, 1],
+                "prediction": [0, 1, 1, 1, 0, 1],
+            }
+        )
+
+    def test_selects_daily_top_n_and_applies_two_sided_costs_exactly(self) -> None:
+        """每日应独立选股，并按买卖双边口径精确扣除滑点和手续费。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        result = run_top_n_intraday_backtest(
+            self._predictions(),
+            "up_probability",
+            top_n=2,
+            slippage_bps=10.0,
+            commission_bps=5.0,
+        )
+
+        multiplier = (0.999 * 0.9995) / (1.001 * 1.0005)
+        expected_gross = np.array([0.05, 0.0])
+        expected_net = (1.0 + expected_gross) * multiplier - 1.0
+        np.testing.assert_array_equal(result.daily_returns["selected_count"], [2, 2])
+        np.testing.assert_allclose(
+            result.daily_returns["gross_return"], expected_gross
+        )
+        np.testing.assert_allclose(result.daily_returns["net_return"], expected_net)
+        np.testing.assert_allclose(
+            result.daily_returns["equity"], np.cumprod(1.0 + expected_net)
+        )
+        expected_sharpe = (
+            np.sqrt(TRADING_DAYS_PER_YEAR)
+            * expected_net.mean()
+            / expected_net.std(ddof=1)
+        )
+        self.assertAlmostEqual(result.metrics["sharpe_ratio"], expected_sharpe)
+
+    def test_ties_are_resolved_by_code_and_invalid_rows_are_excluded(self) -> None:
+        """同分时应按代码稳定选取，非有限分数不得进入当日组合。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02"] * 3),
+                "code": ["B", "A", "C"],
+                "target_return": [0.20, 0.10, 9.0],
+                "predicted_return": [0.5, 0.5, np.nan],
+            }
+        )
+        result = run_top_n_intraday_backtest(
+            predictions, "predicted_return", top_n=1
+        )
+
+        self.assertAlmostEqual(result.daily_returns.loc[0, "gross_return"], 0.10)
+        self.assertEqual(result.daily_returns.loc[0, "selected_count"], 1)
+        self.assertTrue(np.isnan(result.metrics["sharpe_ratio"]))
+
+    def test_invalid_realized_return_cannot_change_top_n_selection(self) -> None:
+        """已选高分证券的事后收益缺失时必须失败，不得用次高分证券递补。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02"] * 2),
+                "code": ["A", "B"],
+                "target_return": [np.nan, 0.50],
+                "up_probability": [0.9, 0.8],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "2025-01-02:A"):
+            run_top_n_intraday_backtest(
+                predictions, "up_probability", top_n=1
+            )
+
+    def test_rejects_invalid_parameters_and_missing_columns(self) -> None:
+        """非法成本、选股数量和缺失字段应明确报错。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = self._predictions()
+        with self.assertRaisesRegex(ValueError, "top_n"):
+            run_top_n_intraday_backtest(predictions, "up_probability", top_n=0)
+        with self.assertRaisesRegex(ValueError, "slippage_bps"):
+            run_top_n_intraday_backtest(
+                predictions, "up_probability", slippage_bps=-1.0
+            )
+        with self.assertRaisesRegex(ValueError, "缺少列"):
+            run_top_n_intraday_backtest(
+                predictions.drop(columns="target_return"), "up_probability"
+            )
+        invalid_date = predictions.copy()
+        invalid_date.loc[0, "target_date"] = pd.NaT
+        with self.assertRaisesRegex(ValueError, "target_date"):
+            run_top_n_intraday_backtest(invalid_date, "up_probability")
+
+    def test_cli_supports_backtest_defaults_overrides_and_yaml(self) -> None:
+        """Top N 和成本参数应接受默认值、命令行覆盖及 YAML 配置。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        defaults = parse_args([])
+        self.assertEqual(defaults.backtest_top_n, 10)
+        self.assertEqual(defaults.slippage_bps, 0.0)
+        self.assertEqual(defaults.commission_bps, 0.0)
+        overridden = parse_args(
+            [
+                "--backtest-top-n",
+                "5",
+                "--slippage-bps",
+                "3.5",
+                "--commission-bps",
+                "2",
+            ]
+        )
+        self.assertEqual(overridden.backtest_top_n, 5)
+        self.assertEqual(overridden.slippage_bps, 3.5)
+        self.assertEqual(overridden.commission_bps, 2.0)
+
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text(
+                "backtest_top_n: 7\nslippage_bps: 4\ncommission_bps: 1.5\n",
+                encoding="utf-8",
+            )
+            configured = parse_args(["--config", str(config_path)])
+        self.assertEqual(configured.backtest_top_n, 7)
+        self.assertEqual(configured.slippage_bps, 4.0)
+        self.assertEqual(configured.commission_bps, 1.5)
+        with self.assertRaises(SystemExit):
+            parse_args(["--commission-bps", "nan"])
+
+    def test_report_contains_sharpe_and_writes_equity_curve(self) -> None:
+        """评估报告应展示成本、夏普比率并生成可链接的收益曲线。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = self._predictions()
+        backtest = run_top_n_intraday_backtest(
+            predictions, "up_probability", top_n=2, slippage_bps=2, commission_bps=1
+        )
+        accuracy = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "samples": [3, 3],
+                "accuracy": [1.0, 2 / 3],
+                "accuracy_change": [np.nan, -1 / 3],
+            }
+        )
+        experiment = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="test",
+            feature_columns=["return_1d"],
+            metrics={"samples": 6.0, "accuracy": 5 / 6},
+            predictions=predictions,
+            feature_importance=None,
+            daily_accuracy_trend=accuracy,
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "evaluation.md"
+            accuracy_path = root / "evaluation_accuracy.svg"
+            equity_path = resolve_equity_chart_path(accuracy_path)
+            write_evaluation_report(
+                experiment,
+                report_path,
+                accuracy_path,
+                "test-run",
+                {},
+                backtest=backtest,
+                equity_chart_path=equity_path,
+            )
+            report = report_path.read_text(encoding="utf-8")
+            equity_svg = equity_path.read_text(encoding="utf-8")
+
+        self.assertIn("## Top N 日内策略回测", report)
+        self.assertIn("| 夏普比率 |", report)
+        self.assertIn("单边滑点：2.0000 bps", report)
+        self.assertIn(equity_path.name, report)
+        self.assertIn('<polyline class="equity"', equity_svg)
+        self.assertIn(">期初</text>", equity_svg)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 from logging.handlers import RotatingFileHandler
+import math
 import os
 import re
 from datetime import datetime
@@ -14,6 +15,7 @@ from uuid import uuid4
 import pandas as pd
 import yaml
 
+from factor_research.backtesting import run_top_n_intraday_backtest
 from factor_research.data import load_market_service
 from factor_research.dataset import build_direction_dataset
 from factor_research.experiment import (
@@ -44,6 +46,54 @@ DEFAULT_SYMBOL_LIMIT = 80
 DEFAULT_FACTOR_CACHE = Path(".factor_cache")
 DEFAULT_LOG_DIR = Path("logs")
 logger = logging.getLogger(__name__)
+
+
+def _positive_integer(value: str) -> int:
+    """解析必须大于零的整数命令行参数。
+
+    参数：
+        value: 命令行或 YAML 中待转换的整数字符串。
+
+    返回：
+        严格大于零的整数。
+    """
+
+    converted = int(value)
+    if converted < 1:
+        raise argparse.ArgumentTypeError("必须是正整数")
+    return converted
+
+
+def _cost_bps(value: str) -> float:
+    """解析合法的单边交易成本基点数。
+
+    参数：
+        value: 命令行或 YAML 中的基点数，允许零但必须小于 10000。
+
+    返回：
+        位于 ``[0, 10000)`` 的有限浮点基点数。
+    """
+
+    converted = float(value)
+    if not math.isfinite(converted) or not 0.0 <= converted < 10_000.0:
+        raise argparse.ArgumentTypeError("必须是 [0, 10000) 范围内的有限数值")
+    return converted
+
+
+def resolve_equity_chart_path(accuracy_chart_path: Path) -> Path:
+    """根据准确率图路径生成同目录、同运行标识的收益曲线路径。
+
+    参数：
+        accuracy_chart_path: 本次运行的准确率 SVG 路径。
+
+    返回：
+        文件名后缀由 ``_accuracy`` 替换为 ``_equity`` 的 SVG 路径。
+    """
+
+    stem = accuracy_chart_path.stem
+    if stem.endswith("_accuracy"):
+        stem = stem[: -len("_accuracy")]
+    return accuracy_chart_path.with_name(f"{stem}_equity{accuracy_chart_path.suffix}")
 
 
 def _factor_expression_argument(value: str) -> str:
@@ -189,6 +239,16 @@ def resolve_run_output_paths(
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """解析主实验通用参数、回测参数及所选模型的专属参数。
+
+    参数：
+        argv: 不含程序名的命令行参数列表；缺省时由 ``argparse`` 读取当前
+            进程命令行。命令行值优先于 YAML 中的同名配置。
+
+    返回：
+        完成类型、取值范围及模型兼容性初步校验的参数命名空间。
+    """
+
     # 第一阶段读取配置文件和模型名称；第二阶段只加载该模型自己的参数定义。
     model_parser = argparse.ArgumentParser(add_help=False)
     model_parser.add_argument("--config", type=Path)
@@ -239,6 +299,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_SYMBOL_LIMIT,
         help="股票数量，默认取20只",
+    )
+    parser.add_argument(
+        "--backtest-top-n",
+        type=_positive_integer,
+        default=10,
+        help="回测每日按模型分数买入的最多证券数，默认 10",
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=_cost_bps,
+        default=0.0,
+        help="回测单边滑点基点数，买卖两边分别应用，默认 0",
+    )
+    parser.add_argument(
+        "--commission-bps",
+        type=_cost_bps,
+        default=0.0,
+        help="回测单边手续费基点数，买卖两边分别收取，默认 0",
     )
 
     add_model_selection_argument(parser)
@@ -298,6 +376,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 @log_elapsed(logger, "程序运行")
 def main() -> None:
+    """执行行情加载、因子计算、模型验证、Top N 回测及报告生成。
+
+    返回：
+        无；运行产物写入配置的日志归档目录，异常时向调用方抛出错误。
+    """
+
     try:
         from market_service.client import MarketDataClient
     except ModuleNotFoundError as exc:
@@ -392,6 +476,17 @@ def main() -> None:
         task=args.task,
     ).run(dataset)
     logger.info("验证指标: %s", result.metrics)
+    score_column = (
+        "up_probability" if args.task == "classification" else "predicted_return"
+    )
+    backtest = run_top_n_intraday_backtest(
+        result.predictions,
+        score_column=score_column,
+        top_n=getattr(args, "backtest_top_n", 10),
+        slippage_bps=getattr(args, "slippage_bps", 0.0),
+        commission_bps=getattr(args, "commission_bps", 0.0),
+    )
+    logger.info("Top N 日内策略回测指标: %s", backtest.metrics)
     if result.feature_importance is None:
         logger.info("当前模型未提供因子重要性")
     else:
@@ -403,6 +498,8 @@ def main() -> None:
         run_id,
         run_arguments,
         yaml_config=yaml_config_snapshot,
+        backtest=backtest,
+        equity_chart_path=resolve_equity_chart_path(chart_file),
     )
     logger.info("评估报告: %s", report_file.resolve())
 

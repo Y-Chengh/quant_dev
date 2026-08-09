@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .backtesting import TopNBacktestResult
 from .experiment import ExperimentResult
 
 
@@ -95,6 +96,110 @@ def render_accuracy_trend_svg(trend: pd.DataFrame, output_path: Path) -> None:
     output_path.write_text("\n".join(svg), encoding="utf-8")
 
 
+def render_equity_curve_svg(
+    daily_returns: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """将 Top N 策略的日度净值曲线渲染为独立 SVG。
+
+    参数：
+        daily_returns: 按目标交易日排序且含 ``target_date`` 和 ``equity`` 的
+            日度回测结果。
+        output_path: SVG 收益曲线的写入路径。
+
+    返回：
+        无；函数将 SVG 内容写入 ``output_path``。
+    """
+
+    required = {"target_date", "equity"}
+    missing = required.difference(daily_returns.columns)
+    if missing:
+        raise ValueError(f"收益曲线缺少列: {sorted(missing)}")
+    if daily_returns.empty:
+        raise ValueError("无法为没有日度收益的回测绘制收益曲线")
+
+    width, height = 1000, 440
+    left, right, top, bottom = 82, 28, 38, 66
+    plot_width = width - left - right
+    plot_height = height - top - bottom
+    closing_equity = daily_returns["equity"].to_numpy(dtype=float)
+    if not np.isfinite(closing_equity).all():
+        raise ValueError("收益曲线净值包含 NaN 或无穷值")
+    # 显式加入期初净值，确保单日回测也能画出一条可见线段。
+    equity = np.concatenate(([1.0], closing_equity))
+    count = len(equity)
+    lower = min(1.0, float(equity.min()))
+    upper = max(1.0, float(equity.max()))
+    padding = max((upper - lower) * 0.08, max(abs(lower), abs(upper), 1.0) * 0.01)
+    y_min, y_max = lower - padding, upper + padding
+
+    def x_at(index: int) -> float:
+        """将净值观测序号映射为绘图区横坐标。
+
+        参数：
+            index: 从期初零开始的净值观测序号。
+
+        返回：
+            当前观测在 SVG 绘图区内的像素横坐标。
+        """
+
+        return left + plot_width * index / max(1, count - 1)
+
+    def y_at(value: float) -> float:
+        """将策略净值映射为绘图区纵坐标。
+
+        参数：
+            value: 需要绘制的累计净值。
+
+        返回：
+            当前净值在 SVG 绘图区内的像素纵坐标。
+        """
+
+        return top + (y_max - value) / (y_max - y_min) * plot_height
+
+    points = " ".join(
+        f"{x_at(index):.2f},{y_at(value):.2f}"
+        for index, value in enumerate(equity)
+    )
+    date_labels = [
+        "期初",
+        *(date.strftime("%Y-%m-%d") for date in pd.to_datetime(daily_returns["target_date"])),
+    ]
+    tick_indices = np.unique(np.linspace(0, count - 1, min(7, count), dtype=int))
+    y_ticks = np.linspace(y_min, y_max, 5)
+    svg = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
+        '<title id="title">Top N 日内策略收益曲线</title>',
+        '<desc id="desc">每日按模型分数选择证券并计入双边滑点和手续费后的累计净值</desc>',
+        '<rect width="100%" height="100%" fill="#ffffff"/>',
+        '<style>text{font-family:Arial,"Microsoft YaHei",sans-serif;fill:#334155}.grid{stroke:#e2e8f0;stroke-width:1}.axis{stroke:#64748b;stroke-width:1.2}.baseline{stroke:#94a3b8;stroke-width:1;stroke-dasharray:5 4}.equity{fill:none;stroke:#059669;stroke-width:2.5}</style>',
+    ]
+    for value in y_ticks:
+        y = y_at(float(value))
+        svg.append(
+            f'<line class="grid" x1="{left}" y1="{y:.2f}" x2="{width - right}" y2="{y:.2f}"/>'
+        )
+        svg.append(
+            f'<text x="{left - 12}" y="{y + 4:.2f}" font-size="12" text-anchor="end">{value:.3f}</text>'
+        )
+    svg.extend(
+        [
+            f'<line class="axis" x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}"/>',
+            f'<line class="axis" x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}"/>',
+            f'<line class="baseline" x1="{left}" y1="{y_at(1.0):.2f}" x2="{width - right}" y2="{y_at(1.0):.2f}"/>',
+            f'<polyline class="equity" points="{points}"/>',
+        ]
+    )
+    for index in tick_indices:
+        x = x_at(int(index))
+        label = escape(date_labels[int(index)])
+        svg.append(
+            f'<text x="{x:.2f}" y="{height - bottom + 25}" font-size="12" text-anchor="middle">{label}</text>'
+        )
+    svg.append("</svg>")
+    output_path.write_text("\n".join(svg), encoding="utf-8")
+
+
 def write_evaluation_report(
     result: ExperimentResult,
     report_path: Path,
@@ -102,10 +207,30 @@ def write_evaluation_report(
     run_id: str,
     run_arguments: dict[str, Any],
     yaml_config: str | None = None,
+    backtest: TopNBacktestResult | None = None,
+    equity_chart_path: Path | None = None,
 ) -> None:
-    """Write a Markdown evaluation summary and its linked accuracy chart."""
+    """写入模型评估、可选 Top N 回测以及对应 SVG 图表。
+
+    参数：
+        result: 模型验证结果及逐证券预测。
+        report_path: Markdown 评估报告写入路径。
+        chart_path: 日级预测准确率 SVG 图表写入路径。
+        run_id: 当前实验的唯一运行标识。
+        run_arguments: 已生效的命令行及 YAML 合并参数。
+        yaml_config: 原始 YAML 配置文本；未使用配置文件时为 ``None``。
+        backtest: Top N 日内策略结果；缺省时不输出回测章节。
+        equity_chart_path: 收益曲线 SVG 路径；提供回测结果时必须同时提供。
+
+    返回：
+        无；函数写入 Markdown 报告及配置的 SVG 图表。
+    """
     report_path.parent.mkdir(parents=True, exist_ok=True)
     render_accuracy_trend_svg(result.daily_accuracy_trend, chart_path)
+    if backtest is not None:
+        if equity_chart_path is None:
+            raise ValueError("提供 backtest 时必须同时提供 equity_chart_path")
+        render_equity_curve_svg(backtest.daily_returns, equity_chart_path)
 
     predictions = result.predictions.copy()
     if "prediction" in predictions:
@@ -151,6 +276,42 @@ def write_evaluation_report(
             "浅色线为每日准确率，深色线为 20 日移动平均。",
         ]
     )
+
+    if backtest is not None:
+        metric_labels = {
+            "trading_days": "交易日数",
+            "total_return": "累计收益率",
+            "annualized_return": "年化收益率",
+            "annualized_volatility": "年化波动率",
+            "sharpe_ratio": "夏普比率",
+        }
+        lines.extend(
+            [
+                "",
+                "## Top N 日内策略回测",
+                "",
+                f"- 每日选股数：最多 {backtest.top_n} 只",
+                f"- 排序分数：`{backtest.score_column}`",
+                f"- 单边滑点：{backtest.slippage_bps:.4f} bps",
+                f"- 单边手续费：{backtest.commission_bps:.4f} bps",
+                "- 交易口径：目标日开盘等权买入、收盘全部卖出，成本在买卖两边分别计取。",
+                "",
+                "| 回测指标 | 数值 |",
+                "| --- | ---: |",
+            ]
+        )
+        for key, value in backtest.metrics.items():
+            lines.append(
+                f"| {metric_labels.get(key, key)} | {_format_number(value)} |"
+            )
+        lines.extend(
+            [
+                "",
+                "## Top N 收益曲线",
+                "",
+                f"![Top N 日内策略收益曲线]({equity_chart_path.name})",
+            ]
+        )
 
     lines.extend(["", "## 因子重要性", ""])
     if result.feature_importance is None:

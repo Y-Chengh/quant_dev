@@ -16,7 +16,8 @@ python run_factor_demo.py [通用参数] [所选模型的专属参数]
 - 使用全部已注册因子和因子缓存。
 - 使用 `simple_decision_tree` 模型。
 - 从研究终点向前 1 年开始逐日扩展窗口验证。
-- 以 `INFO` 等级同时写终端日志和 `logs/YYYY-MM-DD/` 下的运行日志、评估报告及准确率趋势图。
+- 每个验证日按模型分数选择前 10 只证券，开盘等权买入、收盘卖出，并计算收益曲线和年化夏普比率。
+- 以 `INFO` 等级同时写终端日志和 `logs/YYYY-MM-DD/` 下的运行日志、评估报告、准确率趋势图及收益曲线。
 
 模型参数采用两阶段解析：程序先读取 `--model`，然后只注册所选模型的参数。因此，不同模型可以有同名参数；某个模型的专属参数不能用于另一个模型。
 
@@ -42,6 +43,9 @@ python run_factor_demo.py --model lightgbm --help
 | `--end` | 日期或时间 | 数据库最后时间 | 研究窗口结束时间；若晚于数据库末条数据，会自动截到数据终点。建议使用 `YYYY-MM-DD`。 |
 | `--codes` | 一个或多个证券代码 | 未指定 | 明确选择证券，例如 `000001.SZ 600000.SH`。未指定时按 `--symbol-limit` 自动选择。 |
 | `--symbol-limit` | 整数，1～100 | `20` | 未指定 `--codes` 时，从代码表中选取的证券数。程序始终校验该值在 1～100 内。 |
+| `--backtest-top-n` | 正整数 | `10` | 每个验证交易日按模型分数降序选择并等权买入的最多证券数；当日有效证券不足时全部买入。 |
+| `--slippage-bps` | `[0, 10000)` | `0` | 单边滑点，单位为基点；买入价上浮、卖出价下调，买卖两边分别应用一次。 |
+| `--commission-bps` | `[0, 10000)` | `0` | 单边手续费率，单位为基点；买卖两边分别收取一次。 |
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
 | `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务可搭配 `lightgbm` 或用于因子口径核对的 `factor_passthrough`。 |
 | `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm`、`factor_passthrough` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
@@ -52,6 +56,10 @@ python run_factor_demo.py --model lightgbm --help
 | `--log-level` | `DEBUG`、`INFO`、`WARNING`、`ERROR` | `INFO` | 控制终端和文件日志等级。 |
 | `--debug` | 开关 | 关闭 | 开启调试模式，并强制把日志等级设为 `DEBUG`；其优先级高于 `--log-level`。 |
 | `--log-dir` | 路径 | `logs` | 日志、Markdown 评估报告和 SVG 趋势图的归档根目录。 |
+
+回测使用验证集的样本外预测：分类任务按 `up_probability` 排序，回归任务按
+`predicted_return` 排序。每天只持有开盘至收盘，不跨日；收益曲线按扣除双边
+成本后的日收益复利，夏普比率采用零无风险利率、日收益样本标准差和 252 日年化。
 
 当前可用于 `--factors` 的名称如下（默认全部使用）：
 
@@ -138,7 +146,15 @@ NaN/无穷值样本会在日期切分前排除，与搜索 IC 的有效样本口
 python run_factor_demo.py
 ```
 
-### 4.2 指定数据库和研究区间
+### 4.2 设置 Top N、滑点和手续费
+
+以下示例每天选择前 10 只证券，假设单边滑点 3 bps、单边手续费 1 bps：
+
+```powershell
+python run_factor_demo.py --backtest-top-n 10 --slippage-bps 3 --commission-bps 1
+```
+
+### 4.3 指定数据库和研究区间
 
 ```powershell
 python run_factor_demo.py `
@@ -155,7 +171,7 @@ $env:MARKET_DB_PATH = "C:\data\market.duckdb"
 python run_factor_demo.py
 ```
 
-### 4.3 指定证券
+### 4.4 指定证券
 
 ```powershell
 python run_factor_demo.py --codes 000001.SZ 600000.SH 600519.SH
@@ -167,7 +183,7 @@ python run_factor_demo.py --codes 000001.SZ 600000.SH 600519.SH
 python run_factor_demo.py --symbol-limit 50
 ```
 
-### 4.4 只研究部分因子
+### 4.5 只研究部分因子
 
 ```powershell
 python run_factor_demo.py `
@@ -195,7 +211,7 @@ python run_factor_demo.py `
   --log-dir D:\factor-logs
 ```
 
-### 4.5 快速决策树基线
+### 4.6 快速决策树基线
 
 ```powershell
 python run_factor_demo.py `
@@ -216,7 +232,7 @@ python run_factor_demo.py `
   --model simple_decision_tree
 ```
 
-### 4.6 梯度提升树
+### 4.7 梯度提升树
 
 ```powershell
 python run_factor_demo.py `
@@ -229,7 +245,7 @@ python run_factor_demo.py `
   --random-state 42
 ```
 
-### 4.7 LightGBM
+### 4.8 LightGBM
 
 偏稳健的常用起点：
 
@@ -249,7 +265,7 @@ python run_factor_demo.py `
   --random-state 42
 ```
 
-### 4.8 调试和详细日志
+### 4.9 调试和详细日志
 
 ```powershell
 python run_factor_demo.py --debug
