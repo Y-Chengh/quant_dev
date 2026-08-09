@@ -155,7 +155,8 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(
             config.operator_parameters["cs_winsorize"]["lower"], (0.01, 0.05)
         )
-        self.assertGreater(config.length_penalty, 0.0)
+        self.assertEqual(config.free_node_count, 2)
+        self.assertEqual(config.length_penalty, 0.002)
         self.assertGreater(config.max_nodes, config.free_node_count)
         self.assertEqual(config.random_seed, 20260809)
         legacy_space = build_search_space()

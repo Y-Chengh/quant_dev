@@ -49,6 +49,8 @@ GENETIC_POPULATION_SIZE = 96
 GENETIC_MAX_GENERATIONS = 8
 GENETIC_MAX_EVALUATIONS = 500
 GENETIC_RANDOM_SEED = 20260809
+GENETIC_FREE_NODE_COUNT = 2
+GENETIC_LENGTH_PENALTY = 0.002
 
 
 def print_genetic_progress(event: GeneticProgressEvent) -> None:
@@ -201,8 +203,9 @@ def build_genetic_search_config() -> GeneticSearchConfig:
         max_lookback=30,
         min_coverage=0.6,
         target_coverage=0.9,
-        free_node_count=3,
-        length_penalty=0.0005,
+        # 一个数据源加一层有效变换不收费；继续包装必须提供足够的 Rank IC 增量。
+        free_node_count=GENETIC_FREE_NODE_COUNT,
+        length_penalty=GENETIC_LENGTH_PENALTY,
         random_seed=GENETIC_RANDOM_SEED,
     )
 
