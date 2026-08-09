@@ -69,6 +69,34 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         np.testing.assert_allclose(
             result.daily_returns["equity"], np.cumprod(1.0 + expected_net)
         )
+        self.assertEqual(
+            list(result.top_selections.columns),
+            [
+                "target_date",
+                "top_rank",
+                "code",
+                "predicted_value",
+                "actual_return",
+                "previous_actual_return",
+            ],
+        )
+        self.assertEqual(
+            result.top_selections["code"].tolist(), ["A", "B", "C", "A"]
+        )
+        np.testing.assert_array_equal(
+            result.top_selections["top_rank"], [1, 2, 1, 2]
+        )
+        np.testing.assert_allclose(
+            result.top_selections["predicted_value"], [0.9, 0.8, 0.8, 0.7]
+        )
+        np.testing.assert_allclose(
+            result.top_selections["actual_return"], [0.10, 0.00, 0.02, -0.02]
+        )
+        np.testing.assert_allclose(
+            result.top_selections["previous_actual_return"],
+            [np.nan, np.nan, -0.05, 0.10],
+            equal_nan=True,
+        )
         expected_control_gross = {
             "universe": np.array([1 / 60, 1 / 30]),
             "bottom": np.array([-0.025, 0.04]),
@@ -113,6 +141,80 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertAlmostEqual(result.daily_returns.loc[0, "gross_return"], 0.10)
         self.assertEqual(result.daily_returns.loc[0, "selected_count"], 1)
         self.assertTrue(np.isnan(result.metrics["sharpe_ratio"]))
+
+    def test_previous_return_keeps_history_with_invalid_previous_score(self) -> None:
+        """前日模型分数无效时，其有限实际收益仍应进入次日 Top N 明细。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "code": ["A", "A"],
+                "target_return": [0.03, -0.02],
+                "predicted_return": [np.nan, 0.01],
+            }
+        )
+
+        result = run_top_n_intraday_backtest(
+            predictions,
+            "predicted_return",
+            top_n=1,
+            random_simulations=20,
+        )
+
+        self.assertEqual(len(result.top_selections), 1)
+        self.assertAlmostEqual(
+            result.top_selections.loc[0, "previous_actual_return"], 0.03
+        )
+
+    def test_duplicate_history_uses_highest_score_and_rejects_tied_conflicts(
+        self,
+    ) -> None:
+        """重复证券日期应稳定采用最高分收益，并拒绝最高分并列的冲突收益。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(
+                    ["2025-01-02", "2025-01-02", "2025-01-03"]
+                ),
+                "code": ["A", "A", "A"],
+                "target_return": [0.01, 0.04, -0.02],
+                "predicted_return": [0.2, 0.8, 0.9],
+            }
+        )
+        expected_previous = []
+        for frame in (predictions, predictions.iloc[[1, 0, 2]].reset_index(drop=True)):
+            result = run_top_n_intraday_backtest(
+                frame,
+                "predicted_return",
+                top_n=1,
+                random_simulations=20,
+            )
+            expected_previous.append(
+                result.top_selections.loc[
+                    result.top_selections["target_date"]
+                    == pd.Timestamp("2025-01-03"),
+                    "previous_actual_return",
+                ].item()
+            )
+        np.testing.assert_allclose(expected_previous, [0.04, 0.04])
+
+        conflicting = predictions.copy()
+        conflicting.loc[:1, "predicted_return"] = 0.8
+        with self.assertRaisesRegex(ValueError, "冲突实际收益"):
+            run_top_n_intraday_backtest(
+                conflicting,
+                "predicted_return",
+                top_n=1,
+                random_simulations=20,
+            )
 
     def test_cross_sectional_controls_match_exact_returns_and_are_reproducible(self) -> None:
         """等权、价差、十分位、Top 对照和随机基准应使用约定口径。
@@ -302,6 +404,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         )
         self.assertEqual(legacy.benchmark_metrics, {})
         self.assertTrue(legacy.decile_returns.empty)
+        self.assertTrue(legacy.top_selections.empty)
 
     def test_zero_final_equity_has_undefined_random_annualized_metrics(self) -> None:
         """所有随机路径净值归零时分位数应为缺失值而不是抛出异常。
@@ -467,6 +570,16 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             equity_svg = equity_path.read_text(encoding="utf-8")
 
         self.assertIn("## Top N 日内策略回测", report)
+        self.assertIn("### 每日 Top N 选股明细", report)
+        self.assertIn("| Top N 排名 | 2025-01-02 | 2025-01-03 |", report)
+        self.assertIn(
+            "`A`<br>预估：0.900000<br>实际：10.00%<br>前日：N/A",
+            report,
+        )
+        self.assertIn(
+            "`C`<br>预估：0.800000<br>实际：2.00%<br>前日：-5.00%",
+            report,
+        )
         self.assertIn("## Top N 与横截面对照收益曲线", report)
         self.assertIn("## Top N 基准与横截面对照", report)
         self.assertIn("## Top N 超额与多空价差", report)
@@ -507,6 +620,69 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertNotIn('<polyline class="universe"', equity_svg)
         self.assertNotIn('<polyline class="bottom"', equity_svg)
         self.assertNotIn('<polyline class="mid"', equity_svg)
+
+    def test_report_accepts_legacy_backtest_without_selection_details(self) -> None:
+        """旧回测结果没有 Top N 明细列时，完整报告应兼容并显示暂无明细。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        target_date = pd.Timestamp("2025-01-02")
+        predictions = pd.DataFrame(
+            {
+                "target_date": [target_date],
+                "code": ["A"],
+                "target_return": [0.01],
+                "up_probability": [0.8],
+                "label": [1],
+                "prediction": [1],
+            }
+        )
+        accuracy = pd.DataFrame(
+            {
+                "target_date": [target_date],
+                "samples": [1],
+                "accuracy": [1.0],
+                "accuracy_change": [np.nan],
+            }
+        )
+        experiment = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="legacy",
+            feature_columns=[],
+            metrics={"samples": 1.0},
+            predictions=predictions,
+            feature_importance=None,
+            daily_accuracy_trend=accuracy,
+        )
+        legacy_backtest = TopNBacktestResult(
+            top_n=1,
+            score_column="up_probability",
+            slippage_bps=0.0,
+            commission_bps=0.0,
+            daily_returns=pd.DataFrame(
+                {"target_date": [target_date], "equity": [1.01]}
+            ),
+            metrics={},
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "legacy.md"
+            accuracy_path = root / "legacy_accuracy.svg"
+            equity_path = root / "legacy_equity.svg"
+            write_evaluation_report(
+                experiment,
+                report_path,
+                accuracy_path,
+                "legacy-run",
+                {},
+                backtest=legacy_backtest,
+                equity_chart_path=equity_path,
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("暂无 Top N 选股明细。", report)
 
 
 if __name__ == "__main__":

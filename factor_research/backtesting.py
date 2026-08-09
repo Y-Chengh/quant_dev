@@ -25,6 +25,7 @@ class TopNBacktestResult:
     relative_metrics: dict[str, float] = field(default_factory=dict)
     selection_metrics: dict[str, float] = field(default_factory=dict)
     decile_returns: pd.DataFrame = field(default_factory=pd.DataFrame)
+    top_selections: pd.DataFrame = field(default_factory=pd.DataFrame)
 
 
 def _compound_metrics(returns: np.ndarray) -> dict[str, float]:
@@ -123,7 +124,8 @@ def run_top_n_intraday_backtest(
         random_seed: 随机基准的伪随机种子；缺省为 42，以保证重复运行结果一致。
 
     返回：
-        回测参数、按日组合收益与年化夏普等汇总指标。
+        回测参数、按日组合收益、年化夏普等汇总指标，以及每日 Top N 证券的
+        预测值、当日实际收益和前日实际收益明细。
     """
 
     if top_n < 1:
@@ -145,14 +147,59 @@ def run_top_n_intraday_backtest(
     frame["target_date"] = pd.to_datetime(frame["target_date"], errors="coerce")
     if frame["target_date"].isna().any():
         raise ValueError("Top N 回测的 target_date 包含缺失或无效日期")
-    score = pd.to_numeric(frame[score_column], errors="coerce")
-    valid_score = np.isfinite(score.to_numpy(dtype=float))
+    frame[score_column] = pd.to_numeric(frame[score_column], errors="coerce")
+    frame["target_return"] = pd.to_numeric(
+        frame["target_return"], errors="coerce"
+    )
+    frame["code"] = frame["code"].astype(str)
+    frame["_row_id"] = np.arange(len(frame), dtype=np.int64)
+    # 前日收益按证券和日期独立后移；重复键采用最高有限分数记录，避免依赖输入顺序。
+    history_candidates = frame.copy()
+    history_candidates["_history_score"] = history_candidates[
+        score_column
+    ].where(np.isfinite(history_candidates[score_column]), np.nan)
+    best_history_score = history_candidates.groupby(
+        ["code", "target_date"], sort=False
+    )["_history_score"].transform("max")
+    best_history = history_candidates.loc[
+        history_candidates["_history_score"].eq(best_history_score)
+        | (
+            history_candidates["_history_score"].isna()
+            & best_history_score.isna()
+        )
+    ].copy()
+    conflicting_history = best_history.groupby(
+        ["code", "target_date"], sort=False
+    )["target_return"].nunique(dropna=False)
+    conflicting_history = conflicting_history.loc[conflicting_history > 1]
+    if not conflicting_history.empty:
+        details = ", ".join(
+            f"{code}:{pd.Timestamp(target_date).date()}"
+            for code, target_date in conflicting_history.index[:5]
+        )
+        raise ValueError(f"同证券同日期的最高分记录存在冲突实际收益: {details}")
+    return_history = (
+        best_history.sort_values(
+            ["code", "target_date", "_row_id"], kind="mergesort"
+        )
+        .drop_duplicates(["code", "target_date"], keep="first")
+        .loc[:, ["code", "target_date", "target_return"]]
+    )
+    return_history["previous_actual_return"] = return_history.groupby(
+        "code", sort=False
+    )["target_return"].shift(1)
+    frame = frame.merge(
+        return_history.loc[
+            :, ["code", "target_date", "previous_actual_return"]
+        ],
+        on=["code", "target_date"],
+        how="left",
+        validate="many_to_one",
+    )
+    valid_score = np.isfinite(frame[score_column].to_numpy(dtype=float))
     frame = frame.loc[valid_score].copy()
     if frame.empty:
         raise ValueError("Top N 回测没有模型分数为有限值的样本")
-    frame[score_column] = score.loc[valid_score].to_numpy(dtype=float)
-    frame["code"] = frame["code"].astype(str)
-    frame["_row_id"] = np.arange(len(frame), dtype=np.int64)
     frame = frame.sort_values(
         ["target_date", score_column, "code"],
         ascending=[True, False, True],
@@ -160,9 +207,6 @@ def run_top_n_intraday_backtest(
     ).reset_index(drop=True)
     grouped = frame.groupby("target_date", sort=True, group_keys=False)
     selected = grouped.head(top_n).copy()
-    selected["target_return"] = pd.to_numeric(
-        selected["target_return"], errors="coerce"
-    )
     finite_return = np.isfinite(selected["target_return"].to_numpy(dtype=float))
     if not finite_return.all():
         invalid = selected.loc[~finite_return, ["target_date", "code"]]
@@ -172,7 +216,6 @@ def run_top_n_intraday_backtest(
         )
         raise ValueError(f"Top N 已选证券的实际收益不是有限值: {details}")
 
-    frame["target_return"] = pd.to_numeric(frame["target_return"], errors="coerce")
     finite_universe_return = np.isfinite(frame["target_return"].to_numpy(dtype=float))
     if not finite_universe_return.all():
         raise ValueError("横截面对照要求全部有限模型分数样本具有有限实际收益")
@@ -191,6 +234,7 @@ def run_top_n_intraday_backtest(
     )
     bottom = grouped.tail(top_n).copy()
     rank_position = grouped.cumcount()
+    frame["top_rank"] = rank_position + 1
     group_size = grouped["code"].transform("size")
     mid_count = group_size.clip(upper=top_n)
     mid_start = (group_size - mid_count) // 2
@@ -334,6 +378,27 @@ def run_top_n_intraday_backtest(
     selected_mask = frame["_row_id"].isin(selected["_row_id"])
     selected_returns = frame.loc[selected_mask, "target_return"]
     other_returns = frame.loc[~selected_mask, "target_return"]
+    top_selections = (
+        frame.loc[
+            selected_mask,
+            [
+                "target_date",
+                "top_rank",
+                "code",
+                score_column,
+                "target_return",
+                "previous_actual_return",
+            ],
+        ]
+        .rename(
+            columns={
+                score_column: "predicted_value",
+                "target_return": "actual_return",
+            }
+        )
+        .sort_values(["target_date", "top_rank"], kind="mergesort")
+        .reset_index(drop=True)
+    )
     selection_metrics = {
         "top_samples": float(len(selected_returns)),
         "top_hit_rate": float((selected_returns > 0).mean()),
@@ -356,4 +421,5 @@ def run_top_n_intraday_backtest(
         relative_metrics=relative_metrics,
         selection_metrics=selection_metrics,
         decile_returns=decile_returns,
+        top_selections=top_selections,
     )

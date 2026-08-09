@@ -39,6 +39,101 @@ def _format_number(value: Any) -> str:
     return "N/A" if not np.isfinite(number) else f"{number:.6f}"
 
 
+def _format_percentage(value: Any) -> str:
+    """将有限收益率格式化为百分比，并将缺失值显示为 ``N/A``。
+
+    参数：
+        value: 单只证券的开盘至收盘收益率，单位为一；允许 NaN。
+
+    返回：
+        保留两位小数的百分比文本，或缺失值标记 ``N/A``。
+    """
+
+    number = float(value)
+    return "N/A" if not np.isfinite(number) else f"{number:.2%}"
+
+
+def _render_top_selection_tables(
+    selections: pd.DataFrame,
+    score_column: str,
+) -> list[str]:
+    """按月份生成以交易日期为横轴的每日 Top N Markdown 明细表。
+
+    每个排名占一行，单元格依次显示证券代码、模型预估值、当日实际涨幅和同一
+    证券上一可见交易日的实际涨幅。按月份拆表以限制单表宽度，但日期始终位于
+    横轴；某日不足 N 只时对应排名显示为 ``-``。
+
+    参数：
+        selections: 含目标日期、日内排名、证券代码、预估值、实际收益和前日
+            实际收益的 Top N 选股明细。
+        score_column: 原始模型分数字段名，用于在表格说明中标明预估值口径。
+
+    返回：
+        可直接追加到评估报告的 Markdown 文本行。
+    """
+
+    if selections.empty:
+        return ["", "暂无 Top N 选股明细。"]
+
+    required = {
+        "target_date",
+        "top_rank",
+        "code",
+        "predicted_value",
+        "actual_return",
+        "previous_actual_return",
+    }
+    missing = required.difference(selections.columns)
+    if missing:
+        raise ValueError(f"Top N 选股明细缺少列: {sorted(missing)}")
+
+    frame = selections.loc[:, list(required)].copy()
+    frame["target_date"] = pd.to_datetime(frame["target_date"], errors="coerce")
+    if frame["target_date"].isna().any():
+        raise ValueError("Top N 选股明细的 target_date 包含缺失或无效日期")
+    frame = frame.sort_values(
+        ["target_date", "top_rank"], kind="mergesort"
+    ).reset_index(drop=True)
+    frame["month"] = frame["target_date"].dt.to_period("M")
+    lines = [
+        "",
+        "### 每日 Top N 选股明细",
+        "",
+        f"日期为横轴；预估结果使用 `{score_column}`。实际涨幅均为开盘至收盘收益率，前日实际涨幅按同一股票的上一可见交易日计算。",
+    ]
+    for month, month_frame in frame.groupby("month", sort=True):
+        dates = pd.Index(month_frame["target_date"].drop_duplicates().sort_values())
+        ranks = range(1, int(month_frame["top_rank"].max()) + 1)
+        lines.extend(
+            [
+                "",
+                f"#### {month}",
+                "",
+                "| Top N 排名 | "
+                + " | ".join(pd.Timestamp(date).strftime("%Y-%m-%d") for date in dates)
+                + " |",
+                "| ---: | " + " | ".join("---" for _ in dates) + " |",
+            ]
+        )
+        indexed = month_frame.set_index(["top_rank", "target_date"])
+        for rank in ranks:
+            cells: list[str] = []
+            for target_date in dates:
+                key = (rank, pd.Timestamp(target_date))
+                if key not in indexed.index:
+                    cells.append("-")
+                    continue
+                row = indexed.loc[key]
+                code = str(row["code"]).replace("|", r"\|")
+                cells.append(
+                    f"`{code}`<br>预估：{_format_number(row['predicted_value'])}"
+                    f"<br>实际：{_format_percentage(row['actual_return'])}"
+                    f"<br>前日：{_format_percentage(row['previous_actual_return'])}"
+                )
+            lines.append(f"| Top {rank} | " + " | ".join(cells) + " |")
+    return lines
+
+
 def render_accuracy_trend_svg(trend: pd.DataFrame, output_path: Path) -> None:
     """Render daily accuracy and its 20-day moving average as a standalone SVG."""
     if trend.empty:
@@ -303,6 +398,14 @@ def write_evaluation_report(
     ]
     for key, value in result.metrics.items():
         lines.append(f"| {METRIC_LABELS.get(key, key)} | {_format_number(value)} |")
+
+    if backtest is not None:
+        lines.extend(
+            _render_top_selection_tables(
+                backtest.top_selections,
+                backtest.score_column,
+            )
+        )
 
     lines.extend(
         [
