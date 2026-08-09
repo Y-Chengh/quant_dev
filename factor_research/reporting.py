@@ -312,9 +312,10 @@ def _render_top_selection_tables(
 ) -> list[str]:
     """按月份生成以交易日期为横轴的每日 Top N Markdown 明细表。
 
-    每个排名占一行，单元格依次显示证券代码、模型预估值、当日实际涨幅，以及
-    前日收盘相对前前日收盘、前日收盘相对前日开盘的收益率。按月份拆表以限制
-    单表宽度，但日期始终位于横轴；某日不足 N 只时对应排名显示为 ``-``。
+    每个排名占一行，单元格依次以百分比显示模型预估值、当日实际涨幅，以及
+    前日收盘相对前前日收盘的“涨幅”和前日收盘相对前日开盘的“日内涨幅”。
+    按月份拆表以限制单表宽度，但日期始终位于横轴；某日不足 N 只时对应排名
+    显示为 ``-``。
 
     参数：
         selections: 含目标日期、日内排名、证券代码、预估值、实际收益及两个
@@ -395,10 +396,10 @@ def _render_top_selection_tables(
                 row = indexed.loc[key]
                 code = str(row["code"]).replace("|", r"\|")
                 cells.append(
-                    f"`{code}`<br>预估：{_format_number(row['predicted_value'])}"
+                    f"`{code}`<br>预估：{_format_percentage(row['predicted_value'])}"
                     f"<br>实际：{_format_percentage(row['actual_return'])}"
-                    f"<br>前日收盘价对比前前日收盘价：{_format_percentage(row['previous_close_to_close_return'])}"
-                    f"<br>前日收盘价对比前日开盘价：{_format_percentage(row['previous_open_to_close_return'])}"
+                    f"<br>涨幅：{_format_percentage(row['previous_close_to_close_return'])}"
+                    f"<br>日内涨幅：{_format_percentage(row['previous_open_to_close_return'])}"
                 )
             lines.append(f"| Top {rank} | " + " | ".join(cells) + " |")
     return lines

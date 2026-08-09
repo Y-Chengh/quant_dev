@@ -608,15 +608,13 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("| Top N 排名 | 2025-01-02 |", report)
         self.assertIn("| Top N 排名 | 2025-02-03 |", report)
         self.assertIn(
-            "`A`<br>预估：0.900000<br>实际：10.00%"
-            "<br>前日收盘价对比前前日收盘价：3.00%"
-            "<br>前日收盘价对比前日开盘价：4.00%",
+            "`A`<br>预估：90.00%<br>实际：10.00%"
+            "<br>涨幅：3.00%<br>日内涨幅：4.00%",
             report,
         )
         self.assertIn(
-            "`C`<br>预估：0.800000<br>实际：2.00%"
-            "<br>前日收盘价对比前前日收盘价：-4.00%"
-            "<br>前日收盘价对比前日开盘价：-5.00%",
+            "`C`<br>预估：80.00%<br>实际：2.00%"
+            "<br>涨幅：-4.00%<br>日内涨幅：-5.00%",
             report,
         )
         self.assertIn("### Top N 与横截面对照收益曲线", report)
@@ -645,7 +643,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn(">2025-01</a>", html_report)
         self.assertIn(">2025-02</a>", html_report)
         self.assertIn("`A`", report)
-        self.assertIn("<code>A</code><br>预估：0.900000", html_report)
+        self.assertIn("<code>A</code><br>预估：90.00%", html_report)
         self.assertIn('class="table-scroll"', html_report)
 
     def test_equity_renderer_accepts_legacy_top_only_frame(self) -> None:
