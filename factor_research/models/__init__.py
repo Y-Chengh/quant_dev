@@ -5,6 +5,11 @@ from .factor_passthrough import (
     FactorPassthroughModelFactory,
     FactorPassthroughRegressor,
 )
+from .logistic_regression import (
+    LogisticRegressionClassifier,
+    LogisticRegressionModelFactory,
+    RidgeRegressionModel,
+)
 from .registry import (
     DEFAULT_MODEL,
     MODEL_FACTORY_TYPES,
@@ -24,6 +29,9 @@ __all__ = [
     "DirectionModelFactory",
     "FactorPassthroughModelFactory",
     "FactorPassthroughRegressor",
+    "LogisticRegressionClassifier",
+    "LogisticRegressionModelFactory",
+    "RidgeRegressionModel",
     "SimpleDecisionTreeClassifier",
     "SimpleDecisionTreeModelFactory",
     "DEFAULT_MODEL",
