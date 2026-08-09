@@ -312,15 +312,15 @@ def _render_top_selection_tables(
 ) -> list[str]:
     """按月份生成以交易日期为横轴的每日 Top N Markdown 明细表。
 
-    每个排名占一行，单元格依次以百分比显示模型预估值、当日实际涨幅，以及
-    前日收盘相对前前日收盘的“t-1涨幅”和前日收盘相对前日开盘的
-    “t-1日内涨幅”。
+    每个排名占一行，单元格依次以百分比显示模型预估值、当日实际涨幅、当日
+    收盘相对前日收盘的“t涨幅”，以及前日收盘相对前前日收盘的“t-1涨幅”
+    和前日收盘相对前日开盘的“t-1日内涨幅”。
     按月份拆表以限制单表宽度，但日期始终位于横轴；某日不足 N 只时对应排名
     显示为 ``-``。
 
     参数：
-        selections: 含目标日期、日内排名、证券代码、预估值、实际收益及两个
-            前日收益口径的 Top N 选股明细；旧数据可仅含
+        selections: 含目标日期、日内排名、证券代码、预估值、实际收益、目标日
+            收盘相对前日收盘收益及两个前日收益口径的 Top N 选股明细；旧数据可仅含
             ``previous_actual_return``，此时按前日开盘至收盘口径兼容显示。
         score_column: 原始模型分数字段名，用于在表格说明中标明预估值口径。
 
@@ -359,6 +359,12 @@ def _render_top_selection_tables(
         ]
     else:
         frame["previous_close_to_close_return"] = np.nan
+    if "target_close_to_previous_close_return" in selections.columns:
+        frame["target_close_to_previous_close_return"] = selections[
+            "target_close_to_previous_close_return"
+        ]
+    else:
+        frame["target_close_to_previous_close_return"] = np.nan
     frame["target_date"] = pd.to_datetime(frame["target_date"], errors="coerce")
     if frame["target_date"].isna().any():
         raise ValueError("Top N 选股明细的 target_date 包含缺失或无效日期")
@@ -370,7 +376,7 @@ def _render_top_selection_tables(
         "",
         "### 每日 Top N 选股明细",
         "",
-        f"日期为横轴；预估结果使用 `{score_column}`。实际为当日收盘价相对开盘价的收益率；两个前日指标均按同一股票的上一可见交易日计算。",
+        f"日期为横轴；预估结果使用 `{score_column}`。实际为当日收盘价相对开盘价的收益率；t涨幅为当日收盘价相对前日收盘价的收益率；两个 t-1 指标均按同一股票的上一可见交易日计算。",
     ]
     for month, month_frame in frame.groupby("month", sort=True):
         dates = pd.Index(month_frame["target_date"].drop_duplicates().sort_values())
@@ -399,6 +405,7 @@ def _render_top_selection_tables(
                 cells.append(
                     f"`{code}`<br>预估：{_format_percentage(row['predicted_value'])}"
                     f"<br>实际：{_format_percentage(row['actual_return'])}"
+                    f"<br>t涨幅：{_format_percentage(row['target_close_to_previous_close_return'])}"
                     f"<br>t-1涨幅：{_format_percentage(row['previous_close_to_close_return'])}"
                     f"<br>t-1日内涨幅：{_format_percentage(row['previous_open_to_close_return'])}"
                 )

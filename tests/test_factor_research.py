@@ -89,7 +89,34 @@ class FactorResearchTest(unittest.TestCase):
             [np.nan, np.nan, 33 / 29 - 1, 36 / 41 - 1],
             equal_nan=True,
         )
+        np.testing.assert_allclose(
+            dataset["target_close_to_previous_close_return"],
+            [33 / 29 - 1, 36 / 41 - 1, 50 / 33 - 1, 66 / 36 - 1],
+        )
         self.assertEqual(len(dataset), 4)
+
+    def test_report_return_column_cannot_be_used_as_model_feature(self):
+        """目标日收盘收益报告列必须是保留名，不能作为模型特征泄漏未来数据。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        daily_features = pd.DataFrame(
+            {
+                "code": ["A", "A"],
+                "trade_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "open": [10.0, 11.0],
+                "close": [10.5, 12.0],
+                "target_close_to_previous_close_return": [0.0, 0.0],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "数据集保留名"):
+            build_direction_dataset(
+                daily_features,
+                ["target_close_to_previous_close_return"],
+            )
 
     def test_selected_factors_are_cached_separately(self):
         bars = synthetic_bars(days=12, symbols=2)
@@ -217,6 +244,9 @@ class FactorResearchTest(unittest.TestCase):
         self.assertTrue(np.isfinite(result.predictions["up_probability"]).all())
         self.assertIn("previous_close_to_close_return", result.predictions.columns)
         self.assertIn("previous_open_to_close_return", result.predictions.columns)
+        self.assertIn(
+            "target_close_to_previous_close_return", result.predictions.columns
+        )
         self.assertIsNotNone(result.feature_importance)
         self.assertAlmostEqual(float(result.feature_importance.sum()), 1.0, places=6)
         self.assertIn("auc", result.metrics)

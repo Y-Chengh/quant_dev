@@ -7,7 +7,7 @@ import logging
 import numpy as np
 import pandas as pd
 
-from .dataset import PREVIOUS_RETURN_COLUMNS, split_by_date
+from .dataset import REPORT_RETURN_COLUMNS, split_by_date
 from .factors import DEFAULT_FEATURES
 from .metrics import (
     classification_metrics,
@@ -200,10 +200,10 @@ class DirectionExperiment:
         """返回预测结果需保留的基础列和可用报告上下文列。
 
         参数：
-            frame: 待预测样本；可包含前一交易日两种收益口径的报告上下文列。
+            frame: 待预测样本；可包含目标日及前一交易日收益口径的报告上下文列。
 
         返回：
-            基础标识、标签、目标收益，以及输入中存在的前日收益上下文列名。
+            基础标识、标签、目标收益，以及输入中存在的报告收益上下文列名。
         """
 
         base_columns = [
@@ -215,7 +215,7 @@ class DirectionExperiment:
         ]
         return [
             *base_columns,
-            *(column for column in PREVIOUS_RETURN_COLUMNS if column in frame.columns),
+            *(column for column in REPORT_RETURN_COLUMNS if column in frame.columns),
         ]
 
     def _add_model_predictions(

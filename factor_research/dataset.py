@@ -16,6 +16,21 @@ PREVIOUS_RETURN_COLUMNS = (
     "previous_close_to_close_return",
     "previous_open_to_close_return",
 )
+REPORT_RETURN_COLUMNS = (
+    *PREVIOUS_RETURN_COLUMNS,
+    "target_close_to_previous_close_return",
+)
+DATASET_RESERVED_COLUMNS = frozenset(
+    {
+        "trade_date",
+        "feature_date",
+        "target_date",
+        "code",
+        "target_return",
+        "label",
+        *REPORT_RETURN_COLUMNS,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,8 @@ def _with_forward_targets(daily: pd.DataFrame) -> pd.DataFrame:
     next_open = grouped["open"].shift(-1)
     next_close = grouped["close"].shift(-1)
     data["target_return"] = next_close / next_open - 1
+    # t 日收盘相对 t-1 日收盘属于目标日收盘后才可见的报告结果，不作为模型特征。
+    data["target_close_to_previous_close_return"] = next_close / data["close"] - 1
     data["label"] = (data["target_return"] > 0).astype("Int8")
     return data
 
@@ -80,8 +97,9 @@ def build_direction_dataset(
 ) -> pd.DataFrame:
     """用 D 日收盘后的特征预测下一有效交易日从开盘到收盘的方向。
 
-    输出额外保留 D 日收盘相对 D-1 日收盘、D 日收盘相对 D 日开盘的收益率，
-    供预测报告展示；两列不属于 ``feature_columns``，不会进入模型输入。
+    输出额外保留 D 日收盘相对 D-1 日收盘、D 日收盘相对 D 日开盘，以及目标日
+    收盘相对 D 日收盘的收益率，供预测报告展示；这些列不属于
+    ``feature_columns``，不会进入模型输入。
 
     参数：
         daily_features: 已合并日频行情和因子列的特征表。
@@ -92,6 +110,9 @@ def build_direction_dataset(
         按目标日期和证券排序的监督学习样本，包含模型特征、目标及前日行情上下文。
     """
     feature_columns = feature_columns or DEFAULT_FEATURES
+    reserved = set(feature_columns).intersection(DATASET_RESERVED_COLUMNS)
+    if reserved:
+        raise ValueError(f"因子列使用了数据集保留名: {sorted(reserved)}")
     missing = set(feature_columns).difference(daily_features.columns)
     if missing:
         raise ValueError(f"缺少因子列: {sorted(missing)}")
@@ -101,7 +122,7 @@ def build_direction_dataset(
         "target_date",
         "code",
         *feature_columns,
-        *PREVIOUS_RETURN_COLUMNS,
+        *REPORT_RETURN_COLUMNS,
         "target_return",
         "label",
     ]

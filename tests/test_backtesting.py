@@ -53,6 +53,14 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                     0.08,
                     -0.05,
                 ],
+                "target_close_to_previous_close_return": [
+                    0.11,
+                    0.13,
+                    0.15,
+                    -0.11,
+                    0.17,
+                    -0.14,
+                ],
                 "up_probability": [0.1, 0.9, 0.8, 0.7, 0.1, 0.8],
                 "label": [0, 1, 0, 0, 1, 1],
                 "prediction": [0, 1, 1, 1, 0, 1],
@@ -93,6 +101,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                 "code",
                 "predicted_value",
                 "actual_return",
+                "target_close_to_previous_close_return",
                 "previous_close_to_close_return",
                 "previous_open_to_close_return",
                 "previous_actual_return",
@@ -109,6 +118,10 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         )
         np.testing.assert_allclose(
             result.top_selections["actual_return"], [0.10, 0.00, 0.02, -0.02]
+        )
+        np.testing.assert_allclose(
+            result.top_selections["target_close_to_previous_close_return"],
+            [0.13, 0.15, -0.14, -0.11],
         )
         np.testing.assert_allclose(
             result.top_selections["previous_close_to_close_return"],
@@ -608,12 +621,12 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("| Top N 排名 | 2025-01-02 |", report)
         self.assertIn("| Top N 排名 | 2025-02-03 |", report)
         self.assertIn(
-            "`A`<br>预估：90.00%<br>实际：10.00%"
+            "`A`<br>预估：90.00%<br>实际：10.00%<br>t涨幅：13.00%"
             "<br>t-1涨幅：3.00%<br>t-1日内涨幅：4.00%",
             report,
         )
         self.assertIn(
-            "`C`<br>预估：80.00%<br>实际：2.00%"
+            "`C`<br>预估：80.00%<br>实际：2.00%<br>t涨幅：-14.00%"
             "<br>t-1涨幅：-4.00%<br>t-1日内涨幅：-5.00%",
             report,
         )

@@ -113,7 +113,8 @@ def run_top_n_intraday_backtest(
 
     参数：
         predictions: 验证集逐证券预测，须含目标日期、证券代码、开盘至收盘
-            实际收益及指定模型分数。
+            实际收益及指定模型分数；可额外包含目标日收盘相对前日收盘、前日
+            收盘相对前前日收盘，以及前日收盘相对前日开盘的报告收益字段。
         score_column: 用于每日横截面选股的模型分数字段；分类通常为
             ``up_probability``，回归通常为 ``predicted_return``。
         top_n: 每日最多买入的证券数量；当日有效证券不足时全部买入。
@@ -125,8 +126,8 @@ def run_top_n_intraday_backtest(
 
     返回：
         回测参数、按日组合收益、年化夏普等汇总指标，以及每日 Top N 证券的
-        预测值、当日实际收益、前日收盘相对前前日收盘收益，以及前日收盘相对
-        前日开盘收益明细。
+        预测值、当日实际收益、目标日收盘相对前日收盘收益、前日收盘相对前前日
+        收盘收益，以及前日收盘相对前日开盘收益明细。
     """
 
     if top_n < 1:
@@ -147,6 +148,7 @@ def run_top_n_intraday_backtest(
         for column in (
             "previous_close_to_close_return",
             "previous_open_to_close_return",
+            "target_close_to_previous_close_return",
         )
         if column in predictions.columns
     ]
@@ -220,7 +222,9 @@ def run_top_n_intraday_backtest(
         ]
     if "previous_close_to_close_return" not in frame.columns:
         frame["previous_close_to_close_return"] = np.nan
-    # 保留旧字段作为兼容别名；新报告只使用两个明确口径的字段。
+    if "target_close_to_previous_close_return" not in frame.columns:
+        frame["target_close_to_previous_close_return"] = np.nan
+    # 保留旧字段作为兼容别名；新报告使用三个明确口径的字段。
     frame["previous_actual_return"] = frame["previous_open_to_close_return"]
     valid_score = np.isfinite(frame[score_column].to_numpy(dtype=float))
     frame = frame.loc[valid_score].copy()
@@ -413,6 +417,7 @@ def run_top_n_intraday_backtest(
                 "code",
                 score_column,
                 "target_return",
+                "target_close_to_previous_close_return",
                 "previous_close_to_close_return",
                 "previous_open_to_close_return",
                 "previous_actual_return",
