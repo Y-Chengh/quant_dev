@@ -110,6 +110,12 @@ class ExpressionNode:
         return 1 + max(child.depth for child in self.inputs)
 
     @property
+    def node_count(self) -> int:
+        """返回表达式树包含的终端节点和算子节点总数。"""
+
+        return 1 + sum(child.node_count for child in self.inputs)
+
+    @property
     def lookback(self) -> int:
         """返回计算当前节点所需的最大额外历史行数。"""
 

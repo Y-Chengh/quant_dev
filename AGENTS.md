@@ -13,7 +13,7 @@
 
 - `factor_research/factor_factories/`：因子工厂，每个具体因子使用独立文件。
 - `factor_research/factor_dsl/`：不可变因子表达式、算子注册和日频执行上下文。
-- `factor_research/factor_search/`：搜索空间、一次性上下文、候选评价及并行后端。
+- `factor_research/factor_search/`：网格/遗传搜索、一次性上下文、候选评价及并行后端。
 - `factor_research/models/`：预测模型抽象、具体模型及模型工厂。
 - `factor_research/factors.py`：日频聚合、因子计算和缓存流程。
 - `factor_research/dataset.py`：特征、标签及训练数据集构建。
@@ -53,6 +53,9 @@
 - `SearchContext` 负责一次性保存日频数据、固定因子、目标和日期切分；候选 worker
   不得重新调用固定因子工厂。
 - 单进程和多进程后端必须返回相同的候选顺序、数值指标和错误隔离结果。
+- 遗传搜索的随机选择只允许在主进程按固定种子执行；worker 只计算候选。表达式
+  必须限制节点数、深度和回看长度，相同 `factor_id` 应跨代缓存，复杂度惩罚只能
+  使用表达式结构及 selection 指标计算。
 - 候选方向和排名只能使用 selection 区间确定，holdout 只用于最终报告。
 - 选中的表达式只有在转为独立 `FactorFactory` 并补齐测试后，才能进入正式默认
   因子集合。
@@ -133,6 +136,9 @@ python -m unittest discover -s tests -v
 git diff --check
 ```
 
+- 后续运行 `run_factor_demo.py` 的回测（包括修改后的自动验证回测）必须统一加载
+  `C:\Users\win10\Documents\quant\factor_config.example.diff.yaml`：
+  `python run_factor_demo.py --config C:\Users\win10\Documents\quant\factor_config.example.diff.yaml`。
 - 如果代码改动不涉及模型或数据的修改，修改完成后必须自动运行一次
   `run_factor_demo.py`，并确认本次运行的各项指标与上一次运行完全一致。
 

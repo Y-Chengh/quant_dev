@@ -1,4 +1,4 @@
-# 因子 DSL 与网格搜索逻辑说明
+# 因子 DSL、网格搜索与遗传搜索逻辑说明
 
 ## 1. 设计目标
 
@@ -309,6 +309,61 @@ Windows 普通脚本必须使用上例的 `if __name__ == "__main__"` 保护。�
 
 进程并行时应避免模型内部再次占满全部 CPU。例如外层使用 8 个候选进程时，建议
 把 LightGBM 的内部线程数设为 1。
+
+### 7.3 遗传编程搜索
+
+当多输入算子使网格空间过大时，可以直接搜索表达式树。算子的输入会递归生成，
+因此相关性的左右输入既可以是源列，也可以是搜索得到的子表达式：
+
+```python
+from factor_research.factor_search import FactorGeneticSearch, GeneticSearchConfig
+
+config = GeneticSearchConfig(
+    sources=("close", "volume", "return_1d"),
+    operator_parameters={
+        "delta": {"periods": (1, 2, 5, 10, 20)},
+        "ts_stddev": {"window": (5, 10, 20, 60)},
+        "ts_correlation": {"window": (5, 10, 20, 60)},
+        "cs_rank": {},
+        "cs_zscore": {},
+    },
+    population_size=300,
+    max_generations=20,
+    max_evaluations=5_000,
+    max_depth=5,
+    max_nodes=15,
+    max_lookback=120,
+    free_node_count=3,
+    length_penalty=0.0005,
+    random_seed=20260809,
+)
+
+result = FactorGeneticSearch(
+    config,
+    backend="process",
+    n_jobs=8,
+    batch_size=16,
+).run(context, holdout_top_k=20)
+```
+
+表达式长度是终端节点和算子节点的总数，不是字符串字符数。长度惩罚为：
+
+```text
+length_penalty_value =
+    length_penalty × max(0, node_count - free_node_count)
+```
+
+适应度使用 selection 指标并扣除 Rank IC 标准误、长度、深度和覆盖率惩罚。
+`max_nodes`、`max_depth` 和 `max_lookback` 是不可突破的硬限制。相同表达式按稳定
+`factor_id` 跨代缓存，失败结果也不会重复执行。
+
+遗传选择、交叉和变异只在主进程中使用指定随机种子执行；候选计算由持久化进程池
+并行完成。worker 返回后会恢复候选原始顺序，因此相同配置下串行和多进程搜索的
+种群轨迹、适应度和最终排序一致。`result.history` 记录每代种群大小、新增评价数、
+累计评价数和最优适应度。
+
+交换律算子会规范化输入顺序；默认禁止 `ts_correlation(x, x)`。所有进化和停止
+判断都只使用 selection，搜索完全结束后才计算预先指定数量候选的 holdout 指标。
 
 ## 8. 指标和排行榜
 

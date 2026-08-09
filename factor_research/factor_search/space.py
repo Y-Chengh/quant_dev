@@ -46,6 +46,12 @@ class FactorCandidate:
         return self.expression.depth
 
     @property
+    def node_count(self) -> int:
+        """返回底层表达式包含的终端节点和算子节点总数。"""
+
+        return self.expression.node_count
+
+    @property
     def lookback(self) -> int:
         """返回底层表达式需要的最大额外历史行数。"""
 

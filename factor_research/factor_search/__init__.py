@@ -1,8 +1,9 @@
-"""高内聚、可并行且不污染现有因子注册表的因子网格搜索工具。"""
+"""高内聚、可并行且不污染现有因子注册表的网格与遗传搜索工具。"""
 
 from .backends import ProcessBackend, SequentialBackend
 from .context import SearchContext
 from .evaluators import HoldoutIcEvaluator, IcEvaluator
+from .genetic import FactorGeneticSearch, GeneticSearchConfig, GeneticSearchResult
 from .integration import prepare_search_context
 from .model_evaluator import ModelCandidateEvaluator
 from .result import FactorSearchResult
@@ -22,7 +23,10 @@ __all__ = [
     "ExpressionGrid",
     "FactorCandidate",
     "FactorGridSearch",
+    "FactorGeneticSearch",
     "FactorSearchResult",
+    "GeneticSearchConfig",
+    "GeneticSearchResult",
     "IcEvaluator",
     "HoldoutIcEvaluator",
     "ModelCandidateEvaluator",
