@@ -609,12 +609,12 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("| Top N 排名 | 2025-02-03 |", report)
         self.assertIn(
             "`A`<br>预估：90.00%<br>实际：10.00%"
-            "<br>涨幅：3.00%<br>日内涨幅：4.00%",
+            "<br>t-1涨幅：3.00%<br>t-1日内涨幅：4.00%",
             report,
         )
         self.assertIn(
             "`C`<br>预估：80.00%<br>实际：2.00%"
-            "<br>涨幅：-4.00%<br>日内涨幅：-5.00%",
+            "<br>t-1涨幅：-4.00%<br>t-1日内涨幅：-5.00%",
             report,
         )
         self.assertIn("### Top N 与横截面对照收益曲线", report)
