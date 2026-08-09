@@ -229,11 +229,13 @@ def _json_default(value: object) -> object:
     raise TypeError(f"无法序列化类型 {type(value).__name__}")
 
 
-def _format_cell(value: object) -> str:
+def _format_cell(value: object, *, column: str | None = None) -> str:
     """把指标值格式化为紧凑且不会破坏 Markdown 表格的文本。
 
     参数：
         value: 指标、布尔值、日期、表达式或缺失值。
+        column: 当前值所属的报告列名；以 ``_rank`` 结尾的名次列会移除无意义的
+            小数尾零，缺省为空时沿用普通指标格式。
 
     返回：
         适合写入 Markdown 单元格的转义文本。
@@ -242,7 +244,12 @@ def _format_cell(value: object) -> str:
     if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
         return "—"
     if isinstance(value, (float, np.floating)):
-        return f"{float(value):.6f}" if math.isfinite(float(value)) else "—"
+        number = float(value)
+        if not math.isfinite(number):
+            return "—"
+        if column is not None and column.endswith("_rank"):
+            return f"{number:.6f}".rstrip("0").rstrip(".")
+        return f"{number:.6f}"
     if isinstance(value, (pd.Timestamp, datetime)):
         return value.strftime("%Y-%m-%d")
     return str(value).replace("|", "\\|").replace("\n", " ")
@@ -330,7 +337,11 @@ def _markdown_table(frame: pd.DataFrame, columns: Sequence[str]) -> str:
     header = "| " + " | ".join(selected) + " |"
     divider = "| " + " | ".join("---" for _ in selected) + " |"
     rows = [
-        "| " + " | ".join(_format_cell(row[column]) for column in selected) + " |"
+        "| "
+        + " | ".join(
+            _format_cell(row[column], column=column) for column in selected
+        )
+        + " |"
         for _, row in frame.loc[:, selected].iterrows()
     ]
     return "\n".join([header, divider, *rows])

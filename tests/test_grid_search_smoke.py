@@ -24,6 +24,7 @@ from factor_research.factor_search import (
     op,
 )
 from grid_search_smoke import (
+    _markdown_table,
     _powershell_single_quoted,
     build_genetic_search_config,
     build_model_evaluator,
@@ -75,6 +76,28 @@ class GridSearchReportTests(unittest.TestCase):
             _powershell_single_quoted('column("quote\'s-$value`tick")'),
             "'column(\"quote''s-$value`tick\")'",
         )
+
+    def test_markdown_rank_columns_remove_redundant_decimal_zeroes(self) -> None:
+        """名次列应紧凑显示整数和并列平均名次，其他指标仍保留六位小数。"""
+
+        table = _markdown_table(
+            pd.DataFrame(
+                {
+                    "selection_oriented_rank_ic_rank": [6.0, 2.5],
+                    "holdout_oriented_ic_rank": [1.0, 3.5],
+                    "selection_oriented_rank_ic": [0.12345678, 0.02],
+                }
+            ),
+            [
+                "selection_oriented_rank_ic_rank",
+                "holdout_oriented_ic_rank",
+                "selection_oriented_rank_ic",
+            ],
+        )
+
+        self.assertIn("| 6 | 1 | 0.123457 |", table)
+        self.assertIn("| 2.5 | 3.5 | 0.020000 |", table)
+        self.assertNotIn("6.000000", table)
 
     def test_model_evaluator_uses_registered_passthrough_regressor(self) -> None:
         """smoke 搜索应通过与主实验相同的模型工厂直出候选末列。"""
