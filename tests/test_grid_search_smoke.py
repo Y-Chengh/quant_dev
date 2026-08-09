@@ -26,6 +26,7 @@ from factor_research.factor_search import (
 from grid_search_smoke import (
     _markdown_table,
     _powershell_single_quoted,
+    _write_rolling_ic_stability_chart,
     build_genetic_search_config,
     build_model_evaluator,
     build_search_space,
@@ -107,6 +108,96 @@ class GridSearchReportTests(unittest.TestCase):
         self.assertEqual(evaluator.model_factory.name, "factor_passthrough")
         self.assertEqual(evaluator.task, "regression")
         self.assertEqual(evaluator.training_mode, "single")
+
+    def test_rolling_ic_chart_contains_both_metrics_and_holdout_boundary(self) -> None:
+        """稳定性图应同时展示滚动 IC、Rank IC，并明确标记 holdout 起点。"""
+
+        dates = pd.date_range("2025-01-01", periods=80, freq="D")
+        daily_ic = pd.DataFrame(
+            {
+                "factor_id": ["factor_a"] * len(dates),
+                "period": ["selection"] * 60 + ["holdout"] * 20,
+                "target_date": dates,
+                "ic": [0.2] * len(dates),
+                "rank_ic": [0.1] * len(dates),
+            }
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "rolling.svg"
+            _write_rolling_ic_stability_chart(daily_ic, path, "factor_a")
+            chart = path.read_text(encoding="utf-8")
+
+        self.assertIn("Rolling IC stability — factor_a", chart)
+        self.assertIn(">IC</text>", chart)
+        self.assertIn(">Rank IC</text>", chart)
+        self.assertIn("rolling 60d", chart)
+        self.assertIn('class="boundary"', chart)
+        self.assertIn('class="rolling" points=', chart)
+
+    def test_rolling_ic_chart_waits_for_minimum_finite_history(self) -> None:
+        """滚动均值在有限历史不足时不应提前绘制，逐日序列仍应保留。"""
+
+        dates = pd.date_range("2025-01-01", periods=20, freq="D")
+        daily_ic = pd.DataFrame(
+            {
+                "factor_id": ["factor_a"] * len(dates),
+                "period": ["selection"] * len(dates),
+                "target_date": dates,
+                "ic": [pd.NA] + [0.2] * 19,
+                "rank_ic": [pd.NA] + [0.1] * 19,
+            }
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "rolling.svg"
+            _write_rolling_ic_stability_chart(daily_ic, path, "factor_a")
+            chart = path.read_text(encoding="utf-8")
+
+        self.assertIn('<polyline class="daily" points=', chart)
+        self.assertNotIn('<polyline class="rolling" points=', chart)
+
+    def test_rolling_ic_chart_uses_exact_trailing_mean_and_boundary_date(self) -> None:
+        """滚动线应精确使用尾随窗口，并把分界线放在首个 holdout 日期。"""
+
+        dates = pd.date_range("2025-01-01", periods=5, freq="D")
+        daily_ic = pd.DataFrame(
+            {
+                "factor_id": ["factor_a"] * len(dates),
+                "period": ["selection"] * 3 + ["holdout"] * 2,
+                "target_date": dates,
+                "ic": [pd.NA, 0.2, 0.4, 0.6, 0.8],
+                "rank_ic": [pd.NA, 0.1, 0.3, 0.5, 0.7],
+            }
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "rolling.svg"
+            _write_rolling_ic_stability_chart(
+                daily_ic,
+                path,
+                "factor_a",
+                window=3,
+                min_periods=2,
+            )
+            chart = path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            '<polyline class="rolling" points="576.00,182.00 '
+            '823.00,171.00 1070.00,149.00"/>',
+            chart,
+        )
+        self.assertIn(
+            '<polyline class="rolling" points="576.00,478.00 '
+            '823.00,467.00 1070.00,445.00"/>',
+            chart,
+        )
+        self.assertIn(
+            '<line x1="823.00" y1="105" x2="823.00" y2="325" '
+            'class="boundary"/>',
+            chart,
+        )
+        self.assertEqual(chart.count('x1="823.00"'), 2)
 
     def test_console_progress_includes_batch_budget_failures_and_eta(self) -> None:
         """smoke 进度输出应显示批次、selection 预算、失败数与 ETA。"""
@@ -258,6 +349,7 @@ class GridSearchReportTests(unittest.TestCase):
                 "candidates.json",
                 "run_metadata.json",
                 "selection_ranking.svg",
+                "rolling_ic_stability.svg",
             }
             self.assertEqual({path.name for path in output_dir.iterdir()}, expected)
             self.assertIn("holdout 结果不用于重排候选", report_path.read_text(encoding="utf-8"))
@@ -328,6 +420,12 @@ class GridSearchReportTests(unittest.TestCase):
                 (output_dir / "run_metadata.json").read_text(encoding="utf-8")
             )
             self.assertFalse(metadata["equivalence_deduplication_enabled"])
+            self.assertEqual(metadata["rolling_ic_window"], 60)
+            self.assertEqual(metadata["rolling_ic_min_periods"], 20)
+            self.assertEqual(
+                metadata["rolling_ic_stability_factor_id"],
+                completed.iloc[0]["factor_id"],
+            )
             self.assertNotIn("selection 等价去重", report_text)
             self.assertEqual(metadata["best_expression_str"], result.best_candidate.canonical)
             self.assertIn("--factor-expressions", report_path.read_text(encoding="utf-8"))
@@ -346,6 +444,8 @@ class GridSearchReportTests(unittest.TestCase):
             daily_ic = pd.read_csv(output_dir / "top_candidates_daily_ic.csv")
             self.assertLessEqual(daily_ic["factor_id"].nunique(), 2)
             self.assertEqual(set(daily_ic["period"]), {"selection", "holdout"})
+            self.assertIn("rolling_ic_stability.svg", report_text)
+            self.assertIn("长期衰减、漂移与符号翻转", report_text)
 
     def test_genetic_report_writes_evolution_history(self) -> None:
         """遗传搜索报告应额外保存逐代轨迹、复杂度字段和遗传算法元数据。"""

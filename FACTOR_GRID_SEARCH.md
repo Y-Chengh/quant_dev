@@ -368,7 +368,10 @@ length_penalty_value =
 仓库中的 `grid_search_smoke.py` 已使用该遗传搜索入口：主进程按固定种子进化，
 由 `SEARCH_N_JOBS` 个 worker 并行评价，最多搜索 8 代和 500 个唯一表达式。报告目录会额外生成
 `evolution_history.csv`，记录每代新增/累计评价数、合格候选数和最优适应度；Top K
-模型复验与 holdout 一样只在进化结束后运行，不参与适应度或父代选择。
+模型复验与 holdout 一样只在进化结束后运行，不参与适应度或父代选择。报告还会
+生成 `rolling_ic_stability.svg`，展示 selection 排名最高且已完成 holdout 评价候选
+的逐日 IC、Rank IC 及其 60 日滚动均值，并以红色虚线标记 holdout 起点；滚动图
+沿用 selection 锁定的因子方向，只用于观察长期衰减、漂移和符号翻转，不参与重排。
 
 `FactorGeneticSearch.run(progress_callback=...)` 支持批次级进度回调；内置串行和
 多进程会话每完成一个 `batch_size` 候选批次，就在主进程报告阶段、代次、完成数、
