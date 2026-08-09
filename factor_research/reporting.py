@@ -310,8 +310,95 @@ def write_evaluation_report(
                 "## Top N 收益曲线",
                 "",
                 f"![Top N 日内策略收益曲线]({equity_chart_path.name})",
+                "",
+                "## Top N 基准与横截面对照",
+                "",
+                "等权及随机组合采用与 Top N 相同的双边成本；随机基准按固定种子独立逐日抽样。",
+                "",
+                "| 基准指标 | 数值 |",
+                "| --- | ---: |",
             ]
         )
+        benchmark_labels = {
+            "equal_weight_total_return": "全股票等权累计收益率",
+            "equal_weight_annualized_return": "全股票等权年化收益率",
+            "equal_weight_sharpe_ratio": "全股票等权夏普比率",
+            "random_simulations": "随机 Top N 模拟次数",
+            "random_annualized_p05": "随机 Top N 年化收益率 P05",
+            "random_annualized_median": "随机 Top N 年化收益率中位数",
+            "random_annualized_p95": "随机 Top N 年化收益率 P95",
+            "strategy_random_percentile": "策略在随机基准中的百分位",
+        }
+        for key, value in backtest.benchmark_metrics.items():
+            lines.append(
+                f"| {benchmark_labels.get(key, key)} | {_format_number(value)} |"
+            )
+
+        lines.extend(
+            [
+                "",
+                "## Top N 超额与多空价差",
+                "",
+                "收益差采用每日毛收益之差和算术年化；该口径用于检验选股能力，不作为可复利长仓净值。",
+                "",
+                "| 价差指标 | 数值 |",
+                "| --- | ---: |",
+            ]
+        )
+        relative_labels = {
+            "top_minus_universe_annualized_return": "Top N - 全股票等权：算术年化收益",
+            "top_minus_universe_annualized_volatility": "Top N - 全股票等权：年化波动率",
+            "top_minus_universe_sharpe_ratio": "Top N - 全股票等权：夏普比率",
+            "top_minus_bottom_annualized_return": "Top N - Bottom N：算术年化收益",
+            "top_minus_bottom_annualized_volatility": "Top N - Bottom N：年化波动率",
+            "top_minus_bottom_sharpe_ratio": "Top N - Bottom N：夏普比率",
+        }
+        for key, value in backtest.relative_metrics.items():
+            lines.append(
+                f"| {relative_labels.get(key, key)} | {_format_number(value)} |"
+            )
+
+        lines.extend(
+            [
+                "",
+                "## 预测分数十分位收益",
+                "",
+                "十分位 1 为最低预测分数组，十分位 10 为最高预测分数组；收益未扣成本。",
+                "",
+                "| 十分位 | 样本数 | 交易日数 | 平均日收益 | 算术年化收益 | 上涨比例 |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for row in backtest.decile_returns.itertuples(index=False):
+            lines.append(
+                f"| {row.predicted_decile} | {row.samples} | {row.trading_days} | "
+                f"{_format_number(row.average_return)} | "
+                f"{_format_number(row.annualized_arithmetic_return)} | "
+                f"{_format_number(row.hit_rate)} |"
+            )
+
+        selection_labels = {
+            "top_samples": "Top N 样本数",
+            "top_hit_rate": "Top N 上涨比例",
+            "top_average_return": "Top N 平均日收益",
+            "other_samples": "其余股票样本数",
+            "other_hit_rate": "其余股票上涨比例",
+            "other_average_return": "其余股票平均日收益",
+            "top_minus_other_average_return": "Top N 相对其余股票平均日收益差",
+        }
+        lines.extend(
+            [
+                "",
+                "## Top N 与其余股票命中对照",
+                "",
+                "| 选股指标 | 数值 |",
+                "| --- | ---: |",
+            ]
+        )
+        for key, value in backtest.selection_metrics.items():
+            lines.append(
+                f"| {selection_labels.get(key, key)} | {_format_number(value)} |"
+            )
 
     lines.extend(["", "## 因子重要性", ""])
     if result.feature_importance is None:

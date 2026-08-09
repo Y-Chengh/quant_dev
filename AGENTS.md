@@ -18,7 +18,8 @@
 - `factor_research/factors.py`：日频聚合、因子计算和缓存流程。
 - `factor_research/dataset.py`：特征、标签及训练数据集构建。
 - `factor_research/experiment.py`：滚动训练、预测和实验结果汇总。
-- `factor_research/backtesting.py`：验证集 Top N 日内等权回测及交易成本指标。
+- `factor_research/backtesting.py`：验证集 Top N 日内等权回测、交易成本、随机/等权
+  基准、横截面分组及收益价差诊断。
 - `factor_research/metrics.py`：分类、回归及每日横截面 IC/Rank IC 评估指标。
 - `factor_research/reporting.py`：评估报告和图表输出。
 - `tests/`：单元测试和端到端测试。

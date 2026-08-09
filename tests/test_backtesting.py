@@ -9,6 +9,7 @@ import pandas as pd
 
 from factor_research.backtesting import (
     TRADING_DAYS_PER_YEAR,
+    TopNBacktestResult,
     run_top_n_intraday_backtest,
 )
 from factor_research.experiment import ExperimentResult
@@ -95,6 +96,217 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertEqual(result.daily_returns.loc[0, "selected_count"], 1)
         self.assertTrue(np.isnan(result.metrics["sharpe_ratio"]))
 
+    def test_cross_sectional_controls_match_exact_returns_and_are_reproducible(self) -> None:
+        """等权、价差、十分位、Top 对照和随机基准应使用约定口径。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        rows = []
+        for target_date in pd.to_datetime(["2025-01-02", "2025-01-03"]):
+            for value in range(10):
+                rows.append(
+                    {
+                        "target_date": target_date,
+                        "code": f"S{value:02d}",
+                        "target_return": value / 1_000,
+                        "predicted_return": float(value),
+                    }
+                )
+        predictions = pd.DataFrame(rows)
+        result = run_top_n_intraday_backtest(
+            predictions,
+            "predicted_return",
+            top_n=2,
+            random_simulations=200,
+            random_seed=7,
+        )
+        repeated = run_top_n_intraday_backtest(
+            predictions,
+            "predicted_return",
+            top_n=2,
+            random_simulations=200,
+            random_seed=7,
+        )
+
+        expected_equal_weight = (1.0 + 0.0045) ** 2 - 1.0
+        self.assertAlmostEqual(
+            result.benchmark_metrics["equal_weight_total_return"],
+            expected_equal_weight,
+        )
+        self.assertAlmostEqual(
+            result.relative_metrics["top_minus_universe_annualized_return"],
+            0.004 * TRADING_DAYS_PER_YEAR,
+        )
+        self.assertAlmostEqual(
+            result.relative_metrics["top_minus_bottom_annualized_return"],
+            0.008 * TRADING_DAYS_PER_YEAR,
+        )
+        top_decile = result.decile_returns.set_index("predicted_decile").loc[10]
+        self.assertEqual(top_decile["samples"], 2)
+        self.assertAlmostEqual(top_decile["average_return"], 0.009)
+        self.assertEqual(result.selection_metrics["top_samples"], 4.0)
+        self.assertAlmostEqual(result.selection_metrics["top_hit_rate"], 1.0)
+        self.assertAlmostEqual(result.selection_metrics["top_average_return"], 0.0085)
+        for key in (
+            "random_annualized_p05",
+            "random_annualized_median",
+            "random_annualized_p95",
+            "strategy_random_percentile",
+        ):
+            self.assertEqual(
+                result.benchmark_metrics[key], repeated.benchmark_metrics[key]
+            )
+        different_seed = run_top_n_intraday_backtest(
+            predictions,
+            "predicted_return",
+            top_n=2,
+            random_simulations=200,
+            random_seed=8,
+        )
+        self.assertNotEqual(
+            result.benchmark_metrics["random_annualized_median"],
+            different_seed.benchmark_metrics["random_annualized_median"],
+        )
+
+    def test_small_cross_section_and_duplicate_codes_keep_exact_selection(self) -> None:
+        """小截面应标明最高十分位，重复代码不得扩张 Top N 样本。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02"] * 3),
+                "code": ["A", "A", "B"],
+                "target_return": [0.10, -0.90, 0.00],
+                "predicted_return": [0.9, 0.8, 0.7],
+            }
+        )
+        result = run_top_n_intraday_backtest(
+            predictions,
+            "predicted_return",
+            top_n=1,
+            random_simulations=20,
+        )
+
+        self.assertEqual(
+            result.decile_returns["predicted_decile"].tolist(), [1, 5, 10]
+        )
+        self.assertEqual(result.selection_metrics["top_samples"], 1.0)
+        self.assertEqual(result.selection_metrics["other_samples"], 2.0)
+        self.assertAlmostEqual(result.selection_metrics["top_average_return"], 0.10)
+
+    def test_decile_returns_weight_each_trading_day_equally(self) -> None:
+        """十分位收益应先做日内等权，再对不同规模的交易日等权平均。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        rows = []
+        for target_date, size in (
+            (pd.Timestamp("2025-01-02"), 10),
+            (pd.Timestamp("2025-01-03"), 20),
+        ):
+            for value in range(size):
+                rows.append(
+                    {
+                        "target_date": target_date,
+                        "code": f"{target_date.date()}-{value:02d}",
+                        "target_return": (
+                            1.0
+                            if target_date == pd.Timestamp("2025-01-02")
+                            and value == size - 1
+                            else 0.0
+                        ),
+                        "predicted_return": float(value),
+                    }
+                )
+        result = run_top_n_intraday_backtest(
+            pd.DataFrame(rows),
+            "predicted_return",
+            top_n=1,
+            random_simulations=20,
+        )
+
+        top_decile = result.decile_returns.set_index("predicted_decile").loc[10]
+        self.assertEqual(top_decile["samples"], 3)
+        self.assertEqual(top_decile["trading_days"], 2)
+        self.assertAlmostEqual(top_decile["average_return"], 0.5)
+
+    def test_full_universe_selection_matches_benchmarks_and_old_constructor(self) -> None:
+        """全选时随机及等权基准应等于策略，旧结果构造接口仍应可用。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = self._predictions().loc[
+            lambda frame: frame["target_date"] == pd.Timestamp("2025-01-02")
+        ]
+        result = run_top_n_intraday_backtest(
+            predictions,
+            "up_probability",
+            top_n=3,
+            random_simulations=20,
+        )
+        self.assertAlmostEqual(
+            result.metrics["annualized_return"],
+            result.benchmark_metrics["equal_weight_annualized_return"],
+        )
+        self.assertAlmostEqual(
+            result.metrics["annualized_return"],
+            result.benchmark_metrics["random_annualized_median"],
+        )
+        self.assertEqual(result.selection_metrics["other_samples"], 0.0)
+        self.assertTrue(np.isnan(result.selection_metrics["other_average_return"]))
+
+        legacy = TopNBacktestResult(
+            top_n=1,
+            score_column="score",
+            slippage_bps=0.0,
+            commission_bps=0.0,
+            daily_returns=pd.DataFrame(),
+            metrics={},
+        )
+        self.assertEqual(legacy.benchmark_metrics, {})
+        self.assertTrue(legacy.decile_returns.empty)
+
+    def test_zero_final_equity_has_undefined_random_annualized_metrics(self) -> None:
+        """所有随机路径净值归零时分位数应为缺失值而不是抛出异常。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02"]),
+                "code": ["A"],
+                "target_return": [-1.0],
+                "predicted_return": [0.0],
+            }
+        )
+        result = run_top_n_intraday_backtest(
+            predictions,
+            "predicted_return",
+            top_n=1,
+            random_simulations=20,
+        )
+
+        self.assertAlmostEqual(result.metrics["total_return"], -1.0)
+        self.assertTrue(np.isnan(result.metrics["annualized_return"]))
+        for key in (
+            "random_annualized_p05",
+            "random_annualized_median",
+            "random_annualized_p95",
+            "strategy_random_percentile",
+        ):
+            self.assertTrue(np.isnan(result.benchmark_metrics[key]))
+
     def test_invalid_realized_return_cannot_change_top_n_selection(self) -> None:
         """已选高分证券的事后收益缺失时必须失败，不得用次高分证券递补。
 
@@ -129,6 +341,10 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "slippage_bps"):
             run_top_n_intraday_backtest(
                 predictions, "up_probability", slippage_bps=-1.0
+            )
+        with self.assertRaisesRegex(ValueError, "random_simulations"):
+            run_top_n_intraday_backtest(
+                predictions, "up_probability", random_simulations=0
             )
         with self.assertRaisesRegex(ValueError, "缺少列"):
             run_top_n_intraday_backtest(
@@ -223,6 +439,11 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             equity_svg = equity_path.read_text(encoding="utf-8")
 
         self.assertIn("## Top N 日内策略回测", report)
+        self.assertIn("## Top N 基准与横截面对照", report)
+        self.assertIn("## Top N 超额与多空价差", report)
+        self.assertIn("## 预测分数十分位收益", report)
+        self.assertIn("## Top N 与其余股票命中对照", report)
+        self.assertIn("随机 Top N 年化收益率中位数", report)
         self.assertIn("| 夏普比率 |", report)
         self.assertIn("单边滑点：2.0000 bps", report)
         self.assertIn(equity_path.name, report)

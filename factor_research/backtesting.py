@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
 
 TRADING_DAYS_PER_YEAR = 252
+DEFAULT_RANDOM_BASELINE_SIMULATIONS = 1_000
+DEFAULT_RANDOM_BASELINE_SEED = 42
 
 
 @dataclass(frozen=True)
 class TopNBacktestResult:
-    """保存 Top N 日内等权策略的参数、日收益和汇总指标。"""
+    """保存 Top N 日内策略及其横截面对照诊断。"""
 
     top_n: int
     score_column: str
@@ -19,6 +21,77 @@ class TopNBacktestResult:
     commission_bps: float
     daily_returns: pd.DataFrame
     metrics: dict[str, float]
+    benchmark_metrics: dict[str, float] = field(default_factory=dict)
+    relative_metrics: dict[str, float] = field(default_factory=dict)
+    selection_metrics: dict[str, float] = field(default_factory=dict)
+    decile_returns: pd.DataFrame = field(default_factory=pd.DataFrame)
+
+
+def _compound_metrics(returns: np.ndarray) -> dict[str, float]:
+    """计算可复利长仓日收益的累计、年化、波动和夏普指标。
+
+    参数：
+        returns: 按交易日排序的有限日收益率数组，单位为一。
+
+    返回：
+        含交易日数、累计收益率、复利年化收益率、年化波动率和夏普比率的字典。
+    """
+
+    values = np.asarray(returns, dtype=float)
+    if values.ndim != 1 or values.size == 0 or not np.isfinite(values).all():
+        raise ValueError("复利指标要求非空的一维有限日收益率")
+    periods = len(values)
+    final_equity = float(np.prod(1.0 + values))
+    daily_std = float(np.std(values, ddof=1)) if periods >= 2 else float("nan")
+    return {
+        "trading_days": float(periods),
+        "total_return": final_equity - 1.0,
+        "annualized_return": (
+            float(final_equity ** (TRADING_DAYS_PER_YEAR / periods) - 1.0)
+            if final_equity > 0.0
+            else float("nan")
+        ),
+        "annualized_volatility": (
+            float(daily_std * np.sqrt(TRADING_DAYS_PER_YEAR))
+            if np.isfinite(daily_std)
+            else float("nan")
+        ),
+        "sharpe_ratio": (
+            float(np.sqrt(TRADING_DAYS_PER_YEAR) * np.mean(values) / daily_std)
+            if np.isfinite(daily_std) and daily_std > 0.0
+            else float("nan")
+        ),
+    }
+
+
+def _spread_metrics(returns: np.ndarray, prefix: str) -> dict[str, float]:
+    """计算横截面收益差的算术年化、波动率和夏普比率。
+
+    参数：
+        returns: Top N 减基准或 Bottom N 的逐日收益差，单位为一。
+        prefix: 输出指标键的业务前缀，用于区分等权超额和多空价差。
+
+    返回：
+        使用算术年化收益的三项价差诊断指标。
+    """
+
+    values = np.asarray(returns, dtype=float)
+    if values.ndim != 1 or values.size == 0 or not np.isfinite(values).all():
+        raise ValueError("价差指标要求非空的一维有限日收益率")
+    daily_std = float(np.std(values, ddof=1)) if len(values) >= 2 else float("nan")
+    return {
+        f"{prefix}_annualized_return": float(np.mean(values) * TRADING_DAYS_PER_YEAR),
+        f"{prefix}_annualized_volatility": (
+            float(daily_std * np.sqrt(TRADING_DAYS_PER_YEAR))
+            if np.isfinite(daily_std)
+            else float("nan")
+        ),
+        f"{prefix}_sharpe_ratio": (
+            float(np.sqrt(TRADING_DAYS_PER_YEAR) * np.mean(values) / daily_std)
+            if np.isfinite(daily_std) and daily_std > 0.0
+            else float("nan")
+        ),
+    }
 
 
 def run_top_n_intraday_backtest(
@@ -27,6 +100,8 @@ def run_top_n_intraday_backtest(
     top_n: int = 10,
     slippage_bps: float = 0.0,
     commission_bps: float = 0.0,
+    random_simulations: int = DEFAULT_RANDOM_BASELINE_SIMULATIONS,
+    random_seed: int = DEFAULT_RANDOM_BASELINE_SEED,
 ) -> TopNBacktestResult:
     """回测每日买入预测分数最高证券并在收盘卖出的等权策略。
 
@@ -43,6 +118,9 @@ def run_top_n_intraday_backtest(
         top_n: 每日最多买入的证券数量；当日有效证券不足时全部买入。
         slippage_bps: 单边滑点，单位为基点；买卖两边分别应用一次。
         commission_bps: 单边手续费率，单位为基点；买卖两边分别收取一次。
+        random_simulations: 随机等权选取最多 ``top_n`` 只证券的蒙特卡洛路径数；
+            缺省为 1,000 次。
+        random_seed: 随机基准的伪随机种子；缺省为 42，以保证重复运行结果一致。
 
     返回：
         回测参数、按日组合收益与年化夏普等汇总指标。
@@ -54,6 +132,8 @@ def run_top_n_intraday_backtest(
         raise ValueError("slippage_bps 必须在 [0, 10000) 范围内")
     if not 0.0 <= commission_bps < 10_000.0:
         raise ValueError("commission_bps 必须在 [0, 10000) 范围内")
+    if random_simulations < 1:
+        raise ValueError("random_simulations 必须是正整数")
     required = {"target_date", "code", "target_return", score_column}
     missing = required.difference(predictions.columns)
     if missing:
@@ -72,13 +152,15 @@ def run_top_n_intraday_backtest(
         raise ValueError("Top N 回测没有模型分数为有限值的样本")
     frame[score_column] = score.loc[valid_score].to_numpy(dtype=float)
     frame["code"] = frame["code"].astype(str)
+    frame["_row_id"] = np.arange(len(frame), dtype=np.int64)
     frame = frame.sort_values(
         ["target_date", score_column, "code"],
         ascending=[True, False, True],
         kind="mergesort",
     )
+    grouped = frame.groupby("target_date", sort=True, group_keys=False)
     selected = (
-        frame.groupby("target_date", sort=True, group_keys=False).head(top_n).copy()
+        grouped.head(top_n).copy()
     )
     selected["target_return"] = pd.to_numeric(
         selected["target_return"], errors="coerce"
@@ -92,6 +174,11 @@ def run_top_n_intraday_backtest(
         )
         raise ValueError(f"Top N 已选证券的实际收益不是有限值: {details}")
 
+    frame["target_return"] = pd.to_numeric(frame["target_return"], errors="coerce")
+    finite_universe_return = np.isfinite(frame["target_return"].to_numpy(dtype=float))
+    if not finite_universe_return.all():
+        raise ValueError("横截面对照要求全部有限模型分数样本具有有限实际收益")
+
     slippage = slippage_bps / 10_000.0
     commission = commission_bps / 10_000.0
     execution_multiplier = (
@@ -101,6 +188,10 @@ def run_top_n_intraday_backtest(
     selected["net_return"] = (
         (1.0 + selected["target_return"]) * execution_multiplier - 1.0
     )
+    frame["net_return"] = (
+        (1.0 + frame["target_return"]) * execution_multiplier - 1.0
+    )
+    bottom = grouped.tail(top_n).copy()
     daily = (
         selected.groupby("target_date", as_index=False, sort=True)
         .agg(
@@ -112,32 +203,135 @@ def run_top_n_intraday_backtest(
         .reset_index(drop=True)
     )
     daily["equity"] = (1.0 + daily["net_return"]).cumprod()
+    metrics = _compound_metrics(daily["net_return"].to_numpy(dtype=float))
 
-    returns = daily["net_return"].to_numpy(dtype=float)
-    periods = len(returns)
-    total_return = float(daily["equity"].iloc[-1] - 1.0)
-    final_equity = float(daily["equity"].iloc[-1])
-    annualized_return = (
-        float(final_equity ** (TRADING_DAYS_PER_YEAR / periods) - 1.0)
-        if final_equity > 0.0
-        else float("nan")
+    universe_daily = frame.groupby("target_date", sort=True).agg(
+        universe_count=("code", "size"),
+        universe_gross_return=("target_return", "mean"),
+        universe_net_return=("net_return", "mean"),
     )
-    daily_std = float(np.std(returns, ddof=1)) if periods >= 2 else float("nan")
-    sharpe_ratio = (
-        float(np.sqrt(TRADING_DAYS_PER_YEAR) * np.mean(returns) / daily_std)
-        if np.isfinite(daily_std) and daily_std > 0.0
-        else float("nan")
+    bottom_daily = bottom.groupby("target_date", sort=True).agg(
+        bottom_count=("code", "size"),
+        bottom_gross_return=("target_return", "mean"),
     )
-    metrics = {
-        "trading_days": float(periods),
-        "total_return": total_return,
-        "annualized_return": annualized_return,
-        "annualized_volatility": (
-            float(daily_std * np.sqrt(TRADING_DAYS_PER_YEAR))
-            if np.isfinite(daily_std)
+    daily = daily.merge(universe_daily, on="target_date", validate="one_to_one")
+    daily = daily.merge(bottom_daily, on="target_date", validate="one_to_one")
+    daily["universe_equity"] = (1.0 + daily["universe_net_return"]).cumprod()
+    daily["top_minus_universe_return"] = (
+        daily["gross_return"] - daily["universe_gross_return"]
+    )
+    daily["top_minus_bottom_return"] = (
+        daily["gross_return"] - daily["bottom_gross_return"]
+    )
+
+    equal_weight = _compound_metrics(
+        daily["universe_net_return"].to_numpy(dtype=float)
+    )
+    rng = np.random.default_rng(random_seed)
+    random_equity = np.ones(random_simulations, dtype=float)
+    for _, date_group in frame.groupby("target_date", sort=True):
+        date_returns = date_group["net_return"].to_numpy(dtype=float)
+        sample_size = min(top_n, len(date_returns))
+        random_keys = rng.random((random_simulations, len(date_returns)))
+        chosen = np.argpartition(random_keys, sample_size - 1, axis=1)[:, :sample_size]
+        portfolio_returns = date_returns[chosen].mean(axis=1)
+        random_equity *= 1.0 + portfolio_returns
+    periods = len(daily)
+    random_annualized = np.where(
+        random_equity > 0.0,
+        random_equity ** (TRADING_DAYS_PER_YEAR / periods) - 1.0,
+        np.nan,
+    )
+    valid_random = random_annualized[np.isfinite(random_annualized)]
+    strategy_annualized = metrics["annualized_return"]
+    if valid_random.size:
+        random_p05 = float(np.quantile(valid_random, 0.05))
+        random_median = float(np.median(valid_random))
+        random_p95 = float(np.quantile(valid_random, 0.95))
+        strategy_percentile = (
+            float(np.mean(valid_random <= strategy_annualized))
+            if np.isfinite(strategy_annualized)
             else float("nan")
+        )
+    else:
+        random_p05 = float("nan")
+        random_median = float("nan")
+        random_p95 = float("nan")
+        strategy_percentile = float("nan")
+    benchmark_metrics = {
+        "equal_weight_total_return": equal_weight["total_return"],
+        "equal_weight_annualized_return": equal_weight["annualized_return"],
+        "equal_weight_sharpe_ratio": equal_weight["sharpe_ratio"],
+        "random_simulations": float(random_simulations),
+        "random_annualized_p05": random_p05,
+        "random_annualized_median": random_median,
+        "random_annualized_p95": random_p95,
+        "strategy_random_percentile": strategy_percentile,
+    }
+    relative_metrics = {
+        **_spread_metrics(
+            daily["top_minus_universe_return"].to_numpy(dtype=float),
+            "top_minus_universe",
         ),
-        "sharpe_ratio": sharpe_ratio,
+        **_spread_metrics(
+            daily["top_minus_bottom_return"].to_numpy(dtype=float),
+            "top_minus_bottom",
+        ),
+    }
+
+    group_size = grouped["code"].transform("size")
+    ascending_position = grouped.cumcount().rsub(group_size - 1)
+    decile = (ascending_position * 10 // group_size + 1).astype(int)
+    # 少于十只证券时无法形成十个等频组，用跨越 1 至 10 的有序标签明确两端。
+    small_group = group_size < 10
+    multi_security = small_group & (group_size > 1)
+    decile.loc[multi_security] = np.rint(
+        ascending_position.loc[multi_security]
+        * 9
+        / (group_size.loc[multi_security] - 1)
+    ).astype(int) + 1
+    decile.loc[group_size == 1] = 10
+    frame["predicted_decile"] = decile
+    daily_decile_returns = (
+        frame.groupby(
+            ["target_date", "predicted_decile"], as_index=False, sort=True
+        )
+        .agg(
+            samples=("code", "size"),
+            daily_return=("target_return", "mean"),
+            daily_hit_rate=(
+                "target_return", lambda values: float((values > 0).mean())
+            ),
+        )
+    )
+    decile_returns = (
+        daily_decile_returns.groupby(
+            "predicted_decile", as_index=False, sort=True
+        )
+        .agg(
+            samples=("samples", "sum"),
+            trading_days=("target_date", "size"),
+            average_return=("daily_return", "mean"),
+            hit_rate=("daily_hit_rate", "mean"),
+        )
+    )
+    decile_returns["annualized_arithmetic_return"] = (
+        decile_returns["average_return"] * TRADING_DAYS_PER_YEAR
+    )
+
+    selected_mask = frame["_row_id"].isin(selected["_row_id"])
+    selected_returns = frame.loc[selected_mask, "target_return"]
+    other_returns = frame.loc[~selected_mask, "target_return"]
+    selection_metrics = {
+        "top_samples": float(len(selected_returns)),
+        "top_hit_rate": float((selected_returns > 0).mean()),
+        "top_average_return": float(selected_returns.mean()),
+        "other_samples": float(len(other_returns)),
+        "other_hit_rate": float((other_returns > 0).mean()),
+        "other_average_return": float(other_returns.mean()),
+        "top_minus_other_average_return": float(
+            selected_returns.mean() - other_returns.mean()
+        ),
     }
     return TopNBacktestResult(
         top_n=top_n,
@@ -146,4 +340,8 @@ def run_top_n_intraday_backtest(
         commission_bps=float(commission_bps),
         daily_returns=daily,
         metrics=metrics,
+        benchmark_metrics=benchmark_metrics,
+        relative_metrics=relative_metrics,
+        selection_metrics=selection_metrics,
+        decile_returns=decile_returns,
     )
