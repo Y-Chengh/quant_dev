@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>本地行情研究台</title>
-  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/styles.css?v=20260809-kline-pct">
 </head>
 <body>
   <header>
@@ -35,7 +35,7 @@
       </form>
       <div class="chart-meta"><span id="chartTitle">600000.SH · 日K</span><span id="chartCount"></span></div>
       <div id="chart" aria-label="K线图"></div>
-      <div class="hint">鼠标悬停查看OHLC · 滚轮缩放 · 按住拖动平移</div>
+      <div class="hint">鼠标悬停查看OHLC与涨跌幅 · 滚轮缩放 · 按住拖动平移</div>
     </section>
 
     <section id="rawPanel" class="panel">
@@ -69,6 +69,6 @@
     <div id="toast" role="status"></div>
   </main>
   <script src="/static/echarts.min.js"></script>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20260809-kline-pct"></script>
 </body>
 </html>
