@@ -139,8 +139,8 @@ git diff --check
 - 后续运行 `run_factor_demo.py` 的回测（包括修改后的自动验证回测）必须统一加载
   `C:\Users\win10\Documents\quant\factor_config.example.diff.yaml`：
   `python run_factor_demo.py --config C:\Users\win10\Documents\quant\factor_config.example.diff.yaml`。
-- 如果代码改动不涉及模型或数据的修改，修改完成后必须自动运行一次
-  `run_factor_demo.py`，并确认本次运行的各项指标与上一次运行完全一致。
+- 不涉及模型或数据代码的修改无需运行 `run_factor_demo.py` 模型验证；涉及模型或
+  数据代码时，应按改动风险运行上述回测并核对验证结果。
 
 如果本地 Python、依赖或虚拟环境不可用，应至少执行 `git diff --check` 和静态
 引用检查，并在交付说明中明确指出未运行的验证及原因。

@@ -439,13 +439,15 @@ class FactorResearchTest(unittest.TestCase):
         self.assertEqual(start.date().isoformat(), "2022-06-30")
         self.assertEqual(end.date().isoformat(), "2025-06-30")
 
-    def test_run_artifacts_are_archived_by_start_date(self):
+    def test_run_artifacts_are_archived_by_start_hour(self):
+        """单次运行产物应归档到 run 下按开始日期和小时划分的目录。"""
+
         log_path, report_path, chart_path = resolve_run_output_paths(
             Path("logs"),
             pd.Timestamp("2026-08-02 23:59:58").to_pydatetime(),
             "a1b2c3d4",
         )
-        self.assertEqual(log_path.parent, Path("logs/2026-08-02"))
+        self.assertEqual(log_path.parent, Path("logs/run/2026-08-02/23"))
         self.assertEqual(report_path.parent, log_path.parent)
         self.assertEqual(chart_path.parent, log_path.parent)
         self.assertEqual(log_path.name, "factor_demo_20260802_235958_a1b2c3d4.log")

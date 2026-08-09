@@ -96,13 +96,13 @@ python run_factor_demo.py --log-level DEBUG
 
 `INFO` 显示因子和验证进度，`DEBUG` 额外显示缓存路径、数据指纹和逐日训练明细，`WARNING` 显示缓存损坏或校验失败，`ERROR` 显示计算异常。
 
-日志默认同时输出到终端和 `logs/` 目录。程序按运行开始日期建立 `YYYY-MM-DD` 归档子目录，每次运行在其中生成独立的“时间戳 + 随机ID”文件，例如 `logs/2026-08-02/factor_demo_20260802_203015_a1b2c3d4.log`。日志首行记录本次全部运行参数。文件达到 10 MB 后自动轮转，最多保留 5 个历史文件；可通过 `--log-dir` 修改归档根目录：
+日志默认同时输出到终端和 `logs/` 目录。程序在 `run/` 下按运行开始日期和 24 小时制小时建立 `YYYY-MM-DD/HH` 归档子目录，每次运行在其中生成独立的“时间戳 + 随机ID”文件，例如 `logs/run/2026-08-02/20/factor_demo_20260802_203015_a1b2c3d4.log`。日志首行记录本次全部运行参数。文件达到 10 MB 后自动轮转，最多保留 5 个历史文件；可通过 `--log-dir` 修改归档根目录：
 
 ```powershell
 python run_factor_demo.py --log-dir D:\factor-logs
 ```
 
-运行完成后，同一日期归档目录还会生成同名 `.md` 评估报告、`_accuracy.svg`
+运行完成后，同一小时归档目录还会生成同名 `.md` 评估报告、`_accuracy.svg`
 准确率趋势图和 `_equity.svg` 收益曲线。报告汇总 ROC AUC 等模型指标、Top N
 回测指标（含夏普比率）、每日预测结果、因子重要性（模型提供时）和运行参数。
 

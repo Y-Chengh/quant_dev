@@ -228,8 +228,21 @@ def resolve_run_output_paths(
     started_at: datetime,
     run_id: str,
 ) -> tuple[Path, Path, Path]:
-    """Place all artifacts from one run in its start-date archive directory."""
-    archive_dir = log_dir / started_at.strftime("%Y-%m-%d")
+    """按运行开始日期和小时解析单次实验的日志、报告及图表路径。
+
+    参数：
+        log_dir: 实验产物的根目录；其下依次创建 ``run``、日期和 24 小时制
+            小时目录。
+        started_at: 本次实验的本地开始时间，同时用于目录和文件名时间戳。
+        run_id: 区分同一秒内多次运行的唯一标识，不包含路径分隔符。
+
+    返回：
+        依次为日志、Markdown 评估报告和准确率 SVG 图表的路径；三者位于
+        ``run/YYYY-MM-DD/HH`` 小时级归档目录中。
+    """
+    archive_dir = (
+        log_dir / "run" / started_at.strftime("%Y-%m-%d") / started_at.strftime("%H")
+    )
     stem = f"factor_demo_{started_at:%Y%m%d_%H%M%S}_{run_id}"
     return (
         archive_dir / f"{stem}.log",
