@@ -103,7 +103,8 @@ python run_factor_demo.py --log-dir D:\factor-logs
 ```
 
 运行完成后，同一小时归档目录还会生成同名 `.md` 评估报告、`_accuracy.svg`
-准确率趋势图和 `_equity.svg` 收益曲线。报告汇总 ROC AUC 等模型指标、Top N
+准确率趋势图、`_ic_trend.svg` IC/Rank IC 20 日与 60 日动态纵轴趋势图，以及
+`_equity.svg` 收益曲线。报告汇总 ROC AUC 等模型指标、Top N
 回测指标（含夏普比率）、每日预测结果、因子重要性（模型提供时）和运行参数。
 
 运行结束时，`INFO` 还会输出行情加载、基础聚合、因子耗时排行、数据集构建，以及验证预处理/训练/预测的分项耗时，可用于定位性能瓶颈。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
@@ -11,6 +12,7 @@ from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import numpy as np
 import pandas as pd
 
 from factor_research.factor_search import (
@@ -129,11 +131,14 @@ class GridSearchReportTests(unittest.TestCase):
             chart = path.read_text(encoding="utf-8")
 
         self.assertIn("Rolling IC stability — factor_a", chart)
-        self.assertIn(">IC</text>", chart)
-        self.assertIn(">Rank IC</text>", chart)
-        self.assertIn("rolling 60d", chart)
+        self.assertIn("IC · 20 日近期趋势", chart)
+        self.assertIn("IC · 60 日长期趋势", chart)
+        self.assertIn("Rank IC · 20 日近期趋势", chart)
+        self.assertIn("Rank IC · 60 日长期趋势", chart)
+        self.assertIn("动态纵轴", chart)
         self.assertIn('class="boundary"', chart)
-        self.assertIn('class="rolling" points=', chart)
+        self.assertIn('class="short" points=', chart)
+        self.assertIn('class="long" points=', chart)
 
     def test_rolling_ic_chart_waits_for_minimum_finite_history(self) -> None:
         """滚动均值在有限历史不足时不应提前绘制，逐日序列仍应保留。"""
@@ -154,8 +159,8 @@ class GridSearchReportTests(unittest.TestCase):
             _write_rolling_ic_stability_chart(daily_ic, path, "factor_a")
             chart = path.read_text(encoding="utf-8")
 
-        self.assertIn('<polyline class="daily" points=', chart)
-        self.assertNotIn('<polyline class="rolling" points=', chart)
+        self.assertIn('<polyline class="short" points=', chart)
+        self.assertNotIn('<polyline class="long" points=', chart)
 
     def test_rolling_ic_chart_uses_exact_trailing_mean_and_boundary_date(self) -> None:
         """滚动线应精确使用尾随窗口，并把分界线放在首个 holdout 日期。"""
@@ -183,21 +188,52 @@ class GridSearchReportTests(unittest.TestCase):
             chart = path.read_text(encoding="utf-8")
 
         self.assertIn(
-            '<polyline class="rolling" points="576.00,182.00 '
-            '823.00,171.00 1070.00,149.00"/>',
+            '<polyline class="long" points="915.00,299.62 '
+            '1042.50,243.21 1170.00,130.38"/>',
             chart,
         )
         self.assertIn(
-            '<polyline class="rolling" points="576.00,478.00 '
-            '823.00,467.00 1070.00,445.00"/>',
+            '<polyline class="long" points="915.00,614.62 '
+            '1042.50,558.21 1170.00,445.38"/>',
             chart,
         )
         self.assertIn(
-            '<line x1="823.00" y1="105" x2="823.00" y2="325" '
+            '<line x1="1042.50" y1="105" x2="1042.50" y2="325" '
             'class="boundary"/>',
             chart,
         )
-        self.assertEqual(chart.count('x1="823.00"'), 2)
+        self.assertEqual(chart.count('x1="1042.50"'), 2)
+
+    def test_short_and_long_trends_have_independent_visible_scales(self) -> None:
+        """短期波动远大于长期波动时，两种趋势仍应各自占据可见纵向范围。"""
+
+        dates = pd.bdate_range("2025-01-02", periods=160)
+        index = np.arange(len(dates), dtype=float)
+        daily_ic = pd.DataFrame(
+            {
+                "factor_id": ["factor_a"] * len(dates),
+                "period": ["selection"] * 120 + ["holdout"] * 40,
+                "target_date": dates,
+                "ic": 0.02 + 0.03 * np.sin(index / 3.0) + 0.004 * np.sin(index / 30.0),
+                "rank_ic": 0.03 + 0.04 * np.sin(index / 4.0) + 0.006 * np.sin(index / 35.0),
+            }
+        )
+
+        with TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "rolling.svg"
+            _write_rolling_ic_stability_chart(daily_ic, path, "factor_a")
+            chart = path.read_text(encoding="utf-8")
+
+        short_points = re.findall(
+            r'<polyline class="short" points="([^"]+)"', chart
+        )[0]
+        long_points = re.findall(
+            r'<polyline class="long" points="([^"]+)"', chart
+        )[0]
+        short_y = [float(point.split(",")[1]) for point in short_points.split()]
+        long_y = [float(point.split(",")[1]) for point in long_points.split()]
+        self.assertGreater(max(short_y) - min(short_y), 150.0)
+        self.assertGreater(max(long_y) - min(long_y), 150.0)
 
     def test_console_progress_includes_batch_budget_failures_and_eta(self) -> None:
         """smoke 进度输出应显示批次、selection 预算、失败数与 ETA。"""
@@ -422,6 +458,8 @@ class GridSearchReportTests(unittest.TestCase):
             self.assertFalse(metadata["equivalence_deduplication_enabled"])
             self.assertEqual(metadata["rolling_ic_window"], 60)
             self.assertEqual(metadata["rolling_ic_min_periods"], 20)
+            self.assertEqual(metadata["rolling_ic_short_window"], 20)
+            self.assertEqual(metadata["rolling_ic_short_min_periods"], 5)
             self.assertEqual(
                 metadata["rolling_ic_stability_factor_id"],
                 completed.iloc[0]["factor_id"],
@@ -445,7 +483,7 @@ class GridSearchReportTests(unittest.TestCase):
             self.assertLessEqual(daily_ic["factor_id"].nunique(), 2)
             self.assertEqual(set(daily_ic["period"]), {"selection", "holdout"})
             self.assertIn("rolling_ic_stability.svg", report_text)
-            self.assertIn("长期衰减、漂移与符号翻转", report_text)
+            self.assertIn("衰减、漂移与符号翻转", report_text)
 
     def test_genetic_report_writes_evolution_history(self) -> None:
         """遗传搜索报告应额外保存逐代轨迹、复杂度字段和遗传算法元数据。"""

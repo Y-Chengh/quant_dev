@@ -31,6 +31,11 @@ from factor_research.factor_search import (
 )
 from factor_research.metrics import daily_cross_sectional_ic
 from factor_research.models.factor_passthrough import FactorPassthroughModelFactory
+from factor_research.reporting import (
+    IC_TREND_SHORT_MIN_PERIODS,
+    IC_TREND_SHORT_WINDOW,
+    render_ic_trend_svg,
+)
 
 
 DATABASE = Path(r"D:\量化\market.duckdb")
@@ -489,179 +494,46 @@ def _write_rolling_ic_stability_chart(
     window: int = ROLLING_IC_WINDOW,
     min_periods: int = ROLLING_IC_MIN_PERIODS,
 ) -> None:
-    """绘制单个候选的逐日及滚动 IC/Rank IC 稳定性诊断图。
+    """调用共享渲染器绘制单个候选的双周期 IC/Rank IC 稳定性图。
 
-    滚动均值使用最近 ``window`` 个目标交易日，以当日为右端点，至少取得
-    ``min_periods`` 个有限观测才出值；原始逐日值以浅色展示，便于区分短期噪声
-    与长期漂移。传入的逐日指标已经按 selection 锁定的方向调整，holdout 不参与
-    方向选择。
+    短期趋势固定使用项目通用的 20 日窗口，长期趋势由 ``window`` 指定。传入的
+    逐日指标已经按 selection 锁定方向调整；holdout 起点只作为图中分界线，不参与
+    方向确定或候选重排。
 
     参数：
         daily_ic: Top K 候选的逐日横截面指标，必须包含候选 ID、区间、目标日期、
             IC 和 Rank IC 列。
         path: SVG 输出路径，父目录必须已经存在。
         factor_id: 要绘图的候选 ID；为 ``None`` 或找不到对应明细时输出无数据占位图。
-        window: 滚动均值包含的目标交易日行数，必须为正整数，缺省为 60 日。
-        min_periods: 窗口内生成均值所需的最少有限观测数，必须在 1 到 ``window``
-            之间，缺省为 20 日。
+        window: 长期滚动均值包含的目标交易日行数，缺省为 60 日。
+        min_periods: 长期均线出值所需的最少有限观测数，缺省为 20 日。
 
     返回：
-        无；函数把 UTF-8 SVG 图像写入 ``path``。
+        无；函数通过共享报告渲染器把 UTF-8 SVG 图像写入 ``path``。
     """
 
-    if window <= 0:
-        raise ValueError("window 必须为正整数")
-    if min_periods <= 0 or min_periods > window:
-        raise ValueError("min_periods 必须在 1 到 window 之间")
     required = {"factor_id", "period", "target_date", "ic", "rank_ic"}
     missing = required.difference(daily_ic.columns)
     if missing:
         raise ValueError(f"daily_ic 缺少列: {sorted(missing)}")
-
-    width = 1100
-    height = 650
-    left = 82
-    right = 30
-    plot_width = width - left - right
-    panel_height = 220
-    panel_tops = (105, 390)
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
-        '<rect width="100%" height="100%" fill="#ffffff"/>',
-        '<style>text{font-family:Segoe UI,Microsoft YaHei,sans-serif;fill:#202124}.title{font-size:18px;font-weight:600}.subtitle{font-size:12px;fill:#5f6368}.axis{font-size:11px;fill:#5f6368}.panel{font-size:14px;font-weight:600}.daily{fill:none;stroke:#93c5fd;stroke-width:1;opacity:.55}.rolling{fill:none;stroke:#1d4ed8;stroke-width:2.5}.zero{stroke:#9ca3af;stroke-width:1;stroke-dasharray:4 4}.boundary{stroke:#dc2626;stroke-width:1.5;stroke-dasharray:6 4}.grid{stroke:#e5e7eb;stroke-width:1}</style>',
-    ]
     selected = daily_ic.iloc[0:0].copy()
     if factor_id is not None:
         selected = daily_ic.loc[daily_ic["factor_id"].astype(str).eq(str(factor_id))].copy()
-    selected["target_date"] = pd.to_datetime(
-        selected.get("target_date"), errors="coerce"
-    )
-    selected = selected.dropna(subset=["target_date"]).sort_values(
-        "target_date", kind="stable"
-    )
-    parts.append(
-        f'<text x="20" y="30" class="title">Rolling IC stability — {escape(str(factor_id or "no candidate"))}</text>'
-    )
-    parts.append(
-        f'<text x="20" y="52" class="subtitle">Oriented by selection direction · {window}-day rolling mean · min {min_periods} finite observations</text>'
-    )
-    if selected.empty:
-        parts.extend(
-            [
-                '<rect x="20" y="75" width="1060" height="535" rx="6" fill="#f8fafc" stroke="#d1d5db"/>',
-                '<text x="550" y="340" text-anchor="middle" class="subtitle">No completed holdout candidate with daily IC data</text>',
-                "</svg>",
-            ]
-        )
-        path.write_text("\n".join(parts), encoding="utf-8")
-        return
-
-    for metric in ("ic", "rank_ic"):
-        selected[metric] = pd.to_numeric(selected[metric], errors="coerce")
-        selected[f"rolling_{metric}"] = selected[metric].rolling(
-            window=window, min_periods=min_periods
-        ).mean()
-    first_date = selected["target_date"].iloc[0]
-    last_date = selected["target_date"].iloc[-1]
-    date_span = max((last_date - first_date).total_seconds(), 1.0)
-
-    def x_coordinate(value: pd.Timestamp) -> float:
-        """把目标日期映射为 SVG 绘图区横坐标。
-
-        参数：
-            value: 当前逐日 IC 观测对应的目标交易日。
-
-        返回：
-            目标日期在整段时间范围内按比例映射得到的 SVG 横坐标。
-        """
-
-        return left + (value - first_date).total_seconds() / date_span * plot_width
-
-    def y_coordinate(value: float, panel_top: float) -> float:
-        """把取值范围负一到正一的相关系数映射为面板纵坐标。
-
-        参数：
-            value: 当日或滚动 IC 数值，理论范围为负一到正一，越界时按边界截断。
-            panel_top: 当前 IC 指标面板顶边的 SVG 纵坐标。
-
-        返回：
-            指标值在当前面板内映射得到的 SVG 纵坐标。
-        """
-
-        clipped = min(1.0, max(-1.0, value))
-        return panel_top + (1.0 - clipped) * panel_height / 2.0
-
-    def polyline_segments(column: str, panel_top: float, css_class: str) -> list[str]:
-        """把含缺失值的指标序列拆成互不跨越缺口的 SVG 折线。
-
-        参数：
-            column: ``selected`` 中要绘制的逐日或滚动指标列名。
-            panel_top: 当前指标面板顶边的 SVG 纵坐标。
-            css_class: 应用于折线的 SVG CSS 类名，用于区分逐日值和滚动均值。
-
-        返回：
-            每个连续有限值区间对应的一段 SVG ``polyline`` 标记。
-        """
-
-        output: list[str] = []
-        points: list[str] = []
-        for row in selected[["target_date", column]].itertuples(index=False):
-            raw_value = row[1]
-            if pd.notna(raw_value) and math.isfinite(float(raw_value)):
-                value = float(raw_value)
-                points.append(
-                    f"{x_coordinate(row[0]):.2f},{y_coordinate(value, panel_top):.2f}"
-                )
-            elif points:
-                if len(points) >= 2:
-                    output.append(
-                        f'<polyline class="{css_class}" points="{" ".join(points)}"/>'
-                    )
-                points = []
-        if len(points) >= 2:
-            output.append(
-                f'<polyline class="{css_class}" points="{" ".join(points)}"/>'
-            )
-        return output
-
     holdout_dates = selected.loc[selected["period"].eq("holdout"), "target_date"]
-    holdout_start = holdout_dates.min() if not holdout_dates.empty else None
-    tick_fractions = (0.0, 0.25, 0.5, 0.75, 1.0)
-    for panel_top, metric, label in zip(
-        panel_tops, ("ic", "rank_ic"), ("IC", "Rank IC")
-    ):
-        parts.append(f'<text x="20" y="{panel_top - 12}" class="panel">{label}</text>')
-        for tick_value in (-1.0, -0.5, 0.0, 0.5, 1.0):
-            y_value = y_coordinate(tick_value, panel_top)
-            line_class = "zero" if tick_value == 0 else "grid"
-            parts.append(
-                f'<line x1="{left}" y1="{y_value:.2f}" x2="{left + plot_width}" y2="{y_value:.2f}" class="{line_class}"/>'
-            )
-            parts.append(
-                f'<text x="{left - 10}" y="{y_value + 4:.2f}" text-anchor="end" class="axis">{tick_value:.1f}</text>'
-            )
-        parts.extend(polyline_segments(metric, panel_top, "daily"))
-        parts.extend(polyline_segments(f"rolling_{metric}", panel_top, "rolling"))
-        if holdout_start is not None:
-            boundary_x = x_coordinate(holdout_start)
-            parts.append(
-                f'<line x1="{boundary_x:.2f}" y1="{panel_top}" x2="{boundary_x:.2f}" y2="{panel_top + panel_height}" class="boundary"/>'
-            )
-        for fraction in tick_fractions:
-            tick_date = first_date + (last_date - first_date) * fraction
-            tick_x = left + plot_width * fraction
-            parts.append(
-                f'<text x="{tick_x:.2f}" y="{panel_top + panel_height + 20}" text-anchor="middle" class="axis">{tick_date:%Y-%m-%d}</text>'
-            )
-    parts.extend(
-        [
-            '<line x1="730" y1="48" x2="765" y2="48" class="daily"/><text x="772" y="52" class="subtitle">daily</text>',
-            f'<line x1="830" y1="48" x2="865" y2="48" class="rolling"/><text x="872" y="52" class="subtitle">rolling {window}d</text>',
-            '<line x1="970" y1="48" x2="1005" y2="48" class="boundary"/><text x="1012" y="52" class="subtitle">holdout</text>',
-            "</svg>",
-        ]
+    render_ic_trend_svg(
+        selected,
+        path,
+        title=f"Rolling IC stability — {factor_id or 'no candidate'}",
+        short_window=IC_TREND_SHORT_WINDOW,
+        short_min_periods=IC_TREND_SHORT_MIN_PERIODS,
+        long_window=window,
+        long_min_periods=min_periods,
+        boundary_date=(
+            pd.to_datetime(holdout_dates, errors="coerce").min()
+            if not holdout_dates.empty
+            else None
+        ),
     )
-    path.write_text("\n".join(parts), encoding="utf-8")
 
 
 def write_grid_search_report(
@@ -822,6 +694,8 @@ def write_grid_search_report(
         "failed_evaluations": len(errors),
         "successful_holdout_candidates": completed_holdout_ids,
         "rolling_ic_stability_factor_id": stability_factor_id,
+        "rolling_ic_short_window": IC_TREND_SHORT_WINDOW,
+        "rolling_ic_short_min_periods": IC_TREND_SHORT_MIN_PERIODS,
         "rolling_ic_window": ROLLING_IC_WINDOW,
         "rolling_ic_min_periods": ROLLING_IC_MIN_PERIODS,
         "best_factor_id": best.factor_id,
@@ -997,7 +871,7 @@ def write_grid_search_report(
         "",
         "![滚动 IC 与 Rank IC 稳定性图](rolling_ic_stability.svg)",
         "",
-        f"图中使用 selection 排名最高且已完成 holdout 评价的候选 `{stability_factor_id or '—'}`。浅线为逐日值，深线为最近 {ROLLING_IC_WINDOW} 个目标交易日的滚动均值；窗口内至少有 {ROLLING_IC_MIN_PERIODS} 个有限观测才出值。红色虚线标记 holdout 起点。因子方向只由 selection 锁定，图像用于观察 IC 和 Rank IC 的长期衰减、漂移与符号翻转，不参与候选重排。",
+        f"图中使用 selection 排名最高且已完成 holdout 评价的候选 `{stability_factor_id or '—'}`。左列为 {IC_TREND_SHORT_WINDOW} 日趋势，用于观察近期拐点；右列为 {ROLLING_IC_WINDOW} 日趋势，用于观察长期稳定性。四个小面板分别按自身滚动值动态缩放纵轴，红色虚线标记 holdout 起点。因子方向只由 selection 锁定，图像用于观察 IC 和 Rank IC 的衰减、漂移与符号翻转，不参与候选重排。",
         "",
         "## 数据与日期切分",
         "",
@@ -1043,7 +917,7 @@ def write_grid_search_report(
         "- [errors.csv](errors.csv)：selection、holdout、model 各阶段的隔离错误。",
         "- [best_factor_values.csv](best_factor_values.csv)：已按 selection 方向调整的最优因子日频值。",
         "- [top_candidates_daily_ic.csv](top_candidates_daily_ic.csv)：预先入选 Top K 的逐日 selection/holdout IC。",
-        "- [rolling_ic_stability.svg](rolling_ic_stability.svg)：最优入选候选的逐日及滚动 IC/Rank IC 稳定性诊断。",
+        "- [rolling_ic_stability.svg](rolling_ic_stability.svg)：最优入选候选的 20 日及 60 日 IC/Rank IC 趋势诊断。",
         *(
             ["- [evolution_history.csv](evolution_history.csv)：遗传搜索逐代种群和最优适应度。"]
             if has_history

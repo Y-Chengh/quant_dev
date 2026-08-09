@@ -279,6 +279,11 @@ class YamlConfigReportingTest(unittest.TestCase):
                 run_factor_demo.main()
 
         self.assertEqual(report_writer.call_args.kwargs["yaml_config"], yaml_config)
+        self.assertTrue(
+            report_writer.call_args.kwargs["ic_chart_path"].name.endswith(
+                "_ic_trend.svg"
+            )
+        )
 
 
 if __name__ == "__main__":

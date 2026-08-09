@@ -17,7 +17,11 @@ from factor_research.factor_dsl.frame import DailyFactorFrame
 from factor_research.factors import build_daily_features
 from factor_research.models import DirectionModel, DirectionModelFactory
 from factor_research.reporting import write_evaluation_report
-from run_factor_demo import resolve_run_output_paths, resolve_window
+from run_factor_demo import (
+    resolve_ic_chart_path,
+    resolve_run_output_paths,
+    resolve_window,
+)
 
 
 def synthetic_bars(days: int = 80, symbols: int = 3) -> pd.DataFrame:
@@ -390,7 +394,15 @@ class FactorResearchTest(unittest.TestCase):
         with TemporaryDirectory() as report_dir:
             report_path = Path(report_dir) / "evaluation.md"
             chart_path = Path(report_dir) / "evaluation_accuracy.svg"
-            write_evaluation_report(result, report_path, chart_path, "test-run", {"max_depth": 2})
+            ic_chart_path = resolve_ic_chart_path(chart_path)
+            write_evaluation_report(
+                result,
+                report_path,
+                chart_path,
+                "test-run",
+                {"max_depth": 2},
+                ic_chart_path=ic_chart_path,
+            )
             report = report_path.read_text(encoding="utf-8")
             self.assertIn("ROC AUC", report)
             self.assertIn("| IC |", report)
@@ -398,10 +410,20 @@ class FactorResearchTest(unittest.TestCase):
             self.assertIn("| ICIR |", report)
             self.assertIn("| IC 胜率 |", report)
             self.assertIn("## 每日横截面 IC", report)
+            self.assertIn("## IC 与 Rank IC 滚动趋势", report)
             self.assertIn(chart_path.name, report)
+            self.assertIn(ic_chart_path.name, report)
+            html_report = report_path.with_suffix(".html").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn(f'src="{ic_chart_path.name}"', html_report)
             self.assertGreater(report.index("## 每日预估汇总"), report.index("## 运行参数"))
             self.assertEqual(report.rfind("## "), report.index("## 每日预估汇总"))
             self.assertIn("<polyline", chart_path.read_text(encoding="utf-8"))
+            ic_chart = ic_chart_path.read_text(encoding="utf-8")
+            self.assertIn('class="short" points=', ic_chart)
+            self.assertIn('class="long" points=', ic_chart)
+            self.assertIn("动态纵轴", ic_chart)
 
     def test_experiment_accepts_an_injected_model_factory(self):
         class ConstantProbabilityModel(DirectionModel):
@@ -582,6 +604,10 @@ class FactorResearchTest(unittest.TestCase):
         self.assertEqual(report_path.parent, log_path.parent)
         self.assertEqual(chart_path.parent, log_path.parent)
         self.assertEqual(log_path.name, "factor_demo_20260802_235958_a1b2c3d4.log")
+        self.assertEqual(
+            resolve_ic_chart_path(chart_path).name,
+            "factor_demo_20260802_235958_a1b2c3d4_ic_trend.svg",
+        )
 
 
 if __name__ == "__main__":
