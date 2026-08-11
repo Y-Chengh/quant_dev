@@ -1,0 +1,25 @@
+{
+  "output_root": "D:\\qmt_data",
+  "mode": "incremental",
+  "start_date": "auto",
+  "end_date": "auto",
+  "incremental_initial_start_date": "20200101",
+  "incremental_lag_days": 1,
+  "symbols": [],
+  "sector": "沪深A股",
+  "batch_size": 100,
+  "retry_count": 3,
+  "calendar_symbol": "000001.SH",
+  "download_kline": true,
+  "allow_partial_finance": false,
+  "overwrite_completed_partition": false,
+  "datasets": [
+    "kline_1d",
+    "finance_raw",
+    "finance_daily",
+    "corporate_actions"
+  ],
+  "finance_lookback_start": "20000101",
+  "log_max_bytes": 20971520,
+  "log_backup_count": 10
+}

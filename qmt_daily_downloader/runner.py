@@ -1,0 +1,746 @@
+# -*- coding: utf-8 -*-
+"""编排批量回溯、日增量、断点恢复和按天分区落盘。"""
+
+import hashlib
+import json
+from datetime import datetime
+
+import pandas as pd
+
+from .finance import finance_daily_columns, materialize_finance_daily
+from .gateway import (
+    CORPORATE_ACTION_COLUMNS,
+    FINANCE_FIELDS,
+    KLINE_COLUMNS,
+)
+from .storage import IssueCollector
+from .validation import find_missing_kline, validate_kline
+
+
+class QmtDailyDownloader(object):
+    """执行一次可恢复的大 QMT 日频数据保存任务。"""
+
+    def __init__(self, config, gateway, store, checkpoints, logger):
+        """注入任务所需的配置和基础设施。
+
+        参数：
+            config: 已完成校验的 ``DownloaderConfig``。
+            gateway: 封装大 QMT 内置接口的 ``QmtGateway``。
+            store: 管理日分区和 staging 文件的 ``DailyPartitionStore``。
+            checkpoints: 仅保存批次状态的 ``CheckpointStore``。
+            logger: 同时输出到终端和滚动文件的日志对象。
+        """
+        self.config = config
+        self.gateway = gateway
+        self.store = store
+        self.checkpoints = checkpoints
+        self.logger = logger
+        self.issues = IssueCollector()
+        self.symbols = []
+        self.batches = []
+        self.job_key = ""
+        self.partition_scope = {}
+
+    def run(self):
+        """依次执行证券池解析、数据抽取、质量检查和日分区保存。
+
+        返回：
+            本次运行摘要字典，包含任务标识、证券数、交易日数、问题数和报告路径。
+        """
+        self.symbols = self.gateway.resolve_symbols(self.config.symbols, self.config.sector)
+        self.partition_scope = {
+            "schema_version": 2,
+            "datasets": sorted(self.config.datasets),
+            "symbols": list(self.symbols),
+            "finance_lookback_start": self.config.finance_lookback_start,
+            "finance_fields": {
+                name: list(fields) for name, fields in sorted(FINANCE_FIELDS.items())
+            },
+        }
+        self.batches = list(_iter_batches(self.symbols, self.config.batch_size))
+        self.job_key = _make_job_key(self.config, self.symbols)
+        run_id = "{0}_{1}".format(
+            datetime.now().strftime("%Y%m%d_%H%M%S"), self.job_key[-10:]
+        )
+        self.logger.info(
+            "任务开始 mode=%s dates=%s..%s symbols=%d batches=%d job=%s",
+            self.config.mode,
+            self.config.start_date,
+            self.config.end_date,
+            len(self.symbols),
+            len(self.batches),
+            self.job_key,
+        )
+        if self.config.no_work:
+            report_path = self.store.write_issue_report([], run_id)
+            summary = {
+                "job_key": self.job_key,
+                "symbols": len(self.symbols),
+                "trade_dates": 0,
+                "errors": 0,
+                "warnings": 0,
+                "issue_report": str(report_path),
+                "status": "up_to_date",
+            }
+            self.logger.info("增量数据已是最新，无需下载 summary=%s", json.dumps(summary, ensure_ascii=False))
+            return summary
+
+        trade_dates, calendar_issues = self.gateway.fetch_trading_dates(
+            self.config.calendar_symbol,
+            self.config.start_date,
+            self.config.end_date,
+        )
+        self.issues.extend(calendar_issues)
+        if calendar_issues:
+            return self._finish_without_download(run_id, "calendar_error")
+        if not trade_dates:
+            return self._finish_without_download(run_id, "no_trading_dates")
+
+        all_datasets_succeeded = True
+        if "kline_1d" in self.config.datasets or "finance_daily" in self.config.datasets:
+            failed = self._collect_kline(trade_dates)
+            if failed:
+                all_datasets_succeeded = False
+                self.issues.add("ERROR", "kline_1d", "", "", "存在失败批次，未生成最终日线分区；下次以相同配置运行会从断点继续")
+
+        if "finance_raw" in self.config.datasets or "finance_daily" in self.config.datasets:
+            failed = self._collect_finance()
+            if failed:
+                all_datasets_succeeded = False
+                self.issues.add("ERROR", "finance_raw", "", "", "存在失败批次，未生成最终财务分区；下次会从断点继续")
+            else:
+                try:
+                    raw_dates = self._prepare_finance_fragments(trade_dates)
+                    if "finance_raw" in self.config.datasets:
+                        self._write_finance_raw_partitions(raw_dates)
+                    if "finance_daily" in self.config.datasets:
+                        self._write_finance_daily_partitions(trade_dates)
+                except Exception as error:
+                    all_datasets_succeeded = False
+                    self.issues.add("ERROR", "finance", "", "", str(error))
+                    self.logger.exception("财务分区流式生成失败")
+
+        if "corporate_actions" in self.config.datasets:
+            actions, failed = self._collect_actions()
+            if failed:
+                all_datasets_succeeded = False
+                self.issues.add("ERROR", "corporate_actions", "", "", "存在失败批次，未生成最终除权分区；下次会从断点继续")
+            else:
+                self._write_action_partitions(actions, trade_dates)
+
+        report_path = self.store.write_issue_report(self.issues.items, run_id)
+        error_count = sum(1 for item in self.issues.items if item["level"] == "ERROR")
+        warning_count = sum(1 for item in self.issues.items if item["level"] == "WARNING")
+        if all_datasets_succeeded and error_count == 0:
+            self._write_run_completion(trade_dates)
+        summary = {
+            "job_key": self.job_key,
+            "symbols": len(self.symbols),
+            "trade_dates": len(trade_dates),
+            "errors": error_count,
+            "warnings": warning_count,
+            "issue_report": str(report_path),
+        }
+        self.logger.info("任务结束 summary=%s", json.dumps(summary, ensure_ascii=False))
+        return summary
+
+    def _finish_without_download(self, run_id, status):
+        """在交易日历失败或区间无交易日时生成摘要并安全结束。
+
+        参数：
+            run_id: 当前运行的报告文件标识。
+            status: ``calendar_error`` 或 ``no_trading_dates`` 状态文本。
+
+        返回：
+            不包含任何业务分区写入的任务摘要字典。
+        """
+        report_path = self.store.write_issue_report(self.issues.items, run_id)
+        error_count = sum(1 for item in self.issues.items if item["level"] == "ERROR")
+        summary = {
+            "job_key": self.job_key,
+            "symbols": len(self.symbols),
+            "trade_dates": 0,
+            "errors": error_count,
+            "warnings": 0,
+            "issue_report": str(report_path),
+            "status": status,
+        }
+        self.logger.info("任务无业务下载 summary=%s", json.dumps(summary, ensure_ascii=False))
+        return summary
+
+    def _collect_kline(self, expected_trade_dates):
+        """按证券批次下载日线并写入可恢复 staging。
+
+        参数：
+            expected_trade_dates: 大 QMT 交易日历返回的预期交易日序列。
+
+        返回：
+            至少一个批次或预期交易日未完成时返回 ``True``；成功时逐日写最终分区。
+        """
+        dataset = "kline_1d"
+        failed = False
+        for batch_id, symbols in enumerate(self.batches):
+            daily_fragments_exist = all(
+                self.store.fragment_exists(
+                    self.job_key, "kline_daily_{0}".format(trade_date), batch_id
+                )
+                for trade_date in expected_trade_dates
+            )
+            if self._can_resume(dataset, batch_id) and daily_fragments_exist:
+                self.logger.info("断点命中 dataset=%s batch=%d", dataset, batch_id)
+                continue
+            self.checkpoints.mark_running(self.job_key, dataset, batch_id)
+            try:
+                frame, issues = self.gateway.fetch_kline(
+                    symbols,
+                    self.config.start_date,
+                    self.config.end_date,
+                    self.config.download_kline,
+                )
+                self.issues.extend(issues)
+                quality_issues = validate_kline(frame)
+                self.issues.extend(quality_issues)
+                self.store.write_fragment(self.job_key, dataset, batch_id, frame)
+                if frame.empty or _contains_error(issues) or _contains_error(quality_issues):
+                    failed = True
+                    reason = "批次日线为空、包含接口错误或未通过质量检查"
+                    self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
+                    self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", dataset, batch_id, reason)
+                    continue
+                for trade_date in expected_trade_dates:
+                    daily = frame[frame["trade_date"].astype(str) == trade_date]
+                    self.store.write_fragment(
+                        self.job_key,
+                        "kline_daily_{0}".format(trade_date),
+                        batch_id,
+                        _ensure_columns(daily, KLINE_COLUMNS),
+                    )
+                self.checkpoints.mark_completed(self.job_key, dataset, batch_id, len(frame))
+                self.logger.info("批次完成 dataset=%s batch=%d rows=%d", dataset, batch_id, len(frame))
+            except Exception as error:
+                failed = True
+                self.checkpoints.mark_failed(self.job_key, dataset, batch_id, error)
+                self.logger.exception("批次失败 dataset=%s batch=%d", dataset, batch_id)
+        if failed:
+            return True
+        missing_dates = []
+        for trade_date in expected_trade_dates:
+            daily = self.store.read_fragments(
+                self.job_key,
+                "kline_daily_{0}".format(trade_date),
+                range(len(self.batches)),
+            )
+            daily = _ensure_columns(daily, KLINE_COLUMNS)
+            if daily.empty:
+                missing_dates.append(trade_date)
+            else:
+                self.issues.extend(
+                    find_missing_kline(daily, self.symbols, [trade_date])
+                )
+        if missing_dates:
+            failed = True
+            for trade_date in missing_dates:
+                self.issues.add("ERROR", dataset, "", trade_date, "全部证券均缺少该预期交易日，日线批次保持为可重试状态")
+            for batch_id in range(len(self.batches)):
+                self.checkpoints.mark_failed(
+                    self.job_key,
+                    dataset,
+                    batch_id,
+                    "缺少预期交易日: {0}".format(",".join(missing_dates)),
+                )
+            return True
+        if "kline_1d" in self.config.datasets:
+            for trade_date in expected_trade_dates:
+                daily = self.store.read_fragments(
+                    self.job_key,
+                    "kline_daily_{0}".format(trade_date),
+                    range(len(self.batches)),
+                )
+                self._write_partition(
+                    "kline_1d",
+                    "date",
+                    trade_date,
+                    _ensure_columns(daily, KLINE_COLUMNS),
+                    KLINE_COLUMNS,
+                    ["code", "trade_date"],
+                    ["code"],
+                )
+        return False
+
+    def _collect_finance(self):
+        """按证券批次读取所有财务表并分别保存 staging。
+
+        返回：
+            至少一个财务批次未完成时返回 ``True``，全部 staging 可靠时返回 ``False``。
+        """
+        state_dataset = "finance_raw"
+        failed = False
+        for batch_id, symbols in enumerate(self.batches):
+            fragments_exist = all(
+                self.store.fragment_exists(self.job_key, "finance_{0}".format(name), batch_id)
+                for name in FINANCE_FIELDS
+            )
+            if self.checkpoints.is_completed(self.job_key, state_dataset, batch_id) and fragments_exist:
+                self.logger.info("断点命中 dataset=%s batch=%d", state_dataset, batch_id)
+                continue
+            self.checkpoints.mark_running(self.job_key, state_dataset, batch_id)
+            try:
+                frames, issues = self.gateway.fetch_finance(
+                    symbols,
+                    self.config.finance_lookback_start,
+                    self.config.end_date,
+                )
+                self.issues.extend(issues)
+                row_count = 0
+                for table_name in FINANCE_FIELDS:
+                    frame = frames.get(table_name, pd.DataFrame())
+                    self.store.write_fragment(
+                        self.job_key,
+                        "finance_{0}".format(table_name),
+                        batch_id,
+                        frame,
+                    )
+                    row_count += len(frame)
+                finance_missing = _contains_finance_missing(issues)
+                if (
+                    row_count == 0
+                    or _contains_error(issues)
+                    or (finance_missing and not self.config.allow_partial_finance)
+                ):
+                    failed = True
+                    reason = "批次财务数据全空、包含接口错误或不允许的部分缺失"
+                    self.checkpoints.mark_failed(self.job_key, state_dataset, batch_id, reason)
+                    self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", state_dataset, batch_id, reason)
+                    continue
+                self.checkpoints.mark_completed(self.job_key, state_dataset, batch_id, row_count)
+                self.logger.info("批次完成 dataset=%s batch=%d rows=%d", state_dataset, batch_id, row_count)
+            except Exception as error:
+                failed = True
+                self.checkpoints.mark_failed(self.job_key, state_dataset, batch_id, error)
+                self.logger.exception("批次失败 dataset=%s batch=%d", state_dataset, batch_id)
+        return failed
+
+    def _collect_actions(self):
+        """按证券批次读取全部除权送转记录并保存 staging。
+
+        返回：
+            ``(DataFrame, failed)``；数据已限定在配置日期范围。
+        """
+        dataset = "corporate_actions"
+        failed = False
+        for batch_id, symbols in enumerate(self.batches):
+            if self._can_resume(dataset, batch_id):
+                self.logger.info("断点命中 dataset=%s batch=%d", dataset, batch_id)
+                continue
+            self.checkpoints.mark_running(self.job_key, dataset, batch_id)
+            try:
+                frame, issues = self.gateway.fetch_corporate_actions(
+                    symbols, self.config.start_date, self.config.end_date
+                )
+                self.issues.extend(issues)
+                self.store.write_fragment(self.job_key, dataset, batch_id, frame)
+                if _contains_error(issues):
+                    failed = True
+                    reason = "批次除权接口包含错误"
+                    self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
+                    self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", dataset, batch_id, reason)
+                    continue
+                self.checkpoints.mark_completed(self.job_key, dataset, batch_id, len(frame))
+                self.logger.info("批次完成 dataset=%s batch=%d rows=%d", dataset, batch_id, len(frame))
+            except Exception as error:
+                failed = True
+                self.checkpoints.mark_failed(self.job_key, dataset, batch_id, error)
+                self.logger.exception("批次失败 dataset=%s batch=%d", dataset, batch_id)
+        frame = self.store.read_fragments(self.job_key, dataset, range(len(self.batches)))
+        return _ensure_columns(frame, CORPORATE_ACTION_COLUMNS), failed
+
+    def _can_resume(self, dataset, batch_id):
+        """判断普通单表批次能否直接使用已有 staging。
+
+        参数：
+            dataset: 批次所属数据集名称。
+            batch_id: 零基批次编号。
+
+        返回：
+            SQLite 状态完成且 staging 文件存在时返回 ``True``。
+        """
+        return self.checkpoints.is_completed(self.job_key, dataset, batch_id) and self.store.fragment_exists(
+            self.job_key, dataset, batch_id
+        )
+
+    def _prepare_finance_fragments(self, trade_dates):
+        """逐证券批次生成原始财务日片段和日快照片段。
+
+        参数：
+            trade_dates: 大 QMT 交易日历返回的实际交易日序列。
+
+        返回：
+            按财务表映射的待写原始公告日集合；只包含尚未完成或范围不符的分区。
+        """
+        templates = _finance_templates()
+        raw_dates = {table_name: set() for table_name in FINANCE_FIELDS}
+        raw_scope_cache = {table_name: {} for table_name in FINANCE_FIELDS}
+        needed_daily_dates = [
+            trade_date
+            for trade_date in trade_dates
+            if not self._can_reuse_partition(
+                "finance_daily", "date", trade_date, self.partition_scope
+            )
+        ] if "finance_daily" in self.config.datasets else []
+        if "finance_raw" in self.config.datasets:
+            for table_name in FINANCE_FIELDS:
+                for trade_date in trade_dates:
+                    matches = self._can_reuse_partition(
+                        "finance_raw/table={0}".format(table_name),
+                        "announce_date",
+                        trade_date,
+                        self.partition_scope,
+                    )
+                    raw_scope_cache[table_name][trade_date] = matches
+                    if not matches:
+                        raw_dates[table_name].add(trade_date)
+
+        for batch_id, symbols in enumerate(self.batches):
+            table_frames = {}
+            for table_name in FINANCE_FIELDS:
+                frame = self.store.read_fragments(
+                    self.job_key, "finance_{0}".format(table_name), [batch_id]
+                )
+                frame = _ensure_columns(frame, list(templates[table_name].columns))
+                table_frames[table_name] = frame
+                if "finance_raw" in self.config.datasets:
+                    grouped = frame.copy()
+                    grouped["_partition_date"] = grouped["announce_date"].where(
+                        grouped["announce_date"].notna(), "unknown"
+                    )
+                    for announce_date, daily in grouped.groupby("_partition_date"):
+                        date_value = str(announce_date)
+                        dataset_path = "finance_raw/table={0}".format(table_name)
+                        matches = raw_scope_cache[table_name].get(date_value)
+                        if matches is None:
+                            matches = self._can_reuse_partition(
+                                dataset_path,
+                                "announce_date",
+                                date_value,
+                                self.partition_scope,
+                            )
+                            raw_scope_cache[table_name][date_value] = matches
+                        if matches:
+                            continue
+                        raw_dates[table_name].add(date_value)
+                        self.store.write_fragment(
+                            self.job_key,
+                            "finance_raw_{0}_{1}".format(table_name, date_value),
+                            batch_id,
+                            daily.drop(columns=["_partition_date"]),
+                        )
+            if needed_daily_dates:
+                snapshot = materialize_finance_daily(
+                    table_frames, needed_daily_dates, symbols
+                )
+                expected = finance_daily_columns(templates)
+                snapshot = _ensure_columns(snapshot, expected)
+                for trade_date in needed_daily_dates:
+                    daily = snapshot[snapshot["trade_date"].astype(str) == trade_date]
+                    self.store.write_fragment(
+                        self.job_key,
+                        "finance_daily_{0}".format(trade_date),
+                        batch_id,
+                        daily,
+                    )
+        return raw_dates
+
+    def _write_finance_raw_partitions(self, raw_dates):
+        """逐公告日合并批次片段并保存原始财务分区。
+
+        参数：
+            raw_dates: 按财务表映射的待写公告日集合。
+
+        返回：
+            无返回值；每次只把一个公告日的数据加载到内存。
+        """
+        templates = _finance_templates()
+        for table_name, values in raw_dates.items():
+            for announce_date in sorted(values):
+                frame = self.store.read_fragments(
+                    self.job_key,
+                    "finance_raw_{0}_{1}".format(table_name, announce_date),
+                    range(len(self.batches)),
+                )
+                frame = _ensure_columns(frame, list(templates[table_name].columns))
+                self._write_partition(
+                    "finance_raw/table={0}".format(table_name),
+                    "announce_date",
+                    announce_date,
+                    frame,
+                    list(templates[table_name].columns),
+                    ["code", "report_date", "announce_date"],
+                    ["code", "report_date", "announce_date"],
+                )
+
+    def _write_finance_daily_partitions(self, trade_dates):
+        """逐交易日合并证券批次快照并保存日财务分区。
+
+        参数：
+            trade_dates: 大 QMT 交易日历返回的实际交易日序列。
+
+        返回：
+            无返回值；已完成且范围一致的日期不会重新生成。
+        """
+        expected = finance_daily_columns(_finance_templates())
+        for trade_date in trade_dates:
+            if self._can_reuse_partition(
+                "finance_daily", "date", trade_date, self.partition_scope
+            ):
+                continue
+            daily = self.store.read_fragments(
+                self.job_key,
+                "finance_daily_{0}".format(trade_date),
+                range(len(self.batches)),
+            )
+            daily = _ensure_columns(daily, expected)
+            missing = daily[daily["has_finance"] == 0]
+            for code in missing["code"].astype(str):
+                self.issues.add("WARNING", "finance_daily", code, trade_date, "该日收盘前没有可见财务记录")
+            self._write_partition(
+                "finance_daily",
+                "date",
+                trade_date,
+                daily,
+                expected,
+                ["code", "trade_date"],
+                ["code"],
+            )
+
+    def _write_action_partitions(self, frame, trade_dates):
+        """将除权送转记录按除权日保存，并为无事件交易日创建空分区。
+
+        参数：
+            frame: 配置区间内的除权送转记录。
+            trade_dates: 从日线得到的实际交易日序列；用于写出明确的无事件分区。
+
+        返回：
+            无返回值。
+        """
+        action_dates = set(frame["ex_date"].dropna().astype(str))
+        partition_dates = sorted(action_dates | set(trade_dates))
+        if not partition_dates:
+            self.issues.add("WARNING", "corporate_actions", "", "", "没有交易日或除权日可供分区")
+        for ex_date in partition_dates:
+            daily = frame[frame["ex_date"].astype(str) == ex_date]
+            self._write_partition(
+                "corporate_actions",
+                "ex_date",
+                ex_date,
+                daily,
+                CORPORATE_ACTION_COLUMNS,
+                ["code", "ex_date"],
+                ["code"],
+            )
+
+    def _write_partition(
+        self,
+        dataset_path,
+        partition_name,
+        partition_value,
+        frame,
+        expected_columns,
+        identity_columns,
+        sort_columns,
+    ):
+        """写入分区并输出统一日志。
+
+        参数：
+            dataset_path: 相对输出根目录的数据集路径。
+            partition_name: 分区字段名。
+            partition_value: 八位日期或 ``unknown``。
+            frame: 当前分区记录表。
+            expected_columns: 即使空分区也必须保存的列。
+            identity_columns: 用于拒绝重复记录的业务主键列。
+            sort_columns: 输出 CSV 的稳定排序列。
+
+        返回：
+            分区存储层返回的状态、行数和文件路径字典。
+        """
+        result = self.store.write_partition(
+            dataset_path,
+            partition_name,
+            partition_value,
+            frame,
+            expected_columns,
+            identity_columns,
+            sort_columns,
+            {
+                "job_key": self.job_key,
+                "mode": self.config.mode,
+                "partition_scope": self.partition_scope,
+            },
+            overwrite=self.config.overwrite_completed_partition,
+        )
+        self.logger.info(
+            "分区%s dataset=%s %s=%s rows=%s path=%s",
+            "写入" if result["status"] == "written" else "跳过",
+            dataset_path,
+            partition_name,
+            partition_value,
+            result["rows"],
+            result["path"],
+        )
+        return result
+
+    def _can_reuse_partition(
+        self, dataset_path, partition_name, partition_value, partition_scope
+    ):
+        """判断当前模式能否复用一个完整业务分区。
+
+        参数：
+            dataset_path: 相对输出根目录的数据集路径。
+            partition_name: 分区字段名。
+            partition_value: 当前日期或 ``unknown``。
+            partition_scope: 当前证券池和抽取口径范围。
+
+        返回：
+            非覆盖模式且分区完整、范围一致时返回 ``True``；repair 模式始终返回 ``False``。
+        """
+        if self.config.overwrite_completed_partition:
+            return False
+        return self.store.partition_matches_scope(
+            dataset_path, partition_name, partition_value, partition_scope
+        )
+
+    def _write_run_completion(self, trade_dates):
+        """为全部所选数据集成功的交易日写全局增量水位。
+
+        参数：
+            trade_dates: 已通过交易日历和数据质量校验的实际交易日序列。
+
+        返回：
+            无返回值；任一引用业务分区损坏时抛出异常并拒绝推进水位。
+        """
+        for trade_date in trade_dates:
+            required = []
+            if "kline_1d" in self.config.datasets:
+                required.append("kline_1d/date={0}".format(trade_date))
+            if "finance_daily" in self.config.datasets:
+                required.append("finance_daily/date={0}".format(trade_date))
+            if "corporate_actions" in self.config.datasets:
+                required.append("corporate_actions/ex_date={0}".format(trade_date))
+            if "finance_raw" in self.config.datasets:
+                for table_name in sorted(FINANCE_FIELDS):
+                    required.append(
+                        "finance_raw/table={0}/announce_date={1}".format(
+                            table_name, trade_date
+                        )
+                    )
+            path = self.store.write_run_date_complete(
+                trade_date,
+                required,
+                {
+                    "job_key": self.job_key,
+                    "mode": self.config.mode,
+                    "watermark_scope": self.config.watermark_scope,
+                },
+            )
+            self.logger.info("整日完成水位写入 date=%s path=%s", trade_date, path)
+
+
+def _iter_batches(values, batch_size):
+    """按固定大小顺序切分证券池。
+
+    参数：
+        values: 已稳定排序的证券代码列表。
+        batch_size: 每批最多证券数量。
+
+    返回：
+        逐批产生证券代码列表的生成器。
+    """
+    for start in range(0, len(values), int(batch_size)):
+        yield values[start : start + int(batch_size)]
+
+
+def _make_job_key(config, symbols):
+    """根据影响抽取结果的配置生成稳定任务标识。
+
+    参数：
+        config: 当前 ``DownloaderConfig``。
+        symbols: 已解析并排序的最终证券池。
+
+    返回：
+        ``qmt_`` 前缀加 SHA-256 前二十位的稳定字符串。
+    """
+    payload = {
+        "schema_version": 2,
+        "mode": config.mode,
+        "start_date": config.start_date,
+        "end_date": config.end_date,
+        "finance_lookback_start": config.finance_lookback_start,
+        "symbols": list(symbols),
+        "datasets": list(config.datasets),
+        "download_kline": config.download_kline,
+        "batch_size": config.batch_size,
+        "allow_partial_finance": config.allow_partial_finance,
+        "calendar_symbol": config.calendar_symbol,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return "qmt_{0}".format(hashlib.sha256(encoded).hexdigest()[:20])
+
+
+def _ensure_columns(frame, columns):
+    """为 staging 读取结果补齐规范列并保持额外列。
+
+    参数：
+        frame: 从一个或多个 staging CSV 合并的数据表。
+        columns: 当前数据集必须包含的规范列顺序。
+
+    返回：
+        规范列在前、额外列在后的新 ``DataFrame``。
+    """
+    output = frame.copy()
+    for column in columns:
+        if column not in output.columns:
+            output[column] = pd.Series(index=output.index, dtype="object")
+    extras = [column for column in output.columns if column not in columns]
+    return output[list(columns) + sorted(extras)]
+
+
+def _finance_templates():
+    """构造所有财务表的空表和稳定列结构。
+
+    返回：
+        按逻辑财务表名映射的空 ``DataFrame``，用于流式片段补列和最终表头。
+    """
+    output = {}
+    for table_name, fields in FINANCE_FIELDS.items():
+        columns = ["code", "report_date", "announce_date"] + [
+            field.split(".", 1)[1] for field in fields[2:]
+        ]
+        output[table_name] = pd.DataFrame(columns=columns)
+    return output
+
+
+def _contains_error(issues):
+    """判断一次网关调用是否返回接口级错误。
+
+    参数：
+        issues: 网关返回的结构化问题字典列表。
+
+    返回：
+        任一问题严重级别为 ``ERROR`` 时返回 ``True``。
+    """
+    return any(item.get("level") == "ERROR" for item in issues)
+
+
+def _contains_finance_missing(issues):
+    """判断财务问题中是否存在部分表、证券或公告日缺失。
+
+    参数：
+        issues: 财务网关返回的结构化问题字典列表。
+
+    返回：
+        存在 ``finance_raw`` 警告时返回 ``True``，用于严格完整性模式保持可重试。
+    """
+    return any(
+        item.get("level") == "WARNING"
+        and str(item.get("dataset", "")).startswith("finance_raw/")
+        for item in issues
+    )

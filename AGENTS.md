@@ -23,6 +23,8 @@
 - `factor_research/metrics.py`：分类、回归及每日横截面 IC/Rank IC 评估指标。
 - `factor_research/reporting.py`：Markdown/HTML 双格式评估报告和图表输出。
 - `tests/`：单元测试和端到端测试。
+- `qmt_daily_downloader/`：仅使用大 QMT 内置 Python 的日线、财务和除权数据按日分区保存工具；
+  根目录 `qmt_run_downloader.py` 是大 QMT 策略入口。
 
 ## 因子开发规范
 
