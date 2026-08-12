@@ -168,6 +168,61 @@ class QmtDailyDownloader(object):
         self.logger.info("任务无业务下载 summary=%s", json.dumps(summary, ensure_ascii=False))
         return summary
 
+    def _log_batch_progress(self, dataset, batch_id, symbols, status):
+        """记录当前证券批次的序号、总数和百分比。
+
+        参数：
+            dataset: 当前数据集名称，如 ``kline_1d``、``finance_raw`` 或 ``corporate_actions``。
+            batch_id: 当前批次的零基编号。
+            symbols: 当前批次包含的证券代码序列。
+            status: 进度事件状态，如“开始”、“完成”、“断点跳过”或“失败”。
+
+        返回：
+            无返回值；进度同时输出到 QMT 终端和日志文件。
+        """
+        total = max(len(self.batches), 1)
+        current = min(batch_id + 1, total)
+        percent = current * 100.0 / total
+        first_index = batch_id * self.config.batch_size + 1
+        last_index = first_index + len(symbols) - 1
+        self.logger.info(
+            "[%s] %s 批次 %d/%d (%.1f%%)，证券序号 %d-%d/%d",
+            dataset,
+            status,
+            current,
+            total,
+            percent,
+            first_index,
+            last_index,
+            len(self.symbols),
+        )
+
+    def _log_date_progress(self, dataset, index, total, date_value, status):
+        """记录按交易日或公告日分区写入的进度。
+
+        参数：
+            dataset: 当前数据集名称。
+            index: 当前日期在本次日期序列中的零基索引。
+            total: 本次待处理的日期总数。
+            date_value: 当前分区日期或 ``unknown``。
+            status: 进度事件状态，如“开始”、“完成”或“跳过”。
+
+        返回：
+            无返回值。
+        """
+        total = max(int(total), 1)
+        current = min(index + 1, total)
+        percent = current * 100.0 / total
+        self.logger.info(
+            "[%s] %s 日期 %d/%d (%.1f%%) date=%s",
+            dataset,
+            status,
+            current,
+            total,
+            percent,
+            date_value,
+        )
+
     def _collect_kline(self, expected_trade_dates):
         """按证券批次下载日线并写入可恢复 staging。
 
@@ -187,8 +242,10 @@ class QmtDailyDownloader(object):
                 for trade_date in expected_trade_dates
             )
             if self._can_resume(dataset, batch_id) and daily_fragments_exist:
+                self._log_batch_progress(dataset, batch_id, symbols, "断点跳过")
                 self.logger.info("断点命中 dataset=%s batch=%d", dataset, batch_id)
                 continue
+            self._log_batch_progress(dataset, batch_id, symbols, "开始")
             self.checkpoints.mark_running(self.job_key, dataset, batch_id)
             try:
                 frame, issues = self.gateway.fetch_kline(
@@ -205,6 +262,7 @@ class QmtDailyDownloader(object):
                     failed = True
                     reason = "批次日线为空、包含接口错误或未通过质量检查"
                     self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
+                    self._log_batch_progress(dataset, batch_id, symbols, "失败")
                     self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", dataset, batch_id, reason)
                     continue
                 for trade_date in expected_trade_dates:
@@ -216,10 +274,12 @@ class QmtDailyDownloader(object):
                         _ensure_columns(daily, KLINE_COLUMNS),
                     )
                 self.checkpoints.mark_completed(self.job_key, dataset, batch_id, len(frame))
+                self._log_batch_progress(dataset, batch_id, symbols, "完成")
                 self.logger.info("批次完成 dataset=%s batch=%d rows=%d", dataset, batch_id, len(frame))
             except Exception as error:
                 failed = True
                 self.checkpoints.mark_failed(self.job_key, dataset, batch_id, error)
+                self._log_batch_progress(dataset, batch_id, symbols, "失败")
                 self.logger.exception("批次失败 dataset=%s batch=%d", dataset, batch_id)
         if failed:
             return True
@@ -250,7 +310,9 @@ class QmtDailyDownloader(object):
                 )
             return True
         if "kline_1d" in self.config.datasets:
-            for trade_date in expected_trade_dates:
+            total_dates = len(expected_trade_dates)
+            for date_index, trade_date in enumerate(expected_trade_dates):
+                self._log_date_progress("kline_1d", date_index, total_dates, trade_date, "开始写入")
                 daily = self.store.read_fragments(
                     self.job_key,
                     "kline_daily_{0}".format(trade_date),
@@ -265,6 +327,7 @@ class QmtDailyDownloader(object):
                     ["code", "trade_date"],
                     ["code"],
                 )
+                self._log_date_progress("kline_1d", date_index, total_dates, trade_date, "完成")
         return False
 
     def _collect_finance(self):
@@ -281,8 +344,10 @@ class QmtDailyDownloader(object):
                 for name in FINANCE_FIELDS
             )
             if self.checkpoints.is_completed(self.job_key, state_dataset, batch_id) and fragments_exist:
+                self._log_batch_progress(state_dataset, batch_id, symbols, "断点跳过")
                 self.logger.info("断点命中 dataset=%s batch=%d", state_dataset, batch_id)
                 continue
+            self._log_batch_progress(state_dataset, batch_id, symbols, "开始")
             self.checkpoints.mark_running(self.job_key, state_dataset, batch_id)
             try:
                 frames, issues = self.gateway.fetch_finance(
@@ -310,13 +375,16 @@ class QmtDailyDownloader(object):
                     failed = True
                     reason = "批次财务数据全空、包含接口错误或不允许的部分缺失"
                     self.checkpoints.mark_failed(self.job_key, state_dataset, batch_id, reason)
+                    self._log_batch_progress(state_dataset, batch_id, symbols, "失败")
                     self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", state_dataset, batch_id, reason)
                     continue
                 self.checkpoints.mark_completed(self.job_key, state_dataset, batch_id, row_count)
+                self._log_batch_progress(state_dataset, batch_id, symbols, "完成")
                 self.logger.info("批次完成 dataset=%s batch=%d rows=%d", state_dataset, batch_id, row_count)
             except Exception as error:
                 failed = True
                 self.checkpoints.mark_failed(self.job_key, state_dataset, batch_id, error)
+                self._log_batch_progress(state_dataset, batch_id, symbols, "失败")
                 self.logger.exception("批次失败 dataset=%s batch=%d", state_dataset, batch_id)
         return failed
 
@@ -330,8 +398,10 @@ class QmtDailyDownloader(object):
         failed = False
         for batch_id, symbols in enumerate(self.batches):
             if self._can_resume(dataset, batch_id):
+                self._log_batch_progress(dataset, batch_id, symbols, "断点跳过")
                 self.logger.info("断点命中 dataset=%s batch=%d", dataset, batch_id)
                 continue
+            self._log_batch_progress(dataset, batch_id, symbols, "开始")
             self.checkpoints.mark_running(self.job_key, dataset, batch_id)
             try:
                 frame, issues = self.gateway.fetch_corporate_actions(
@@ -343,13 +413,16 @@ class QmtDailyDownloader(object):
                     failed = True
                     reason = "批次除权接口包含错误"
                     self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
+                    self._log_batch_progress(dataset, batch_id, symbols, "失败")
                     self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", dataset, batch_id, reason)
                     continue
                 self.checkpoints.mark_completed(self.job_key, dataset, batch_id, len(frame))
+                self._log_batch_progress(dataset, batch_id, symbols, "完成")
                 self.logger.info("批次完成 dataset=%s batch=%d rows=%d", dataset, batch_id, len(frame))
             except Exception as error:
                 failed = True
                 self.checkpoints.mark_failed(self.job_key, dataset, batch_id, error)
+                self._log_batch_progress(dataset, batch_id, symbols, "失败")
                 self.logger.exception("批次失败 dataset=%s batch=%d", dataset, batch_id)
         frame = self.store.read_fragments(self.job_key, dataset, range(len(self.batches)))
         return _ensure_columns(frame, CORPORATE_ACTION_COLUMNS), failed
@@ -461,7 +534,15 @@ class QmtDailyDownloader(object):
         """
         templates = _finance_templates()
         for table_name, values in raw_dates.items():
-            for announce_date in sorted(values):
+            sorted_dates = sorted(values)
+            for date_index, announce_date in enumerate(sorted_dates):
+                self._log_date_progress(
+                    "finance_raw/{0}".format(table_name),
+                    date_index,
+                    len(sorted_dates),
+                    announce_date,
+                    "开始写入",
+                )
                 frame = self.store.read_fragments(
                     self.job_key,
                     "finance_raw_{0}_{1}".format(table_name, announce_date),
@@ -477,6 +558,13 @@ class QmtDailyDownloader(object):
                     ["code", "report_date", "announce_date"],
                     ["code", "report_date", "announce_date"],
                 )
+                self._log_date_progress(
+                    "finance_raw/{0}".format(table_name),
+                    date_index,
+                    len(sorted_dates),
+                    announce_date,
+                    "完成",
+                )
 
     def _write_finance_daily_partitions(self, trade_dates):
         """逐交易日合并证券批次快照并保存日财务分区。
@@ -488,11 +576,17 @@ class QmtDailyDownloader(object):
             无返回值；已完成且范围一致的日期不会重新生成。
         """
         expected = finance_daily_columns(_finance_templates())
-        for trade_date in trade_dates:
+        for date_index, trade_date in enumerate(trade_dates):
             if self._can_reuse_partition(
                 "finance_daily", "date", trade_date, self.partition_scope
             ):
+                self._log_date_progress(
+                    "finance_daily", date_index, len(trade_dates), trade_date, "断点跳过"
+                )
                 continue
+            self._log_date_progress(
+                "finance_daily", date_index, len(trade_dates), trade_date, "开始写入"
+            )
             daily = self.store.read_fragments(
                 self.job_key,
                 "finance_daily_{0}".format(trade_date),
@@ -511,6 +605,9 @@ class QmtDailyDownloader(object):
                 ["code", "trade_date"],
                 ["code"],
             )
+            self._log_date_progress(
+                "finance_daily", date_index, len(trade_dates), trade_date, "完成"
+            )
 
     def _write_action_partitions(self, frame, trade_dates):
         """将除权送转记录按除权日保存，并为无事件交易日创建空分区。
@@ -526,7 +623,14 @@ class QmtDailyDownloader(object):
         partition_dates = sorted(action_dates | set(trade_dates))
         if not partition_dates:
             self.issues.add("WARNING", "corporate_actions", "", "", "没有交易日或除权日可供分区")
-        for ex_date in partition_dates:
+        for date_index, ex_date in enumerate(partition_dates):
+            self._log_date_progress(
+                "corporate_actions",
+                date_index,
+                len(partition_dates),
+                ex_date,
+                "开始写入",
+            )
             daily = frame[frame["ex_date"].astype(str) == ex_date]
             self._write_partition(
                 "corporate_actions",
@@ -536,6 +640,13 @@ class QmtDailyDownloader(object):
                 CORPORATE_ACTION_COLUMNS,
                 ["code", "ex_date"],
                 ["code"],
+            )
+            self._log_date_progress(
+                "corporate_actions",
+                date_index,
+                len(partition_dates),
+                ex_date,
+                "完成",
             )
 
     def _write_partition(

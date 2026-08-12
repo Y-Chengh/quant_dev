@@ -2,6 +2,7 @@
 """大 QMT 下载器的接口替身、日分区和断点续传测试。"""
 
 import json
+import io
 import logging
 import tempfile
 import unittest
@@ -702,6 +703,31 @@ class DownloaderTests(unittest.TestCase):
             "PERSHAREINDEX.sales_gross_profit",
             FINANCE_FIELDS["pershareindex"],
         )
+
+    def test_progress_log_contains_batch_and_date_percentages(self):
+        """进度日志应包含批次、日期序号及百分比，便于终端观察长任务。"""
+        stream = io.StringIO()
+        logger = logging.getLogger("qmt_progress_test_{0}".format(id(stream)))
+        logger.handlers = []
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+        try:
+            runner = object.__new__(QmtDailyDownloader)
+            runner.logger = logger
+            runner.batches = [["000001.SZ"], ["600000.SH"], ["300001.SZ"]]
+            runner.symbols = ["000001.SZ", "600000.SH", "300001.SZ"]
+            runner.config = type("Config", (object,), {"batch_size": 1})()
+            runner._log_batch_progress("kline_1d", 1, runner.batches[1], "完成")
+            runner._log_date_progress("finance_daily", 1, 3, "20260811", "完成")
+            output = stream.getvalue()
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+        self.assertIn("批次 2/3 (66.7%)", output)
+        self.assertIn("证券序号 2-2/3", output)
+        self.assertIn("日期 2/3 (66.7%) date=20260811", output)
 
 
 def _config(directory):
