@@ -12,7 +12,7 @@ import pandas as pd
 
 from qmt_daily_downloader.config import DownloaderConfig
 from qmt_daily_downloader.finance import materialize_finance_daily
-from qmt_daily_downloader.gateway import QmtGateway
+from qmt_daily_downloader.gateway import FINANCE_FIELDS, QmtGateway
 from qmt_daily_downloader.runner import QmtDailyDownloader, _make_job_key
 from qmt_daily_downloader.state import CheckpointStore
 from qmt_daily_downloader.storage import DailyPartitionStore
@@ -695,6 +695,13 @@ class DownloaderTests(unittest.TestCase):
         entry_path = Path(__file__).resolve().parents[1] / "qmt_run_downloader.py"
         source = entry_path.read_bytes()
         self.assertEqual(source.decode("ascii").encode("ascii"), source)
+
+    def test_sales_gross_profit_is_not_requested(self):
+        """确保不请求对银行股通常为空的销售毛利率字段。"""
+        self.assertNotIn(
+            "PERSHAREINDEX.sales_gross_profit",
+            FINANCE_FIELDS["pershareindex"],
+        )
 
 
 def _config(directory):

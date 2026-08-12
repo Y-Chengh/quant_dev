@@ -64,7 +64,6 @@ FINANCE_FIELDS = {
         "PERSHAREINDEX.s_fa_bps",
         "PERSHAREINDEX.s_fa_eps_basic",
         "PERSHAREINDEX.du_return_on_equity",
-        "PERSHAREINDEX.sales_gross_profit",
         "PERSHAREINDEX.inc_revenue_rate",
         "PERSHAREINDEX.inc_net_profit_rate",
         "PERSHAREINDEX.gear_ratio",
