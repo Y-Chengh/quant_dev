@@ -337,7 +337,8 @@ class DailyPartitionStore(object):
         non_empty = [frame for frame in frames if len(frame.columns) > 0]
         if not non_empty:
             return pd.DataFrame()
-        return pd.concat(non_empty, ignore_index=True, sort=False)
+        # 大 QMT 内置的旧版 pandas.concat 不支持 sort 参数。
+        return pd.concat(non_empty, ignore_index=True)
 
     def write_issue_report(self, rows, run_id):
         """将缺失与异常提示写入外部 CSV 报告。

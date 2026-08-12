@@ -6,6 +6,7 @@ import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
@@ -593,6 +594,44 @@ class DownloaderTests(unittest.TestCase):
             path = Path(directory) / "staging" / "job" / "kline_1d" / "batch_00000.csv"
             path.write_text("code,trade_date\n", encoding="utf-8")
             self.assertFalse(store.fragment_exists("job", "kline_1d", 0))
+
+    def test_read_fragments_supports_legacy_pandas_concat(self):
+        """合并 staging 时不得向旧版 pandas.concat 传入 sort 参数。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = DailyPartitionStore(directory)
+            for batch_id, code in enumerate(("000001.SZ", "600000.SH")):
+                store.write_fragment(
+                    "job",
+                    "kline_1d_date_20240102",
+                    batch_id,
+                    pd.DataFrame([{"code": code, "trade_date": "20240102"}]),
+                )
+
+            real_concat = pd.concat
+
+            def legacy_concat(frames, ignore_index=False, **kwargs):
+                """模拟不接受 ``sort`` 参数的大 QMT 旧版 pandas。
+
+                参数：
+                    frames: 待拼接的批次数据表序列。
+                    ignore_index: 是否重建连续行索引。
+                    **kwargs: 调用方传入的其他关键字参数；出现 ``sort`` 即模拟旧版报错。
+
+                返回：
+                    由当前 pandas 生成的拼接结果。
+                """
+                if "sort" in kwargs:
+                    raise TypeError("concat() got an unexpected keyword argument 'sort'")
+                return real_concat(frames, ignore_index=ignore_index, **kwargs)
+
+            with patch(
+                "qmt_daily_downloader.storage.pd.concat",
+                side_effect=legacy_concat,
+            ):
+                result = store.read_fragments(
+                    "job", "kline_1d_date_20240102", range(2)
+                )
+            self.assertEqual(result["code"].tolist(), ["000001.SZ", "600000.SH"])
 
     def test_invalid_kline_quality_keeps_checkpoint_failed(self):
         """价格关系错误必须在批次完成前发现，使下次运行重新下载。"""
