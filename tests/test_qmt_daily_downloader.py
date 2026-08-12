@@ -651,6 +651,12 @@ class DownloaderTests(unittest.TestCase):
             self.assertTrue((raw["revenue"] == 999.0).all())
             self.assertTrue((daily["income_revenue"] == 999.0).all())
 
+    def test_qmt_entry_source_is_ascii_safe(self):
+        """确保由大 QMT 编辑器直接载入的入口源码不受 GBK/UTF-8 转码影响。"""
+        entry_path = Path(__file__).resolve().parents[1] / "qmt_run_downloader.py"
+        source = entry_path.read_bytes()
+        self.assertEqual(source.decode("ascii").encode("ascii"), source)
+
 
 def _config(directory):
     """构造使用临时输出目录的测试配置。
