@@ -1,0 +1,20 @@
+{
+  "output_root": "D:\\qmt_kline",
+  "mode": "backfill",
+  "start_date": "19900101",
+  "end_date": "20260812",
+  "symbols": [],
+  "sector": "沪深A股",
+  "batch_size": 100,
+  "retry_count": 3,
+  "calendar_symbol": "000001.SH",
+  "download_kline": true,
+  "allow_partial_finance": false,
+  "overwrite_completed_partition": false,
+  "datasets": [
+    "kline_1d"
+  ],
+  "finance_lookback_start": "19900101",
+  "log_max_bytes": 20971520,
+  "log_backup_count": 10
+}
