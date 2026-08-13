@@ -34,6 +34,7 @@ class FakeContext(object):
         返回：
             以证券代码为键的日线 ``DataFrame`` 字典。
         """
+        self.last_market_kwargs = dict(kwargs)
         output = {}
         for offset, code in enumerate(symbols):
             output[code] = pd.DataFrame(
@@ -438,6 +439,25 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(len(issues), 1)
         self.assertEqual(issues[0]["code"], "000001.SZ")
         self.assertEqual(issues[0]["date"], "20240103")
+
+    def test_kline_requests_fill_data_and_suspension_is_not_missing(self):
+        """日线请求应启用填充，停牌标记行不应生成缺口警告。"""
+        context = FakeContext()
+        logger = logging.getLogger("qmt_fill_data_test_{0}".format(id(context)))
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        gateway = QmtGateway(context, lambda *args: None, logger, retry_count=1)
+        frame, issues = gateway.fetch_kline(
+            ["000001.SZ"], "20240102", "20240103", download_first=False
+        )
+        self.assertEqual(issues, [])
+        self.assertTrue(context.last_market_kwargs["fill_data"])
+        suspended = frame.copy()
+        suspended.loc[suspended["trade_date"] == "20240103", "suspend_flag"] = 1
+        missing = find_missing_kline(
+            suspended, ["000001.SZ"], ["20240102", "20240103"]
+        )
+        self.assertEqual(missing, [])
 
     def test_empty_finance_cache_keeps_batch_resumable(self):
         """财务缓存全空时批次不得标为完成，以便用户补数据后原配置续传。"""

@@ -162,7 +162,7 @@ class QmtGateway(object):
                     end_time=end_date,
                     count=-1,
                     dividend_type="none",
-                    fill_data=False,
+                    fill_data=True,
                     subscribe=False,
                 ),
                 "读取日线批次",
@@ -177,9 +177,8 @@ class QmtGateway(object):
         for code in available:
             raw = result.get(code)
             if raw is None or len(raw) == 0:
-                issues.append(
-                    _issue("WARNING", "kline_1d", code, "", "区间内没有返回日线，请检查停牌、上市日期或本地缓存")
-                )
+                # fill_data=True 时，QMT 会为可识别的停牌日返回 suspendFlag=1 的补齐行。
+                # 完全没有返回记录的代码留给全批次缺口检查，避免把停牌误报为缓存缺失。
                 continue
             frame = raw if isinstance(raw, pd.DataFrame) else pd.DataFrame(raw)
             for index_value, values in frame.iterrows():

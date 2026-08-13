@@ -46,7 +46,8 @@ def find_missing_kline(frame, symbols, trade_dates):
         trade_dates: 从全批次日线并集得到的实际交易日序列，不包含自然日周末。
 
     返回：
-        每个缺失证券日一条 ``WARNING``；停牌或尚未上市也会保留提示供用户判断。
+        每个填充后仍缺失的证券日一条 ``WARNING``；停牌日应由 QMT 的
+        ``suspend_flag=1`` 补齐行表示，不会进入缺口日志。
     """
     existing = set()
     if not frame.empty:
@@ -55,7 +56,7 @@ def find_missing_kline(frame, symbols, trade_dates):
     for code in symbols:
         for trade_date in trade_dates:
             if (code, trade_date) not in existing:
-                issues.append(_issue("WARNING", "kline_1d", code, trade_date, "该交易日无日线；可能为停牌、未上市或缓存缺失"))
+                issues.append(_issue("WARNING", "kline_1d", code, trade_date, "填充后仍无日线；可能为未上市、退市或本地缓存缺失"))
     return issues
 
 
