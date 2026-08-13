@@ -6,6 +6,7 @@
   "symbols": [],
   "sector": "沪深A股",
   "batch_size": 100,
+  "save_workers": 4,
   "retry_count": 3,
   "calendar_symbol": "000001.SH",
   "download_kline": true,

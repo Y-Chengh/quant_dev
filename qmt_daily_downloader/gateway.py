@@ -156,7 +156,25 @@ class QmtGateway(object):
                     )
                 available.append(code)
             except Exception as error:
-                issues.append(_issue("ERROR", "kline_1d", code, "", str(error)))
+                self.logger.exception(
+                    "日线下载异常 stage=download_history_data code=%s period=1d start=%s end=%s error_type=%s error=%s",
+                    code,
+                    start_date,
+                    end_date,
+                    type(error).__name__,
+                    error,
+                )
+                issues.append(
+                    _issue(
+                        "ERROR",
+                        "kline_1d",
+                        code,
+                        "",
+                        "stage=download_history_data period=1d start={0} end={1} error_type={2} error={3}".format(
+                            start_date, end_date, type(error).__name__, error
+                        ),
+                    )
+                )
         if not available:
             return pd.DataFrame(columns=KLINE_COLUMNS), issues
 
@@ -177,8 +195,26 @@ class QmtGateway(object):
                 "读取日线批次",
             )
         except Exception as error:
+            self.logger.exception(
+                "日线读取异常 stage=get_market_data_ex symbols=%s period=1d start=%s end=%s fill_data=True subscribe=False error_type=%s error=%s",
+                ",".join(available),
+                start_date,
+                end_date,
+                type(error).__name__,
+                error,
+            )
             for code in available:
-                issues.append(_issue("ERROR", "kline_1d", code, "", str(error)))
+                issues.append(
+                    _issue(
+                        "ERROR",
+                        "kline_1d",
+                        code,
+                        "",
+                        "stage=get_market_data_ex symbols={0} period=1d start={1} end={2} fill_data=True subscribe=False error_type={3} error={4}".format(
+                            ",".join(available), start_date, end_date, type(error).__name__, error
+                        ),
+                    )
+                )
             return pd.DataFrame(columns=KLINE_COLUMNS), issues
 
         rows = []
@@ -214,6 +250,7 @@ class QmtGateway(object):
         返回：
             ``(dates, issues)``；日期已去重排序，接口异常时返回空列表和 ``ERROR``。
         """
+        count = 0
         try:
             count = (
                 datetime.strptime(end_date, "%Y%m%d")
@@ -226,8 +263,25 @@ class QmtGateway(object):
                 "读取交易日历 {0}".format(calendar_symbol),
             )
         except Exception as error:
+            self.logger.exception(
+                "交易日历读取异常 stage=get_trading_dates calendar_symbol=%s start=%s end=%s count=%s period=1d error_type=%s error=%s",
+                calendar_symbol,
+                start_date,
+                end_date,
+                max(count, 1),
+                type(error).__name__,
+                error,
+            )
             return [], [
-                _issue("ERROR", "trading_calendar", calendar_symbol, "", str(error))
+                _issue(
+                    "ERROR",
+                    "trading_calendar",
+                    calendar_symbol,
+                    "",
+                    "stage=get_trading_dates start={0} end={1} count={2} period=1d error_type={3} error={4}".format(
+                        start_date, end_date, max(count, 1), type(error).__name__, error
+                    ),
+                )
             ]
         dates = sorted(
             set(
@@ -278,7 +332,23 @@ class QmtGateway(object):
                     }
                 )
             except Exception as error:
-                issues.append(_issue("ERROR", "instrument_info", code, "", str(error)))
+                self.logger.exception(
+                    "证券生命周期读取异常 stage=get_instrument_detail code=%s error_type=%s error=%s",
+                    code,
+                    type(error).__name__,
+                    error,
+                )
+                issues.append(
+                    _issue(
+                        "ERROR",
+                        "instrument_info",
+                        code,
+                        "",
+                        "stage=get_instrument_detail code={0} error_type={1} error={2}".format(
+                            code, type(error).__name__, error
+                        ),
+                    )
+                )
         return pd.DataFrame(rows, columns=INSTRUMENT_INFO_COLUMNS), issues
 
     def fetch_finance(self, symbols, start_date, end_date):
@@ -307,10 +377,63 @@ class QmtGateway(object):
                     "读取财务表 {0}".format(table_name),
                 )
             except Exception as error:
-                issues.append(_issue("ERROR", "finance_raw/{0}".format(table_name), "", "", str(error)))
+                self.logger.exception(
+                    "财务读取异常 stage=get_raw_financial_data table=%s symbols=%s start=%s end=%s report_type=report_time error_type=%s error=%s",
+                    table_name,
+                    ",".join(symbols),
+                    start_date,
+                    end_date,
+                    type(error).__name__,
+                    error,
+                )
+                issues.append(
+                    _issue(
+                        "ERROR",
+                        "finance_raw/{0}".format(table_name),
+                        "",
+                        "",
+                        "stage=get_raw_financial_data table={0} symbols={1} start={2} end={3} report_type=report_time error_type={4} error={5}".format(
+                            table_name,
+                            ",".join(symbols),
+                            start_date,
+                            end_date,
+                            type(error).__name__,
+                            error,
+                        ),
+                    )
+                )
                 table_frames[table_name] = pd.DataFrame(columns=_finance_columns(fields))
                 continue
-            frame, parse_issues = _parse_financial_result(raw or {}, symbols, table_name, fields)
+            try:
+                frame, parse_issues = _parse_financial_result(raw or {}, symbols, table_name, fields)
+            except Exception as error:
+                self.logger.exception(
+                    "财务解析异常 stage=parse_financial_result table=%s symbols=%s start=%s end=%s error_type=%s error=%s",
+                    table_name,
+                    ",".join(symbols),
+                    start_date,
+                    end_date,
+                    type(error).__name__,
+                    error,
+                )
+                issues.append(
+                    _issue(
+                        "ERROR",
+                        "finance_raw/{0}".format(table_name),
+                        "",
+                        "",
+                        "stage=parse_financial_result table={0} symbols={1} start={2} end={3} error_type={4} error={5}".format(
+                            table_name,
+                            ",".join(symbols),
+                            start_date,
+                            end_date,
+                            type(error).__name__,
+                            error,
+                        ),
+                    )
+                )
+                table_frames[table_name] = pd.DataFrame(columns=_finance_columns(fields))
+                continue
             table_frames[table_name] = frame
             issues.extend(parse_issues)
         return table_frames, issues
@@ -335,7 +458,25 @@ class QmtGateway(object):
                     "读取除权记录 {0}".format(code),
                 )
             except Exception as error:
-                issues.append(_issue("ERROR", "corporate_actions", code, "", str(error)))
+                self.logger.exception(
+                    "除权记录读取异常 stage=get_divid_factors code=%s start=%s end=%s error_type=%s error=%s",
+                    code,
+                    start_date,
+                    end_date,
+                    type(error).__name__,
+                    error,
+                )
+                issues.append(
+                    _issue(
+                        "ERROR",
+                        "corporate_actions",
+                        code,
+                        "",
+                        "stage=get_divid_factors code={0} start={1} end={2} error_type={3} error={4}".format(
+                            code, start_date, end_date, type(error).__name__, error
+                        ),
+                    )
+                )
                 continue
             for timestamp, values in (raw or {}).items():
                 ex_date = normalize_date(timestamp)

@@ -799,6 +799,89 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("证券序号 2-2/3", output)
         self.assertIn("日期 2/3 (66.7%) date=20260811", output)
 
+    def test_parallel_save_writes_all_kline_fragments(self):
+        """启用多个保存线程时，所有日期 staging 仍应完整落盘。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["kline_1d", "corporate_actions"]
+            values["save_workers"] = 2
+            config = DownloaderConfig(values)
+            summary = _build_runner(config, FakeContext(), lambda *args: None).run()
+            self.assertEqual(summary["errors"], 0)
+            root = Path(directory)
+            for trade_date in ("20240102", "20240103"):
+                self.assertTrue(
+                    (root / "kline_1d" / ("date=" + trade_date) / "data.csv").is_file()
+                )
+                self.assertTrue(
+                    (root / "corporate_actions" / ("ex_date=" + trade_date) / "data.csv").is_file()
+                )
+
+    def test_kline_error_log_contains_stage_and_request_context(self):
+        """行情接口异常日志应包含阶段、证券、日期和参数定位信息。"""
+        class ErrorContext(object):
+            """模拟大 QMT 日线读取失败。"""
+
+            def get_market_data_ex(self, fields, symbols, **kwargs):
+                """抛出可定位的测试异常。"""
+                raise RuntimeError("模拟行情服务断开")
+
+        stream = io.StringIO()
+        logger = logging.getLogger("qmt_error_detail_test_{0}".format(id(stream)))
+        logger.handlers = []
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+        try:
+            gateway = QmtGateway(ErrorContext(), lambda *args: None, logger, retry_count=1)
+            _, issues = gateway.fetch_kline(
+                ["000001.SZ"], "20240102", "20240103", download_first=False
+            )
+            output = stream.getvalue()
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+        self.assertIn("stage=get_market_data_ex", issues[0]["message"])
+        self.assertIn("symbols=000001.SZ", issues[0]["message"])
+        self.assertIn("start=20240102", issues[0]["message"])
+        self.assertIn("error_type=RuntimeError", output)
+        self.assertIn("模拟行情服务断开", output)
+
+    def test_parallel_save_error_log_contains_target_label(self):
+        """本地文件写入失败时日志应直接包含目标日期或路径标签。"""
+        stream = io.StringIO()
+        logger = logging.getLogger("qmt_parallel_error_test_{0}".format(id(stream)))
+        logger.handlers = []
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        handler = logging.StreamHandler(stream)
+        logger.addHandler(handler)
+
+        class Config(object):
+            """提供并行保存线程数的最小配置。"""
+
+            save_workers = 2
+
+        runner = object.__new__(QmtDailyDownloader)
+        runner.config = Config()
+        runner.logger = logger
+
+        def failing_task():
+            """模拟指定分区写入失败。"""
+            raise OSError("磁盘写入失败")
+
+        try:
+            with self.assertRaises(RuntimeError):
+                runner._parallel_save([failing_task], "kline_daily_final", ["20240103"])
+            output = stream.getvalue()
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+        self.assertIn("label=20240103", output)
+        self.assertIn("error_type=OSError", output)
+        self.assertIn("磁盘写入失败", output)
+
 
 def _config(directory):
     """构造使用临时输出目录的测试配置。

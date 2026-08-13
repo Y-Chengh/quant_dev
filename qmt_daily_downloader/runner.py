@@ -3,6 +3,7 @@
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import pandas as pd
@@ -168,6 +169,16 @@ class QmtDailyDownloader(object):
         self.logger.info("[instrument_info] 开始获取上市退市信息 证券 1/%d", len(self.symbols))
         frame, issues = self.gateway.fetch_instrument_info(self.symbols)
         self.issues.extend(issues)
+        for issue in issues:
+            log_method = self.logger.error if issue.get("level") == "ERROR" else self.logger.warning
+            log_method(
+                "详细问题 dataset=instrument_info symbols=%s issue_level=%s code=%s date=%s message=%s",
+                ",".join(self.symbols),
+                issue.get("level", "WARNING"),
+                issue.get("code", ""),
+                issue.get("date", ""),
+                issue.get("message", ""),
+            )
         failed = bool(issues) or len(frame) != len(self.symbols)
         if len(self.symbols):
             self.logger.info(
@@ -298,6 +309,131 @@ class QmtDailyDownloader(object):
             date_value,
         )
 
+    def _parallel_save(self, tasks, stage, labels=None):
+        """使用受控线程池并行执行互不冲突的本地文件写入任务。
+
+        参数：
+            tasks: 无参数可调用对象序列；每个任务只能写入独立文件路径，不得调用 QMT 接口。
+            stage: 保存阶段名称，用于错误日志定位。
+            labels: 与 ``tasks`` 对齐的目标日期或路径描述序列；缺省使用任务序号。
+
+        返回：
+            按输入任务顺序排列的返回值列表；任一任务失败时抛出包含任务序号和异常类型的
+            ``RuntimeError``。QMT 接口请求始终在调用线程串行执行。
+        """
+        task_list = list(tasks)
+        if labels is None:
+            label_list = ["task-{0}".format(index + 1) for index in range(len(task_list))]
+        else:
+            label_list = list(labels)
+        if len(label_list) != len(task_list):
+            raise ValueError("并行保存任务 labels 数量必须与 tasks 一致")
+        if not task_list:
+            return []
+        if self.config.save_workers == 1 or len(task_list) == 1:
+            results = []
+            for index, task in enumerate(task_list):
+                try:
+                    results.append(task())
+                except Exception as error:
+                    self.logger.exception(
+                        "保存失败 stage=%s task=%d/%d label=%s error_type=%s error=%s",
+                        stage,
+                        index + 1,
+                        len(task_list),
+                        label_list[index],
+                        type(error).__name__,
+                        error,
+                    )
+                    raise RuntimeError(
+                        "保存阶段失败 stage={0} task={1} label={2} {3}: {4}".format(
+                            stage, index + 1, label_list[index], type(error).__name__, error
+                        )
+                    )
+            return results
+        self.logger.info(
+            "[%s] 并行保存任务数=%d workers=%d",
+            stage,
+            len(task_list),
+            self.config.save_workers,
+        )
+        results = [None] * len(task_list)
+        errors = []
+        with ThreadPoolExecutor(max_workers=self.config.save_workers) as executor:
+            futures = [executor.submit(task) for task in task_list]
+            for index, future in enumerate(futures):
+                try:
+                    results[index] = future.result()
+                except Exception as error:
+                    errors.append((index, error))
+                    self.logger.exception(
+                        "并行保存失败 stage=%s task=%d/%d label=%s error_type=%s error=%s",
+                        stage,
+                        index + 1,
+                        len(task_list),
+                        label_list[index],
+                        type(error).__name__,
+                        error,
+                    )
+        if errors:
+            details = "; ".join(
+                "task={0} label={1} {2}: {3}".format(
+                    index + 1, label_list[index], type(error).__name__, error
+                )
+                for index, error in errors
+            )
+            raise RuntimeError("并行保存阶段失败 stage={0}: {1}".format(stage, details))
+        return results
+
+    def _log_issue_details(self, dataset, batch_id, symbols, issues):
+        """将批次返回的每条接口或质量问题写入详细终端日志。
+
+        参数：
+            dataset: 当前数据集名称。
+            batch_id: 当前证券批次编号。
+            symbols: 当前批次的证券代码序列。
+            issues: 问题字典序列，包含级别、代码、日期和消息。
+
+        返回：
+            无返回值；问题仍会保留在外部 CSV 报告中。
+        """
+        for issue in issues:
+            level = str(issue.get("level", "WARNING")).upper()
+            log_method = self.logger.error if level == "ERROR" else self.logger.warning
+            log_method(
+                "详细问题 dataset=%s batch=%d/%d symbols=%s issue_level=%s code=%s date=%s message=%s",
+                dataset,
+                batch_id + 1,
+                max(len(self.batches), 1),
+                ",".join(str(code) for code in symbols),
+                level,
+                issue.get("code", ""),
+                issue.get("date", ""),
+                issue.get("message", ""),
+            )
+
+    def _log_global_issue_details(self, dataset, issues):
+        """将跨证券汇总的质量问题写入详细日志。
+
+        参数：
+            dataset: 当前数据集名称。
+            issues: 不属于单个证券批次的问题字典序列。
+
+        返回：
+            无返回值；问题仍会保留在外部 CSV 报告中。
+        """
+        for issue in issues:
+            level = str(issue.get("level", "WARNING")).upper()
+            log_method = self.logger.error if level == "ERROR" else self.logger.warning
+            log_method(
+                "详细问题 dataset=%s batch=all issue_level=%s code=%s date=%s message=%s",
+                dataset,
+                level,
+                issue.get("code", ""),
+                issue.get("date", ""),
+                issue.get("message", ""),
+            )
+
     def _collect_kline(self, expected_trade_dates):
         """按证券批次下载日线并写入可恢复 staging。
 
@@ -332,21 +468,45 @@ class QmtDailyDownloader(object):
                 self.issues.extend(issues)
                 quality_issues = validate_kline(frame)
                 self.issues.extend(quality_issues)
+                self._log_issue_details(dataset, batch_id, symbols, issues + quality_issues)
                 self.store.write_fragment(self.job_key, dataset, batch_id, frame)
                 if frame.empty or _contains_error(issues) or _contains_error(quality_issues):
                     failed = True
                     reason = "批次日线为空、包含接口错误或未通过质量检查"
                     self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
                     self._log_batch_progress(dataset, batch_id, symbols, "失败")
-                    self.logger.error("批次未完成 dataset=%s batch=%d reason=%s", dataset, batch_id, reason)
+                    self.logger.error(
+                        "批次未完成 dataset=%s batch=%d/%d symbols=%s date_range=%s..%s rows=%d issue_count=%d reason=%s",
+                        dataset,
+                        batch_id + 1,
+                        len(self.batches),
+                        ",".join(symbols),
+                        self.config.start_date,
+                        self.config.end_date,
+                        len(frame),
+                        len(issues) + len(quality_issues),
+                        reason,
+                    )
                     continue
-                for trade_date in expected_trade_dates:
-                    daily = frame[frame["trade_date"].astype(str) == trade_date]
-                    self.store.write_fragment(
-                        self.job_key,
-                        "kline_daily_{0}".format(trade_date),
-                        batch_id,
-                        _ensure_columns(daily, KLINE_COLUMNS),
+                chunk_size = max(self.config.save_workers * 4, 1)
+                for chunk_start in range(0, len(expected_trade_dates), chunk_size):
+                    save_tasks = []
+                    save_labels = []
+                    for trade_date in expected_trade_dates[chunk_start : chunk_start + chunk_size]:
+                        daily = frame[frame["trade_date"].astype(str) == trade_date]
+                        save_tasks.append(
+                            lambda current_date=trade_date, current_daily=_ensure_columns(daily, KLINE_COLUMNS): self.store.write_fragment(
+                                self.job_key,
+                                "kline_daily_{0}".format(current_date),
+                                batch_id,
+                                current_daily,
+                            )
+                        )
+                        save_labels.append(trade_date)
+                    self._parallel_save(
+                        save_tasks,
+                        "kline_daily_staging batch={0}".format(batch_id + 1),
+                        save_labels,
                     )
                 self.checkpoints.mark_completed(self.job_key, dataset, batch_id, len(frame))
                 self._log_batch_progress(dataset, batch_id, symbols, "完成")
@@ -355,7 +515,17 @@ class QmtDailyDownloader(object):
                 failed = True
                 self.checkpoints.mark_failed(self.job_key, dataset, batch_id, error)
                 self._log_batch_progress(dataset, batch_id, symbols, "失败")
-                self.logger.exception("批次失败 dataset=%s batch=%d", dataset, batch_id)
+                self.logger.exception(
+                    "批次异常 dataset=%s batch=%d/%d symbols=%s date_range=%s..%s error_type=%s error=%s",
+                    dataset,
+                    batch_id + 1,
+                    len(self.batches),
+                    ",".join(symbols),
+                    self.config.start_date,
+                    self.config.end_date,
+                    type(error).__name__,
+                    error,
+                )
         if failed:
             return True
         missing_dates = []
@@ -369,13 +539,24 @@ class QmtDailyDownloader(object):
             if daily.empty:
                 missing_dates.append(trade_date)
             else:
-                self.issues.extend(
-                    find_missing_kline(daily, self.symbols, [trade_date])
-                )
+                quality_issues = find_missing_kline(daily, self.symbols, [trade_date])
+                self.issues.extend(quality_issues)
+                self._log_global_issue_details(dataset, quality_issues)
         if missing_dates:
             failed = True
             for trade_date in missing_dates:
                 self.issues.add("ERROR", dataset, "", trade_date, "全部证券均缺少该预期交易日，日线批次保持为可重试状态")
+                self._log_global_issue_details(
+                    dataset,
+                    [
+                        {
+                            "level": "ERROR",
+                            "code": "",
+                            "date": trade_date,
+                            "message": "全部证券均缺少该预期交易日，日线批次保持为可重试状态",
+                        }
+                    ],
+                )
             for batch_id in range(len(self.batches)):
                 self.checkpoints.mark_failed(
                     self.job_key,
@@ -385,25 +566,64 @@ class QmtDailyDownloader(object):
                 )
             return True
         if "kline_1d" in self.config.datasets:
-            total_dates = len(expected_trade_dates)
-            for date_index, trade_date in enumerate(expected_trade_dates):
-                self._log_date_progress("kline_1d", date_index, total_dates, trade_date, "开始写入")
-                daily = self.store.read_fragments(
-                    self.job_key,
-                    "kline_daily_{0}".format(trade_date),
-                    range(len(self.batches)),
-                )
-                self._write_partition(
-                    "kline_1d",
-                    "date",
-                    trade_date,
-                    _ensure_columns(daily, KLINE_COLUMNS),
-                    KLINE_COLUMNS,
-                    ["code", "trade_date"],
-                    ["code"],
-                )
-                self._log_date_progress("kline_1d", date_index, total_dates, trade_date, "完成")
+            chunk_size = max(self.config.save_workers * 4, 1)
+            all_dates = tuple(expected_trade_dates)
+            for chunk_start in range(0, len(all_dates), chunk_size):
+                date_chunk = all_dates[chunk_start : chunk_start + chunk_size]
+                save_tasks = [
+                    lambda current_date=trade_date, dates=all_dates: self._write_kline_date_partition(
+                        current_date, dates
+                    )
+                    for trade_date in date_chunk
+                ]
+                self._parallel_save(save_tasks, "kline_daily_final", date_chunk)
         return False
+
+    def _write_kline_date_partition(self, trade_date, trade_dates):
+        """读取一个交易日的日线 staging 并写入最终 CSV 分区。
+        ``trade_dates`` 是本次任务完整交易日序列，仅用于计算并行写入进度。
+
+        参数：
+            trade_date: 当前交易日的八位日期字符串。
+            trade_dates: 本次任务完整交易日序列，用于计算进度日志中的位置和总数。
+
+        返回：
+            最终日线分区的写入结果字典。
+        """
+        date_index = self._date_index(trade_dates, trade_date)
+        self._log_date_progress("kline_1d", date_index, len(trade_dates), trade_date, "开始写入")
+        daily = self.store.read_fragments(
+            self.job_key,
+            "kline_daily_{0}".format(trade_date),
+            range(len(self.batches)),
+        )
+        result = self._write_partition(
+            "kline_1d",
+            "date",
+            trade_date,
+            _ensure_columns(daily, KLINE_COLUMNS),
+            KLINE_COLUMNS,
+            ["code", "trade_date"],
+            ["code"],
+        )
+        self._log_date_progress("kline_1d", date_index, len(trade_dates), trade_date, "完成")
+        return result
+
+    @staticmethod
+    def _date_index(values, target):
+        """查找日期在本次任务日期序列中的位置。
+
+        参数：
+            values: 有序日期序列。
+            target: 待查找的日期字符串。
+
+        返回：
+            零基索引；找不到时返回零以保证错误日志仍可输出。
+        """
+        try:
+            return list(values).index(target)
+        except ValueError:
+            return 0
 
     def _collect_finance(self):
         """按证券批次读取所有财务表并分别保存 staging。
@@ -431,6 +651,7 @@ class QmtDailyDownloader(object):
                     self.config.end_date,
                 )
                 self.issues.extend(issues)
+                self._log_issue_details(state_dataset, batch_id, symbols, issues)
                 row_count = 0
                 for table_name in FINANCE_FIELDS:
                     frame = frames.get(table_name, pd.DataFrame())
@@ -483,6 +704,7 @@ class QmtDailyDownloader(object):
                     symbols, self.config.start_date, self.config.end_date
                 )
                 self.issues.extend(issues)
+                self._log_issue_details(dataset, batch_id, symbols, issues)
                 self.store.write_fragment(self.job_key, dataset, batch_id, frame)
                 if _contains_error(issues):
                     failed = True
@@ -698,31 +920,42 @@ class QmtDailyDownloader(object):
         partition_dates = sorted(action_dates | set(trade_dates))
         if not partition_dates:
             self.issues.add("WARNING", "corporate_actions", "", "", "没有交易日或除权日可供分区")
-        for date_index, ex_date in enumerate(partition_dates):
-            self._log_date_progress(
-                "corporate_actions",
-                date_index,
-                len(partition_dates),
-                ex_date,
-                "开始写入",
+        tasks = [
+            lambda current_date=ex_date, dates=tuple(partition_dates): self._write_action_date_partition(
+                frame, current_date, dates
             )
-            daily = frame[frame["ex_date"].astype(str) == ex_date]
-            self._write_partition(
-                "corporate_actions",
-                "ex_date",
-                ex_date,
-                daily,
-                CORPORATE_ACTION_COLUMNS,
-                ["code", "ex_date"],
-                ["code"],
-            )
-            self._log_date_progress(
-                "corporate_actions",
-                date_index,
-                len(partition_dates),
-                ex_date,
-                "完成",
-            )
+            for ex_date in partition_dates
+        ]
+        self._parallel_save(tasks, "corporate_actions_final", partition_dates)
+
+    def _write_action_date_partition(self, frame, ex_date, partition_dates):
+        """写入一个除权日分区；每个任务只操作自己的目标路径。
+
+        参数：
+            frame: 已获取的除权转送明细总表。
+            ex_date: 当前除权日的八位日期字符串。
+            partition_dates: 本次任务的完整分区日期序列，用于进度日志。
+        返回：
+            最终除权分区的写入结果字典。
+        """
+        date_index = self._date_index(partition_dates, ex_date)
+        self._log_date_progress(
+            "corporate_actions", date_index, len(partition_dates), ex_date, "开始写入"
+        )
+        daily = frame[frame["ex_date"].astype(str) == ex_date]
+        result = self._write_partition(
+            "corporate_actions",
+            "ex_date",
+            ex_date,
+            daily,
+            CORPORATE_ACTION_COLUMNS,
+            ["code", "ex_date"],
+            ["code"],
+        )
+        self._log_date_progress(
+            "corporate_actions", date_index, len(partition_dates), ex_date, "完成"
+        )
+        return result
 
     def _write_partition(
         self,

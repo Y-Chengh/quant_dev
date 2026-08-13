@@ -39,6 +39,7 @@ class DownloaderConfig(object):
         self.symbols = tuple(str(item).strip() for item in values.get("symbols", []) if str(item).strip())
         self.sector = str(values.get("sector", "")).strip()
         self.batch_size = int(values.get("batch_size", 100))
+        self.save_workers = int(values.get("save_workers", 1))
         self.retry_count = int(values.get("retry_count", 3))
         self.download_kline = bool(values.get("download_kline", True))
         self.overwrite_completed_partition = bool(
@@ -94,6 +95,8 @@ class DownloaderConfig(object):
             raise ValueError("symbols 与 sector 至少需要配置一个")
         if self.batch_size <= 0:
             raise ValueError("batch_size 必须大于 0")
+        if self.save_workers <= 0 or self.save_workers > 16:
+            raise ValueError("save_workers 必须在 1 到 16 之间")
         if self.retry_count <= 0:
             raise ValueError("retry_count 必须大于 0")
         if self.incremental_lag_days < 0:
