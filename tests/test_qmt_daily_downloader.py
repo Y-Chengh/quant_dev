@@ -52,6 +52,16 @@ class FakeContext(object):
             )
         return output
 
+    def get_instrument_detail(self, code):
+        """返回测试股票的上市、退市和交易状态信息。"""
+        return {
+            "InstrumentName": code,
+            "OpenDate": 20240101,
+            "ExpireDate": 99999999,
+            "IsTrading": True,
+            "InstrumentStatus": 0,
+        }
+
     def get_trading_dates(self, stockcode, start_date, end_date, count, period="1d"):
         """返回测试区间的两个预期交易日。
 
@@ -342,8 +352,12 @@ class DownloaderTests(unittest.TestCase):
             kline_path = root / "kline_1d" / "date=20240102" / "data.csv"
             finance_path = root / "finance_daily" / "date=20240103" / "data.csv"
             action_path = root / "corporate_actions" / "ex_date=20240103" / "data.csv"
+            instrument_path = root / "instrument_info" / "snapshot=latest" / "data.csv"
             self.assertTrue(kline_path.is_file())
             self.assertTrue((kline_path.parent / "_SUCCESS.json").is_file())
+            self.assertTrue(instrument_path.is_file())
+            instrument_info = pd.read_csv(str(instrument_path), dtype={"code": str})
+            self.assertEqual(instrument_info["code"].tolist(), ["000001.SZ", "600000.SH"])
             self.assertTrue(
                 (root / "run_complete" / "date=20240103" / "_SUCCESS.json").is_file()
             )
@@ -458,6 +472,42 @@ class DownloaderTests(unittest.TestCase):
             suspended, ["000001.SZ"], ["20240102", "20240103"]
         )
         self.assertEqual(missing, [])
+
+    def test_instrument_info_filters_pre_listing_kline_warning(self):
+        """上市前日期的 K 线缺失提示应被生命周期信息过滤。"""
+        runner = object.__new__(QmtDailyDownloader)
+        runner.logger = logging.getLogger("qmt_lifecycle_filter_test")
+        runner.logger.handlers = [logging.NullHandler()]
+        runner.logger.propagate = False
+        runner.issues = type("Issues", (object,), {})()
+        runner.issues.items = [
+            {
+                "level": "WARNING",
+                "dataset": "kline_1d",
+                "code": "000001.SZ",
+                "date": "20231229",
+                "message": "填充后仍无日线；可能为未上市、退市或本地缓存缺失",
+            },
+            {
+                "level": "WARNING",
+                "dataset": "kline_1d",
+                "code": "000001.SZ",
+                "date": "20240102",
+                "message": "填充后仍无日线；可能为未上市、退市或本地缓存缺失",
+            },
+        ]
+        info = pd.DataFrame(
+            [
+                {
+                    "code": "000001.SZ",
+                    "open_date": "20240101",
+                    "expire_date": None,
+                }
+            ]
+        )
+        runner._filter_kline_issues(info)
+        self.assertEqual(len(runner.issues.items), 1)
+        self.assertEqual(runner.issues.items[0]["date"], "20240102")
 
     def test_empty_finance_cache_keeps_batch_resumable(self):
         """财务缓存全空时批次不得标为完成，以便用户补数据后原配置续传。"""

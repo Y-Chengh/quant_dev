@@ -12,7 +12,8 @@
   "allow_partial_finance": false,
   "overwrite_completed_partition": false,
   "datasets": [
-    "kline_1d"
+    "kline_1d",
+    "corporate_actions"
   ],
   "finance_lookback_start": "19900101",
   "log_max_bytes": 20971520,

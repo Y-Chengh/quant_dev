@@ -6,7 +6,7 @@
 
 - `qmt_run_downloader.py`（项目根目录）：在大 QMT 编辑器中运行的唯一入口。
 - `config.py`：JSON 配置读取和校验。
-- `gateway.py`：大 QMT 行情、原始财务和除权接口适配。
+- `gateway.py`：大 QMT 行情、上市退市、原始财务和除权接口适配。
 - `runner.py`：批量回溯、日增量、分批和断点续传编排。
 - `storage.py`：按日分区、临时文件原子替换和完成标记。
 - `finance.py`：根据公告日生成日级财务快照。
@@ -29,6 +29,7 @@
 ```text
 D:\qmt_data\
 ├─ kline_1d\date=20260812\data.csv
+├─ instrument_info\snapshot=latest\data.csv
 ├─ finance_raw\table=income\announce_date=20260812\data.csv
 ├─ finance_daily\date=20260812\data.csv
 ├─ corporate_actions\ex_date=20260812\data.csv
@@ -40,6 +41,8 @@ D:\qmt_data\
 ```
 
 每个业务分区都有 `_SUCCESS.json`，其中包含行数、证券池范围和 CSV 的 SHA-256。写入顺序为 `data.csv.tmp` → 原子替换 `data.csv` → `_SUCCESS.json.tmp` → 原子替换 `_SUCCESS.json`。增量模式默认跳过同一证券池的已有完成分区，因此不会重写历史文件；若同一输出目录和日期改用了不同证券池，任务会明确报错，需使用 `repair` 或新输出目录，避免静默丢股票。
+
+选择 `kline_1d` 时，日线分区完成后会逐只保存 `instrument_info/snapshot=latest`，包含上市日期、退市日期、当前交易状态和停牌状态。随后用上市/退市日期过滤未上市或已退市期间的日线缺失提示；上市期间填充后仍无日线的记录才保留在问题报告中。
 
 跳过分区前会重新核验数据文件、行数和 SHA-256。一次任务的全部所选数据集成功后，才会在 `run_complete/date=YYYYMMDD/_SUCCESS.json` 写整日水位；自动增量只根据这个全局水位前进，因此日 K 成功但财务或除权失败时不会越过失败日期。
 

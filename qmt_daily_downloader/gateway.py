@@ -33,6 +33,15 @@ KLINE_FIELD_MAP = {
     "suspendFlag": "suspend_flag",
 }
 
+INSTRUMENT_INFO_COLUMNS = [
+    "code",
+    "instrument_name",
+    "open_date",
+    "expire_date",
+    "is_trading",
+    "instrument_status",
+]
+
 FINANCE_FIELDS = {
     "balance": [
         "ASHAREBALANCESHEET.m_timetag",
@@ -228,6 +237,49 @@ class QmtGateway(object):
             )
         )
         return dates, []
+
+    def fetch_instrument_info(self, symbols):
+        """逐只读取证券上市、退市和当前交易状态信息。
+
+        参数：
+            symbols: 需要查询的证券代码序列；每个代码必须包含市场后缀。
+
+        返回：
+            ``(DataFrame, issues)``；数据包含代码、名称、上市日期、退市日期、当前交易
+            状态和停牌状态，接口失败的证券写入错误列表。
+        """
+        rows = []
+        issues = []
+        getter = getattr(self.context, "get_instrument_detail", None)
+        if getter is None:
+            getter = getattr(self.context, "get_instrumentdetail", None)
+        if getter is None:
+            issue = _issue(
+                "ERROR",
+                "instrument_info",
+                "",
+                "",
+                "大 QMT ContextInfo 不支持 get_instrument_detail/get_instrumentdetail",
+            )
+            return pd.DataFrame(columns=INSTRUMENT_INFO_COLUMNS), [issue]
+        for code in symbols:
+            try:
+                detail = getter(code) or {}
+                if not isinstance(detail, dict) or not detail:
+                    raise ValueError("未返回合约基础信息")
+                rows.append(
+                    {
+                        "code": code,
+                        "instrument_name": detail.get("InstrumentName"),
+                        "open_date": _normalize_lifecycle_date(detail.get("OpenDate")),
+                        "expire_date": _normalize_lifecycle_date(detail.get("ExpireDate")),
+                        "is_trading": detail.get("IsTrading"),
+                        "instrument_status": detail.get("InstrumentStatus"),
+                    }
+                )
+            except Exception as error:
+                issues.append(_issue("ERROR", "instrument_info", code, "", str(error)))
+        return pd.DataFrame(rows, columns=INSTRUMENT_INFO_COLUMNS), issues
 
     def fetch_finance(self, symbols, start_date, end_date):
         """读取大 QMT 本地缓存中的原始财务记录。
@@ -430,6 +482,33 @@ def _finance_columns(fields):
     return ["code", "report_date", "announce_date"] + [
         field.split(".", 1)[1] for field in fields[2:]
     ]
+
+
+def _normalize_lifecycle_date(value):
+    """标准化上市或退市日期并屏蔽 QMT 的无日期哨兵值。
+
+    参数：
+        value: ``OpenDate`` 或 ``ExpireDate`` 返回的日期、整数或字符串。
+
+    返回：
+        ``YYYYMMDD`` 日期；``0``、``99999999`` 等无明确日期的值返回 ``None``。
+    """
+    text = str(value).strip() if value is not None else ""
+    if text in (
+        "",
+        "0",
+        "0.0",
+        "99999999",
+        "99999999.0",
+        "19700101",
+        "19700102",
+        "19700103",
+        "19700104",
+        "19700105",
+        "19700106",
+    ):
+        return None
+    return normalize_date(value)
 
 
 def _field_value(values_by_field, field, key):

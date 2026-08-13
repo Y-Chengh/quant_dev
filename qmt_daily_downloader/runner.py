@@ -11,6 +11,7 @@ from .finance import finance_daily_columns, materialize_finance_daily
 from .gateway import (
     CORPORATE_ACTION_COLUMNS,
     FINANCE_FIELDS,
+    INSTRUMENT_INFO_COLUMNS,
     KLINE_COLUMNS,
 )
 from .storage import IssueCollector
@@ -102,6 +103,19 @@ class QmtDailyDownloader(object):
             if failed:
                 all_datasets_succeeded = False
                 self.issues.add("ERROR", "kline_1d", "", "", "存在失败批次，未生成最终日线分区；下次以相同配置运行会从断点继续")
+            if "kline_1d" in self.config.datasets:
+                instrument_info, instrument_failed = self._collect_instrument_info()
+                if instrument_failed:
+                    all_datasets_succeeded = False
+                    self.issues.add(
+                        "ERROR",
+                        "instrument_info",
+                        "",
+                        "",
+                        "上市退市信息获取失败，无法可靠过滤日线缺失提示",
+                    )
+                else:
+                    self._filter_kline_issues(instrument_info)
 
         if "finance_raw" in self.config.datasets or "finance_daily" in self.config.datasets:
             failed = self._collect_finance()
@@ -143,6 +157,67 @@ class QmtDailyDownloader(object):
         }
         self.logger.info("任务结束 summary=%s", json.dumps(summary, ensure_ascii=False))
         return summary
+
+    def _collect_instrument_info(self):
+        """读取全部证券的上市退市信息并保存当前快照表。
+
+        返回：
+            ``(DataFrame, failed)``；快照写入 ``instrument_info/snapshot=latest``，失败时
+            返回已读取的数据和 ``True``。
+        """
+        self.logger.info("[instrument_info] 开始获取上市退市信息 证券 1/%d", len(self.symbols))
+        frame, issues = self.gateway.fetch_instrument_info(self.symbols)
+        self.issues.extend(issues)
+        failed = bool(issues) or len(frame) != len(self.symbols)
+        if len(self.symbols):
+            self.logger.info(
+                "[instrument_info] 完成获取上市退市信息 证券 %d/%d (%.1f%%)",
+                len(frame),
+                len(self.symbols),
+                len(frame) * 100.0 / len(self.symbols),
+            )
+        if not failed:
+            self._write_partition(
+                "instrument_info",
+                "snapshot",
+                "latest",
+                frame,
+                INSTRUMENT_INFO_COLUMNS,
+                ["code"],
+                ["code"],
+                overwrite=True,
+            )
+        return frame, failed
+
+    def _filter_kline_issues(self, instrument_info):
+        """按上市和退市日期过滤日线缺失警告。
+
+        参数：
+            instrument_info: ``fetch_instrument_info`` 返回的证券生命周期信息表。
+
+        返回：
+            无返回值；未上市或已退市期间的缺失提示从问题报告中移除，其他缺失保留。
+        """
+        lifecycle = {}
+        for row in instrument_info.to_dict("records"):
+            lifecycle[str(row.get("code"))] = (
+                str(row.get("open_date") or ""),
+                str(row.get("expire_date") or ""),
+            )
+        kept = []
+        removed = 0
+        for issue in self.issues.items:
+            if issue.get("dataset") != "kline_1d" or "填充后仍无日线" not in issue.get("message", ""):
+                kept.append(issue)
+                continue
+            open_date, expire_date = lifecycle.get(str(issue.get("code")), ("", ""))
+            date_value = str(issue.get("date") or "")
+            if (open_date and date_value < open_date) or (expire_date and date_value > expire_date):
+                removed += 1
+                continue
+            kept.append(issue)
+        self.issues.items = kept
+        self.logger.info("[instrument_info] 已过滤未上市/已退市期间 K 线缺失提示 %d 条", removed)
 
     def _finish_without_download(self, run_id, status):
         """在交易日历失败或区间无交易日时生成摘要并安全结束。
@@ -658,6 +733,7 @@ class QmtDailyDownloader(object):
         expected_columns,
         identity_columns,
         sort_columns,
+        overwrite=None,
     ):
         """写入分区并输出统一日志。
 
@@ -669,6 +745,7 @@ class QmtDailyDownloader(object):
             expected_columns: 即使空分区也必须保存的列。
             identity_columns: 用于拒绝重复记录的业务主键列。
             sort_columns: 输出 CSV 的稳定排序列。
+            overwrite: 是否强制覆盖已有分区；缺省跟随配置，上市退市快照可强制刷新。
 
         返回：
             分区存储层返回的状态、行数和文件路径字典。
@@ -686,7 +763,11 @@ class QmtDailyDownloader(object):
                 "mode": self.config.mode,
                 "partition_scope": self.partition_scope,
             },
-            overwrite=self.config.overwrite_completed_partition,
+            overwrite=(
+                self.config.overwrite_completed_partition
+                if overwrite is None
+                else bool(overwrite)
+            ),
         )
         self.logger.info(
             "分区%s dataset=%s %s=%s rows=%s path=%s",
