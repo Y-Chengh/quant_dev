@@ -25,6 +25,8 @@
 - `tests/`：单元测试和端到端测试。
 - `qmt_daily_downloader/`：仅使用大 QMT 内置 Python 的日线、财务和除权数据按日分区保存工具；
   根目录 `qmt_run_downloader.py` 是大 QMT 策略入口。
+- `run_qmt_data_self_check.py`：在外部 Python 中全量审计 QMT 日线分区、证券生命周期、
+  缺失区间、停牌成交量和统计异常，并输出不修改原始数据的详细报告。
 
 ## 因子开发规范
 
