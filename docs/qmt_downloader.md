@@ -7,7 +7,11 @@
 - `scripts/qmt_run_downloader.py`：在大 QMT 编辑器中运行的唯一入口。
 - `config.py`：JSONC 配置读取和校验。
 - `gateway.py`：大 QMT 行情、上市退市、原始财务和除权接口适配。
-- `runner.py`：批量回溯、日增量、分批和断点续传编排。
+- `runner/`：批量回溯、日增量、分批和断点续传编排。按职责拆为 mixin：
+  `instruments`（证券池）、`issues`（问题降级）、`progress`（进度与并行落盘）、
+  `kline`（日线与缺口修复）、`finance_steps`（财务）、
+  `corporate_actions`（除权）、`partitions`（分区写入与水位），
+  `downloader` 只做编排，共享状态声明在 `base`。
 - `storage.py`：按日分区、临时文件原子替换和完成标记。
 - `finance.py`：根据公告日生成日级财务快照。
 - `validation.py`：缺失、重复和行情价格关系检查。

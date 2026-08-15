@@ -27,15 +27,19 @@
 
 - `factor_factories/`：因子工厂，每个具体因子使用独立文件。
 - `factor_dsl/`：不可变因子表达式、算子注册和日频执行上下文。
-- `factor_search/`：网格/遗传搜索、一次性上下文、候选评价及并行后端。
+- `factor_search/`：网格/遗传搜索、一次性上下文、候选评价及并行后端；其中
+  `genetic/` 按 `config`/`events`/`session`/`trees`/`generator`/`search` 分层。
 - `models/`：预测模型抽象、具体模型及模型工厂。
+- `reporting/`：Markdown/HTML 双格式评估报告和图表输出，按
+  `labels`/`formatting`/`markdown`/`charts`/`report` 分层。
+- `search_report/`：因子搜索结果的可审计报告生成，按
+  `constants`/`formatting`/`reproduction`/`summaries`/`charts`/`report` 分层。
 - `factors.py`：日频聚合、因子计算和缓存流程。
 - `dataset.py`：特征、标签及训练数据集构建。
 - `experiment.py`：滚动训练、预测和实验结果汇总。
 - `backtesting.py`：验证集 Top N 日内等权回测、交易成本、随机/等权基准、
   横截面分组及收益价差诊断。
 - `metrics.py`：分类、回归及每日横截面 IC/Rank IC 评估指标。
-- `reporting.py`：Markdown/HTML 双格式评估报告和图表输出。
 
 其余子包：
 
@@ -44,6 +48,8 @@
 - `src/quant/market_data/`：本地 DuckDB 行情库、查询客户端与 FastAPI 网页服务。
 - `src/quant/qmt_downloader/`：仅使用大 QMT 内置 Python 的日线、财务和除权数据
   按日分区保存工具；`scripts/qmt_run_downloader.py` 是大 QMT 策略入口。
+  其中 `runner/` 与 `self_check/` 都按职责拆为 mixin 包：各 mixin 只承担一类
+  职责，共享状态集中声明在 `base.py`，`downloader.py`/`checker.py` 只做编排。
 - `src/quant/cli/`：命令行入口，只做参数解析、配置装载、日志初始化和调用库层，
   不得承载可复用的业务逻辑。每个模块对应 `pyproject.toml` 中的一个
   `console_scripts` 入口：
@@ -79,6 +85,21 @@
 - `src/quant/__init__.py` 与 `src/quant/cli/__init__.py` 不得导入任何子模块，
   避免轻量场景被迫加载全部三方依赖。
 - 命令行层可以依赖库层，库层不得反向依赖 `quant.cli`。
+
+## 模块规模与拆分约定
+
+- 单个模块超过约 700 行时应拆为包。拆分只做机械搬运：函数体逐行不改，
+  公开接口保持不变，调用方不需要改导入语句。
+- 拆分后包内依赖必须单向无环，并在包 `__init__.py` 的文档字符串中列出各子模块
+  的职责，同时只重导出对外公开的名字；包内私有实现由使用方从对应子模块直接
+  导入，不在包入口再导出。
+- 拆分共享大量可变状态的大类时使用 mixin：每个 mixin 只承担一类职责，
+  主类只保留 `__init__` 与编排方法，基类顺序与原方法定义顺序一致以保证行为不变。
+  跨 mixin 共享的实例属性必须集中声明在包内 `base.py` 的状态契约类中，
+  逐项说明业务含义；不得依赖隐式约定。
+  - `quant.factor_research` 与 `quant.market_data` 下的状态契约用变量注解声明。
+  - `quant.qmt_downloader` 下的状态契约只能用文档字符串说明，因为大 QMT 内置
+    Python 早于 3.7，不支持变量注解。
 
 ## 因子开发规范
 
