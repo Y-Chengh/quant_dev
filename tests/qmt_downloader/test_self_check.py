@@ -257,6 +257,52 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertTrue((result.report_dir / "issues.csv").is_file())
             self.assertTrue((result.report_dir / "coverage_by_symbol.csv").is_file())
 
+    def test_expire_date_lifecycle_sentinels_are_not_treated_as_delisting(self) -> None:
+        """expire_date 落在已知无期限哨兵集合内时不应误报退市。
+
+        实测 QMT instrument_info 快照里 ExpireDate 至少出现过 19700427 与
+        19700428 两种取值表示「尚未退市」，二者都必须解析为空，否则会误触发
+        INVALID_LIFECYCLE_RANGE（上市日期晚于哨兵日期）和
+        DATA_AFTER_DELISTING（退市后仍有行情）两类假阳性。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [
+                    {"code": "000001.SZ", "open_date": "19910403", "expire_date": "19700427"},
+                    {"code": "600000.SH", "open_date": "19991110", "expire_date": "19700428"},
+                ],
+                SYMBOLS,
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8), _bar("600000.SH", "20240102", 20.0, 19.8)],
+                SYMBOLS,
+            )
+            _write_kline(
+                store,
+                "20240103",
+                [_bar("000001.SZ", "20240103", 10.1, 10.0), _bar("600000.SH", "20240103", 20.2, 20.0)],
+                SYMBOLS,
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            codes = set(result.issues["issue_code"])
+            self.assertNotIn("INVALID_LIFECYCLE_RANGE", codes)
+            self.assertNotIn("DATA_AFTER_DELISTING", codes)
+
     def test_missing_lifecycle_and_volume_errors_include_evidence(self) -> None:
         """缺失区间、上市退市越界和停牌成交量矛盾应含完整定位与建议。"""
 

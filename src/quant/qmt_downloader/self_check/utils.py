@@ -78,6 +78,32 @@ def _normalize_date_text(value: Any) -> str | None:
         return None
 
 
+#: 大 QMT 用于表达「没有这个日期」的哨兵值。实测 instrument_info 快照里
+#: ExpireDate 至少出现过 19700427 与 19700428 两种取值，说明哨兵不是单一
+#: 常量；与 quant.market_data.daily.schema.LIFECYCLE_SENTINELS 保持同一份
+#: 取值列表，但因分层约束（quant.qmt_downloader 不得导入 quant 的其它子包）
+#: 无法共用同一个常量定义，两处修改哨兵集合时必须同步。
+_LIFECYCLE_SENTINELS = frozenset(
+    {
+        "",
+        "nan",
+        "nat",
+        "none",
+        "null",
+        "0",
+        "99999999",
+        "19700101",
+        "19700102",
+        "19700103",
+        "19700104",
+        "19700105",
+        "19700106",
+        "19700427",
+        "19700428",
+    }
+)
+
+
 def _parse_lifecycle_value(value: Any) -> tuple[str | None, bool]:
     """解析上市或退市日期并区分合法空值与非法非空文本。
 
@@ -85,16 +111,14 @@ def _parse_lifecycle_value(value: Any) -> tuple[str | None, bool]:
         value: instrument_info 中的上市日期或退市日期原始值。
 
     返回：
-        ``(日期, 是否为非法非空值)``；空值、99999999 以及 QMT 常见的
-        19700101/19700427 无期限哨兵返回 ``(None, False)``。
+        ``(日期, 是否为非法非空值)``；空值以及 ``_LIFECYCLE_SENTINELS`` 中的
+        无期限哨兵返回 ``(None, False)``。
     """
 
     if value is None:
         return None, False
     text = str(value).strip()
-    if not text or text.lower() in {
-        "nan", "nat", "none", "99999999", "0", "19700101", "19700427"
-    }:
+    if not text or text.lower() in _LIFECYCLE_SENTINELS:
         return None, False
     normalized = _normalize_date_text(value)
     return normalized, normalized is None

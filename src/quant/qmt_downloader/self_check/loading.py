@@ -413,7 +413,7 @@ class _ReferenceLoadingMixin(_CheckerState):
                     "证券退市日期非空但不是合法日期或受支持的无期限哨兵。",
                     code=code,
                     field="expire_date",
-                    expected="合法 YYYYMMDD 日期、空值或 99999999 无期限哨兵",
+                    expected="合法 YYYYMMDD 日期、空值或已知无期限哨兵",
                     actual=str(row.get("expire_date", "")),
                     possible_causes="QMT ExpireDate 字段损坏、日期格式变化或快照被人工修改",
                     suggested_action="核对 QMT ExpireDate 原始值并重新生成证券详情快照",
