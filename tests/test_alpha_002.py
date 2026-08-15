@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from factor_research.factor_factories import FACTOR_FACTORIES
+from quant.factor_research.factor_factories import FACTOR_FACTORIES
 
 
 def _rank_pattern_frame(days: int = 8) -> pd.DataFrame:

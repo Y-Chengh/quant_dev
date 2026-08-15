@@ -13,12 +13,12 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from factor_research.experiment import ExperimentResult
-from factor_research.reporting import (
+from quant.factor_research.experiment import ExperimentResult
+from quant.factor_research.reporting import (
     render_markdown_report_html,
     write_evaluation_report,
 )
-import run_factor_demo
+from quant.cli import factor_demo
 
 
 def _result() -> ExperimentResult:
@@ -228,55 +228,55 @@ class YamlConfigReportingTest(unittest.TestCase):
             client = SimpleNamespace(get_metadata=lambda: {})
 
             with ExitStack() as stack:
-                stack.enter_context(patch.object(run_factor_demo, "parse_args", return_value=args))
+                stack.enter_context(patch.object(factor_demo, "parse_args", return_value=args))
                 stack.enter_context(
                     patch.object(
-                        run_factor_demo,
+                        factor_demo,
                         "resolve_window",
                         return_value=(datetime(2024, 1, 1), datetime(2026, 1, 1)),
                     )
                 )
                 stack.enter_context(
-                    patch("market_service.client.MarketDataClient", return_value=client)
+                    patch("quant.market_data.client.MarketDataClient", return_value=client)
                 )
                 stack.enter_context(
                     patch.object(
-                        run_factor_demo,
+                        factor_demo,
                         "load_market_service",
                         return_value=pd.DataFrame({"close": [1.0]}),
                     )
                 )
                 stack.enter_context(
                     patch.object(
-                        run_factor_demo,
+                        factor_demo,
                         "build_daily_features",
                         return_value=pd.DataFrame({"return_1d": [0.1]}),
                     )
                 )
                 stack.enter_context(
                     patch.object(
-                        run_factor_demo,
+                        factor_demo,
                         "build_direction_dataset",
                         return_value=pd.DataFrame({"return_1d": [0.1]}),
                     )
                 )
                 stack.enter_context(
-                    patch.object(run_factor_demo, "DirectionExperiment", return_value=experiment)
+                    patch.object(factor_demo, "DirectionExperiment", return_value=experiment)
                 )
-                stack.enter_context(patch.object(run_factor_demo, "model_factory_from_args"))
+                stack.enter_context(patch.object(factor_demo, "model_factory_from_args"))
                 report_writer = stack.enter_context(
-                    patch.object(run_factor_demo, "write_evaluation_report")
+                    patch.object(factor_demo, "write_evaluation_report")
                 )
                 stack.enter_context(
                     patch.object(
-                        run_factor_demo,
+                        factor_demo,
                         "RotatingFileHandler",
                         return_value=logging.NullHandler(),
                     )
                 )
-                stack.enter_context(patch.object(run_factor_demo.logging, "basicConfig"))
+                stack.enter_context(patch.object(factor_demo.logging, "basicConfig"))
 
-                run_factor_demo.main()
+                factor_demo.main()
 
         self.assertEqual(report_writer.call_args.kwargs["yaml_config"], yaml_config)
         self.assertTrue(

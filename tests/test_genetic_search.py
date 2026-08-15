@@ -6,8 +6,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from factor_research.factor_dsl import ExpressionNode, operation_node
-from factor_research.factor_search import (
+from quant.factor_research.factor_dsl import ExpressionNode, operation_node
+from quant.factor_research.factor_search import (
     FactorCandidate,
     FactorGeneticSearch,
     GeneticProgressEvent,
@@ -18,7 +18,7 @@ from factor_research.factor_search import (
     SearchContext,
     op,
 )
-from factor_research.factor_search.genetic import _ExpressionGenerator, _tree_operators
+from quant.factor_research.factor_search.genetic import _ExpressionGenerator, _tree_operators
 
 
 def _genetic_context() -> SearchContext:

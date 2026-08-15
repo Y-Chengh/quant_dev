@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from qmt_daily_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
-from qmt_daily_downloader.storage import DailyPartitionStore
+from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
+from quant.qmt_downloader.storage import DailyPartitionStore
 
 
 SYMBOLS = ["000001.SZ", "600000.SH"]

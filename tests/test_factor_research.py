@@ -8,16 +8,16 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-import factor_research.factors as factors_module
-from factor_research.dataset import build_direction_dataset, split_by_date
-from factor_research.experiment import DirectionExperiment
-from factor_research.factor_factories import FACTOR_FACTORIES
-from factor_research.factor_dsl import ExpressionNode
-from factor_research.factor_dsl.frame import DailyFactorFrame
-from factor_research.factors import build_daily_features
-from factor_research.models import DirectionModel, DirectionModelFactory
-from factor_research.reporting import write_evaluation_report
-from run_factor_demo import (
+import quant.factor_research.factors as factors_module
+from quant.factor_research.dataset import build_direction_dataset, split_by_date
+from quant.factor_research.experiment import DirectionExperiment
+from quant.factor_research.factor_factories import FACTOR_FACTORIES
+from quant.factor_research.factor_dsl import ExpressionNode
+from quant.factor_research.factor_dsl.frame import DailyFactorFrame
+from quant.factor_research.factors import build_daily_features
+from quant.factor_research.models import DirectionModel, DirectionModelFactory
+from quant.factor_research.reporting import write_evaluation_report
+from quant.cli.factor_demo import (
     resolve_ic_chart_path,
     resolve_run_output_paths,
     resolve_window,

@@ -7,7 +7,7 @@ from typing import Sequence
 
 import pandas as pd
 
-from factor_research.factors import aggregate_daily_bars, build_daily_features
+from quant.factor_research.factors import aggregate_daily_bars, build_daily_features
 
 from .context import SearchContext
 

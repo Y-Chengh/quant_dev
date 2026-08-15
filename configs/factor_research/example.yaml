@@ -1,5 +1,5 @@
 # 命令行参数会覆盖本文件中的同名配置。
-# python run_factor_demo.py --config factor_config.example.yaml
+# python -m quant.cli.factor_demo --config configs/factor_research/example.yaml
 
 # 数据集设置
 start: 2018-01-01

@@ -5,8 +5,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from factor_research.factor_dsl import DailyFactorFrame, ExpressionNode
-from factor_research.factor_factories import FACTOR_FACTORIES
+from quant.factor_research.factor_dsl import DailyFactorFrame, ExpressionNode
+from quant.factor_research.factor_factories import FACTOR_FACTORIES
 
 
 def _daily_frame(days: int = 8, codes: tuple[str, ...] = ("A", "B")) -> pd.DataFrame:

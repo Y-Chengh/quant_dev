@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from factor_research.metrics import (
+from quant.factor_research.metrics import (
     classification_metrics,
     cross_sectional_ic_metrics,
     daily_cross_sectional_ic,

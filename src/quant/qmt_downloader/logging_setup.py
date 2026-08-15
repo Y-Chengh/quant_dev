@@ -16,11 +16,11 @@ def configure_logging(output_root, max_bytes, backup_count):
         backup_count: 保留的历史轮转日志文件数量。
 
     返回：
-        名为 ``qmt_daily_downloader`` 的已配置日志器。
+        名为 ``quant.qmt_downloader`` 的已配置日志器。
     """
     log_dir = Path(output_root) / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("qmt_daily_downloader")
+    logger = logging.getLogger("quant.qmt_downloader")
     logger.setLevel(logging.INFO)
     logger.propagate = False
     for handler in list(logger.handlers):

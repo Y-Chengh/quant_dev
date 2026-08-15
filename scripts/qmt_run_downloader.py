@@ -6,13 +6,14 @@ import traceback
 
 
 PROJECT_ROOT = r"C:\Users\win10\Documents\quant"
-CONFIG_PATH = r"C:\Users\win10\Documents\quant\qmt_daily_downloader\config.incremental.example.json"
+SOURCE_ROOT = PROJECT_ROOT + r"\src"
+CONFIG_PATH = PROJECT_ROOT + r"\configs\qmt_downloader\incremental.example.json"
 _STARTED = False
 
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
+if SOURCE_ROOT not in sys.path:
+    sys.path.insert(0, SOURCE_ROOT)
 
-from qmt_daily_downloader.qmt_entry_support import run_download
+from quant.qmt_downloader.qmt_entry_support import run_download
 
 
 def init(C):

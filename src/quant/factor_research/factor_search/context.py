@@ -8,7 +8,7 @@ from typing import Sequence
 import numpy as np
 import pandas as pd
 
-from factor_research.dataset import build_forward_targets
+from quant.factor_research.dataset import build_forward_targets
 
 
 @dataclass(frozen=True)

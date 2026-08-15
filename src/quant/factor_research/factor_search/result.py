@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from factor_research.factor_dsl import DailyFactorFrame
+from quant.factor_research.factor_dsl import DailyFactorFrame
 
 from .context import SearchContext
 from .space import FactorCandidate

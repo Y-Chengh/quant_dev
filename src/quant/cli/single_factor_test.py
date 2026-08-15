@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from factor_research.data import validate_bars
+from quant.factor_research.data import validate_bars
 
 
 DEFAULT_DATABASE = Path(os.getenv("MARKET_DB_PATH", r"D:\量化\market.duckdb"))
@@ -39,7 +39,7 @@ def build_return_1d(bars: pd.DataFrame, args: argparse.Namespace) -> pd.DataFram
 
 
 def main() -> None:
-    from market_service.client import MarketDataClient
+    from quant.market_data.client import MarketDataClient
 
     args = parse_args()
     if not 1 <= args.symbol_limit <= 100:

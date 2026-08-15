@@ -7,17 +7,17 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from factor_research.backtesting import (
+from quant.factor_research.backtesting import (
     TRADING_DAYS_PER_YEAR,
     TopNBacktestResult,
     run_top_n_intraday_backtest,
 )
-from factor_research.experiment import ExperimentResult
-from factor_research.reporting import (
+from quant.factor_research.experiment import ExperimentResult
+from quant.factor_research.reporting import (
     render_equity_curve_svg,
     write_evaluation_report,
 )
-from run_factor_demo import parse_args, resolve_equity_chart_path
+from quant.cli.factor_demo import parse_args, resolve_equity_chart_path
 
 
 class TopNIntradayBacktestTest(unittest.TestCase):

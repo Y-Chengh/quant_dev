@@ -14,10 +14,10 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from market_service.client import MarketDataClient
+from quant.market_data.client import MarketDataClient
 
-from factor_research.data import load_market_service
-from factor_research.factor_search import (
+from quant.factor_research.data import load_market_service
+from quant.factor_research.factor_search import (
     FactorGeneticSearch,
     FactorSearchResult,
     GeneticProgressEvent,
@@ -29,9 +29,9 @@ from factor_research.factor_search import (
     op,
     prepare_search_context,
 )
-from factor_research.metrics import daily_cross_sectional_ic
-from factor_research.models.factor_passthrough import FactorPassthroughModelFactory
-from factor_research.reporting import (
+from quant.factor_research.metrics import daily_cross_sectional_ic
+from quant.factor_research.models.factor_passthrough import FactorPassthroughModelFactory
+from quant.factor_research.reporting import (
     IC_TREND_SHORT_MIN_PERIODS,
     IC_TREND_SHORT_WINDOW,
     render_ic_trend_svg,
@@ -287,12 +287,11 @@ def _reproduction_command(
         metadata: 可选包含数据库、数据起止日期、证券列表和证券数量上限的元数据。
 
     返回：
-        可直接粘贴到 PowerShell 的单行 ``run_factor_demo.py`` 命令。
+        可直接粘贴到 PowerShell 的单行 ``quant-factor-demo`` 命令。
     """
 
     parts = [
-        "python",
-        "run_factor_demo.py",
+        "quant-factor-demo",
         "--model",
         "factor_passthrough",
         "--task",
@@ -860,7 +859,7 @@ def write_grid_search_report(
         "",
         f"```text\n{best.canonical}\n```",
         "",
-        "可把上面的字符串直接加入 `run_factor_demo.py`：",
+        "可把上面的字符串直接加入 `quant-factor-demo`：",
         "",
         "```powershell\n"
         f"{_reproduction_command(best.expression_str, context, metadata)}\n```",
@@ -927,7 +926,7 @@ def write_grid_search_report(
         "复现命令：",
         "",
         "```powershell",
-        "python grid_search_smoke.py",
+        "quant-grid-search",
         "```",
     ]
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

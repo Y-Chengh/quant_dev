@@ -9,7 +9,7 @@ from typing import Protocol
 import numpy as np
 import pandas as pd
 
-from factor_research.metrics import (
+from quant.factor_research.metrics import (
     cross_sectional_ic_metrics,
     daily_cross_sectional_ic,
 )

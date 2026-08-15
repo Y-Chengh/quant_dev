@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from factor_research.dataset import build_direction_dataset
-from factor_research.experiment import DirectionExperiment
-from factor_research.models.base import DirectionModelFactory
+from quant.factor_research.dataset import build_direction_dataset
+from quant.factor_research.experiment import DirectionExperiment
+from quant.factor_research.models.base import DirectionModelFactory
 
 from .context import SearchContext
 from .space import FactorCandidate

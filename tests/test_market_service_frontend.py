@@ -5,7 +5,14 @@ import unittest
 from pathlib import Path
 
 
-APP_JS = Path(__file__).resolve().parents[1] / "market_service" / "static" / "app.js"
+APP_JS = (
+    Path(__file__).resolve().parents[1]
+    / "src"
+    / "quant"
+    / "market_data"
+    / "static"
+    / "app.js"
+)
 
 
 class MarketServiceFrontendTest(unittest.TestCase):

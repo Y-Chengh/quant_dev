@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Mapping, Protocol, Sequence
 
-from factor_research.factor_dsl import (
+from quant.factor_research.factor_dsl import (
     ExpressionNode,
     FactorExpression,
     SymbolicDailyFrame,

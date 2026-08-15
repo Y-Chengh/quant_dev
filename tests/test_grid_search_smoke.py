@@ -15,7 +15,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 
-from factor_research.factor_search import (
+from quant.factor_research.factor_search import (
     FactorGeneticSearch,
     FactorGridSearch,
     GeneticProgressEvent,
@@ -25,7 +25,7 @@ from factor_research.factor_search import (
     identity,
     op,
 )
-from grid_search_smoke import (
+from quant.cli.grid_search import (
     _markdown_table,
     _powershell_single_quoted,
     _write_rolling_ic_stability_chart,

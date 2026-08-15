@@ -7,11 +7,11 @@ import argparse
 import json
 from pathlib import Path
 
-from qmt_daily_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
+from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
 
 
 DEFAULT_CONFIG = Path(
-    r"C:\Users\win10\Documents\quant\qmt_daily_downloader\config.kline_only.backfill.json"
+    r"C:\Users\win10\Documents\quant\configs\qmt_downloader\kline_only.backfill.json"
 )
 
 

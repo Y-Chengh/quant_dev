@@ -6,19 +6,19 @@ import sys
 from tempfile import TemporaryDirectory
 import unittest
 
-import factor_research.models as models_package
-from factor_research.models.base import DirectionModelFactory
-from factor_research.models.registry import (
+import quant.factor_research.models as models_package
+from quant.factor_research.models.base import DirectionModelFactory
+from quant.factor_research.models.registry import (
     MODEL_FACTORY_TYPES,
     available_models,
     model_factory_from_args,
     register_model_factory,
 )
-from factor_research.models.simple_decision_tree import (
+from quant.factor_research.models.simple_decision_tree import (
     SimpleDecisionTreeClassifier,
     SimpleDecisionTreeModelFactory,
 )
-from run_factor_demo import _config_defaults, parse_args
+from quant.cli.factor_demo import _config_defaults, parse_args
 
 
 class ModelRegistryTest(unittest.TestCase):
@@ -31,7 +31,7 @@ class ModelRegistryTest(unittest.TestCase):
 
     def test_model_is_selected_and_configured_from_args(self):
         argv = [
-            "run_factor_demo.py",
+            "quant-factor-demo",
             "--model",
             "simple_decision_tree",
             "--max-depth",
@@ -258,7 +258,7 @@ max_depth: 4
                 return SimpleDecisionTreeClassifier(max_depth=self.depth)
 
         argv = [
-            "run_factor_demo.py",
+            "quant-factor-demo",
             "--model",
             "test_alternative_tree",
             "--max-depth",
@@ -291,10 +291,10 @@ max_depth: 4
 
     def test_new_model_module_is_discovered_without_main_program_changes(self):
         module_name = "auto_discovery_test_model"
-        qualified_name = f"factor_research.models.{module_name}"
+        qualified_name = f"quant.factor_research.models.{module_name}"
         model_name = "auto_discovered_test_model"
         source = f'''\
-from factor_research.models import DirectionModelFactory, register_model_factory
+from quant.factor_research.models import DirectionModelFactory, register_model_factory
 
 
 @register_model_factory

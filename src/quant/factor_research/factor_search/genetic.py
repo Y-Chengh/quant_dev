@@ -12,7 +12,7 @@ from typing import Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from factor_research.factor_dsl import ExpressionNode, get_operator, operation_node
+from quant.factor_research.factor_dsl import ExpressionNode, get_operator, operation_node
 
 from .backends import (
     BatchProgressCallback,

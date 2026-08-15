@@ -15,28 +15,28 @@ from uuid import uuid4
 import pandas as pd
 import yaml
 
-from factor_research.backtesting import run_top_n_intraday_backtest
-from factor_research.data import load_market_service
-from factor_research.dataset import build_direction_dataset
-from factor_research.experiment import (
+from quant.factor_research.backtesting import run_top_n_intraday_backtest
+from quant.factor_research.data import load_market_service
+from quant.factor_research.dataset import build_direction_dataset
+from quant.factor_research.experiment import (
     DirectionExperiment,
     PREDICTION_TASKS,
     TRAINING_MODES,
 )
-from factor_research.factors import (
+from quant.factor_research.factors import (
     DEFAULT_FEATURES,
     available_factors,
     build_daily_features,
     parse_factor_expressions,
 )
-from factor_research.models.registry import (
+from quant.factor_research.models.registry import (
     add_model_selection_argument,
     add_selected_model_arguments,
     available_models,
     model_factory_from_args,
 )
-from factor_research.reporting import write_evaluation_report
-from factor_research.timing import log_elapsed
+from quant.factor_research.reporting import write_evaluation_report
+from quant.factor_research.timing import log_elapsed
 
 
 DEFAULT_DATABASE = Path(os.getenv("MARKET_DB_PATH", r"D:\量化\market.duckdb"))
@@ -412,7 +412,7 @@ def main() -> None:
     """
 
     try:
-        from market_service.client import MarketDataClient
+        from quant.market_data.client import MarketDataClient
     except ModuleNotFoundError as exc:
         if exc.name == "duckdb":
             raise SystemExit(

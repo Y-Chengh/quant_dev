@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=65", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quant"
+version = "0.1.0"
+description = "日频量化因子研究、本地行情服务与大 QMT 数据落盘工具"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+
+# 三个子包的公共依赖。qmt_downloader 只使用 pandas，其余依赖按 extras 安装。
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.1",
+]
+
+[project.optional-dependencies]
+# 因子研究：数据集构建、模型训练与报告
+research = [
+    "pyarrow>=14.0",
+    "duckdb>=1.0",
+    "scikit-learn>=1.4",
+    "lightgbm>=4.3",
+    "PyYAML>=6.0",
+]
+# 本地行情服务：HTTP 接口与网页
+service = [
+    "duckdb>=1.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+# 分钟行情下载（同花顺 iFinD），需另行安装官方 SDK iFinDAPI
+ifind = [
+    "pyarrow>=14.0",
+]
+# 开发工具链
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+quant-factor-demo = "quant.cli.factor_demo:main"
+quant-grid-search = "quant.cli.grid_search:main"
+quant-market-server = "quant.cli.market_server:main"
+quant-qmt-self-check = "quant.cli.qmt_self_check:main"
+quant-single-factor-test = "quant.cli.single_factor_test:main"
+quant-ifind-download = "quant.cli.ifind_download:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"quant.market_data" = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["default"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+# qmt_downloader 需在大 QMT 内置 Python 中运行，不能使用较新的语法糖，
+# 因此单独放宽规则，见下方 per-file-ignores。
+extend-exclude = [".venv", "logs", "output"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+ignore = [
+    "E501",   # 行宽由 formatter 控制，历史长行不逐条改写
+    "B008",   # FastAPI 依赖注入需要在默认值中调用 Query()
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 大 QMT 内置 Python 版本较旧，禁止 pyupgrade 把兼容写法改成新语法
+"src/quant/qmt_downloader/*" = ["UP"]
+"scripts/qmt_run_downloader.py" = ["UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["quant"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/quant"]
+ignore_missing_imports = true
+# 存量代码尚未全量标注，先只保证新增标注自洽，后续再逐包收紧。
+check_untyped_defs = false
+warn_unused_configs = true

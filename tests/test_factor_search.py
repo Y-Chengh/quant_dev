@@ -6,10 +6,10 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from factor_research.dataset import build_direction_dataset, build_forward_targets
-from factor_research.factor_dsl import ExpressionNode
-from factor_research.factor_factories import FACTOR_FACTORIES
-from factor_research.factor_search import (
+from quant.factor_research.dataset import build_direction_dataset, build_forward_targets
+from quant.factor_research.factor_dsl import ExpressionNode
+from quant.factor_research.factor_factories import FACTOR_FACTORIES
+from quant.factor_research.factor_search import (
     CombinedGrid,
     ExpressionGrid,
     FactorGridSearch,
@@ -20,7 +20,7 @@ from factor_research.factor_search import (
     op,
     prepare_search_context,
 )
-from factor_research.models.simple_decision_tree import SimpleDecisionTreeModelFactory
+from quant.factor_research.models.simple_decision_tree import SimpleDecisionTreeModelFactory
 
 
 def _search_daily(days: int = 12) -> pd.DataFrame:

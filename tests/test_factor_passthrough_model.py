@@ -6,13 +6,13 @@ import unittest
 
 import numpy as np
 
-from factor_research.models.factor_passthrough import (
+from quant.factor_research.models.factor_passthrough import (
     FactorPassthroughModelFactory,
     FactorPassthroughRegressor,
 )
-from factor_research.models.registry import available_models
-from factor_research.models.registry import model_factory_from_args
-from run_factor_demo import parse_args
+from quant.factor_research.models.registry import available_models
+from quant.factor_research.models.registry import model_factory_from_args
+from quant.cli.factor_demo import parse_args
 
 
 class FactorPassthroughModelTests(unittest.TestCase):

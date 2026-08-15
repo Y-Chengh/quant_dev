@@ -9,7 +9,7 @@ from time import perf_counter
 from types import TracebackType
 from typing import Callable, Protocol, Sequence
 
-from factor_research.factor_dsl import DailyFactorFrame
+from quant.factor_research.factor_dsl import DailyFactorFrame
 
 from .context import SearchContext
 from .evaluators import CandidateEvaluator

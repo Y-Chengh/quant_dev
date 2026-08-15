@@ -7,14 +7,14 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 
-from factor_research.experiment import DirectionExperiment
-from factor_research.models.logistic_regression import (
+from quant.factor_research.experiment import DirectionExperiment
+from quant.factor_research.models.logistic_regression import (
     LogisticRegressionClassifier,
     LogisticRegressionModelFactory,
     RidgeRegressionModel,
 )
-from factor_research.models.registry import available_models, model_factory_from_args
-from run_factor_demo import parse_args
+from quant.factor_research.models.registry import available_models, model_factory_from_args
+from quant.cli.factor_demo import parse_args
 
 
 class LogisticRegressionModelTest(unittest.TestCase):

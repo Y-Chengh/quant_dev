@@ -12,13 +12,13 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from qmt_daily_downloader.config import DownloaderConfig, _resolve_incremental_lag_days
-from qmt_daily_downloader.finance import materialize_finance_daily
-from qmt_daily_downloader.gateway import FINANCE_FIELDS, QmtGateway
-from qmt_daily_downloader.runner import QmtDailyDownloader, _make_job_key
-from qmt_daily_downloader.state import CheckpointStore
-from qmt_daily_downloader.storage import DailyPartitionStore
-from qmt_daily_downloader.validation import (
+from quant.qmt_downloader.config import DownloaderConfig, _resolve_incremental_lag_days
+from quant.qmt_downloader.finance import materialize_finance_daily
+from quant.qmt_downloader.gateway import FINANCE_FIELDS, QmtGateway
+from quant.qmt_downloader.runner import QmtDailyDownloader, _make_job_key
+from quant.qmt_downloader.state import CheckpointStore
+from quant.qmt_downloader.storage import DailyPartitionStore
+from quant.qmt_downloader.validation import (
     correct_kline_prices,
     find_missing_kline,
     validate_kline,
@@ -925,7 +925,7 @@ class DownloaderTests(unittest.TestCase):
                 return real_concat(frames, ignore_index=ignore_index, **kwargs)
 
             with patch(
-                "qmt_daily_downloader.storage.pd.concat",
+                "quant.qmt_downloader.storage.pd.concat",
                 side_effect=legacy_concat,
             ):
                 result = store.read_fragments(
@@ -1031,7 +1031,9 @@ class DownloaderTests(unittest.TestCase):
 
     def test_qmt_entry_source_is_ascii_safe(self):
         """确保由大 QMT 编辑器直接载入的入口源码不受 GBK/UTF-8 转码影响。"""
-        entry_path = Path(__file__).resolve().parents[1] / "qmt_run_downloader.py"
+        entry_path = (
+            Path(__file__).resolve().parents[1] / "scripts" / "qmt_run_downloader.py"
+        )
         source = entry_path.read_bytes()
         self.assertEqual(source.decode("ascii").encode("ascii"), source)
 

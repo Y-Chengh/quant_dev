@@ -9,11 +9,11 @@ from unittest.mock import patch
 import duckdb
 import pandas as pd
 
-import market_service.app as market_app
-from market_service import KlinePeriod, KlineQuery, MarketDataClient, RawBarQuery
-from market_service.app import records
-from market_service.codes import normalize_security_code
-from market_service.database import MarketDatabase
+import quant.market_data.app as market_app
+from quant.market_data import KlinePeriod, KlineQuery, MarketDataClient, RawBarQuery
+from quant.market_data.app import records
+from quant.market_data.codes import normalize_security_code
+from quant.market_data.database import MarketDatabase
 
 
 class MarketServiceKlineTest(unittest.TestCase):
