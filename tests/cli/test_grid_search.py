@@ -16,15 +16,11 @@ import numpy as np
 import pandas as pd
 
 from quant.cli.grid_search import (
-    _markdown_table,
-    _powershell_single_quoted,
-    _write_rolling_ic_stability_chart,
     build_genetic_search_config,
     build_model_evaluator,
     build_search_space,
     print_genetic_progress,
     resolve_report_output_dir,
-    write_grid_search_report,
 )
 from quant.factor_research.factor_search import (
     FactorGeneticSearch,
@@ -35,6 +31,14 @@ from quant.factor_research.factor_search import (
     SearchContext,
     identity,
     op,
+)
+from quant.factor_research.search_report import write_grid_search_report
+from quant.factor_research.search_report.charts import (
+    _write_rolling_ic_stability_chart,
+)
+from quant.factor_research.search_report.formatting import (
+    _markdown_table,
+    _powershell_single_quoted,
 )
 
 
