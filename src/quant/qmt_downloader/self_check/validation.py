@@ -124,9 +124,13 @@ class _RowValidationMixin(_CheckerState):
         for position, row in enumerate(records):
             index = labels[position]
             code = codes[position]
+            # 来源路径必须逐行从分区级默认值重新算起：一旦将来出现某些行带
+            # ``_source_file``、某些行没有的混合帧，沿用上一行留下的值会把这些行的
+            # 问题指向一个与它无关的批次文件，排查时直接跑偏。
+            row_path = path
             source_path = row.get("_source_file")
             if isinstance(source_path, str) and source_path:
-                path = Path(source_path)
+                row_path = Path(source_path)
                 try:
                     index = int(row.get("_source_row")) - 2
                 except (TypeError, ValueError):
@@ -152,7 +156,7 @@ class _RowValidationMixin(_CheckerState):
                     str(row.get("code", "")),
                     "CSV 字段错位或写入前代码丢失",
                     "重新下载该日期分区",
-                    path,
+                    row_path,
                     index,
                 )
                 continue
@@ -168,7 +172,7 @@ class _RowValidationMixin(_CheckerState):
                     code,
                     "证券池切换后混写分区或代码映射错误",
                     "核对证券池并使用统一口径重建分区",
-                    path,
+                    row_path,
                     index,
                 )
                 continue
@@ -184,7 +188,7 @@ class _RowValidationMixin(_CheckerState):
                     str(row.get("trade_date", "")),
                     "分区合并错误、日期标准化错误或文件被移动",
                     "按记录真实日期核对源数据后重建相关分区",
-                    path,
+                    row_path,
                     index,
                 )
                 continue
@@ -213,7 +217,7 @@ class _RowValidationMixin(_CheckerState):
                     date_value,
                     "上市日期错误、证券代码复用或行情归属错误",
                     "核对 QMT OpenDate 和证券代码，确认前不要自动删除行情",
-                    path,
+                    row_path,
                     index,
                 )
             if expire_date is not None and date_value > expire_date and (code, "after") not in self._lifecycle_issue_keys:
@@ -229,21 +233,23 @@ class _RowValidationMixin(_CheckerState):
                     date_value,
                     "退市日期口径错误、证券代码复用或历史数据混入",
                     "核对 QMT ExpireDate 和证券代码，确认前不要自动删除行情",
-                    path,
+                    row_path,
                     index,
                 )
             if not in_lifecycle:
                 # 上市前/退市后的 QMT 占位行只用于生命周期审计；其零价格和零成交量
                 # 不应再次被当作行情字段损坏，从而避免全样本报告产生百万级重复错误。
                 continue
-            invalid = self._validate_numeric_row(row, code, date_value, path, index, stats)
+            invalid = self._validate_numeric_row(
+                row, code, date_value, row_path, index, stats
+            )
             if invalid:
                 stats[code].invalid_rows += 1
             self._validate_continuity(
                 row,
                 code,
                 date_value,
-                path,
+                row_path,
                 index,
                 corporate_actions,
                 state,

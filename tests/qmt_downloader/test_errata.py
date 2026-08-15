@@ -56,6 +56,66 @@ class ErrataLoadingTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 errata.load_errata_overrides(path)
 
+    def test_rejects_non_numeric_value(self):
+        """允许覆盖的字段全是数值列，非数值取值必须在装载时就被拒绝。
+
+        回归用例：把校验推迟到下游会让两个消费方口径不一致——
+        ``apply_errata_overrides`` 把字符串原样写进数值列，而
+        ``errata_pivot_frame`` 抛出的 ``float()`` 报错不含证券和日期定位。
+        """
+        for bad_value in ("abc", "", "nan", "inf"):
+            with self.subTest(value=bad_value):
+                with tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "errata.csv"
+                    path.write_text(
+                        "symbol,trade_date,field,value,issue_type,description,"
+                        "found_date,source_report\n"
+                        f"000001.SZ,20240102,volume,{bad_value},x,x,x,x\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(ValueError) as raised:
+                        errata.load_errata_overrides(path)
+                    # 报错必须能直接定位到出问题的那一行。
+                    message = str(raised.exception)
+                    self.assertIn("000001.SZ", message)
+                    self.assertIn("20240102", message)
+                    self.assertIn("volume", message)
+
+    def test_accepts_zero_negative_and_decimal_values(self):
+        """零、负数与小数都是合法勘误值，不能被有限性校验误伤。
+
+        ``0`` 尤其关键：``suspend_flag=0``、``volume=0`` 都是现实中会写的取值，
+        而把校验写成真值判断（``if not numeric``）时，恰好只有零会被静默拒绝。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "errata.csv"
+            path.write_text(
+                "symbol,trade_date,field,value,issue_type,description,"
+                "found_date,source_report\n"
+                "000001.SZ,20240102,close,10.25,x,x,x,x\n"
+                "000001.SZ,20240102,amount,-1,x,x,x,x\n"
+                "000001.SZ,20240102,suspend_flag,0,x,x,x,x\n"
+                "000001.SZ,20240102,volume,0,x,x,x,x\n",
+                encoding="utf-8",
+            )
+            overrides = errata.load_errata_overrides(path)
+            self.assertEqual(
+                overrides,
+                {
+                    ("000001.SZ", "20240102"): {
+                        "close": "10.25",
+                        "amount": "-1",
+                        "suspend_flag": "0",
+                        "volume": "0",
+                    }
+                },
+            )
+            frame = errata.errata_pivot_frame(overrides)
+            self.assertEqual(frame.iloc[0]["close"], 10.25)
+            self.assertEqual(frame.iloc[0]["amount"], -1.0)
+            self.assertEqual(frame.iloc[0]["suspend_flag"], 0.0)
+            self.assertEqual(frame.iloc[0]["volume"], 0.0)
+
     def test_rejects_missing_required_column(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "errata.csv"

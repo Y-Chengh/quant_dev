@@ -33,7 +33,8 @@ _ACTION_CSV_COLUMNS = {
     "adjustment_factor": "DOUBLE",
 }
 
-#: 脏分区超过该数量时改用整目录通配，避免拼出几十万字符的 SQL。
+#: 脏分区超过该数量时改用整目录通配，避免拼出几十万字符的 SQL；同一个阈值也是
+#: ``delete_corporate_actions`` 分批下发 ``DELETE`` 时每批的日期个数。
 _GLOB_THRESHOLD = 200
 
 
@@ -345,6 +346,12 @@ def delete_corporate_actions(connection, ex_dates) -> int:
     用于源侧分区消失的情况：只清掉 ``ingest_state`` 的指纹而留着数据，会让这些
     记录永远留在表里，之后每次复权都被它们带偏。
 
+    删除严格限定在传入的除权日上。分区被整片删除时逐个日期拼 IN 列表会撑出几十
+    万字符的 SQL，因此按 ``_GLOB_THRESHOLD`` 分批下发多条 ``DELETE``，而**不能**
+    图省事整表清空：整表清空依赖「随后的 refresh 会重新灌回来」，而本次若没有任何
+    脏除权分区，``refresh_corporate_actions`` 会直接返回，除权表就此为空且不再恢复，
+    此后所有复权系数都退化成 1.0，历史价在除权日出现假跳变。
+
     参数：
         connection: 以读写方式打开的 DuckDB 连接。
         ex_dates: 需要清除的八位除权日序列。
@@ -355,14 +362,11 @@ def delete_corporate_actions(connection, ex_dates) -> int:
     values = _safe_date_values(ex_dates)
     if not values:
         return 0
-    if len(values) > _GLOB_THRESHOLD:
-        # 分区被整片删除时逐个日期拼 IN 列表会撑出几十万字符的 SQL；
-        # 这种规模下直接清表，随后的 refresh 会按现存分区重新灌回来。
-        connection.execute("DELETE FROM corporate_actions")
-        return len(values)
-    connection.execute(
-        f"DELETE FROM corporate_actions WHERE ex_date IN ({_ex_date_literals(values)})"
-    )
+    for start in range(0, len(values), _GLOB_THRESHOLD):
+        chunk = values[start : start + _GLOB_THRESHOLD]
+        connection.execute(
+            f"DELETE FROM corporate_actions WHERE ex_date IN ({_ex_date_literals(chunk)})"
+        )
     return len(values)
 
 

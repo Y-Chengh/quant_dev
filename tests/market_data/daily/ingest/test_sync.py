@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,9 +16,10 @@ import duckdb
 import pandas as pd
 
 from quant.market_data.daily import AdjustMode, DailyMarketClient
-from quant.market_data.daily.ingest import DailySyncConfig, sync_daily_store
+from quant.market_data.daily.ingest import DailySyncConfig, aux_tables, sync_daily_store
 from quant.market_data.daily.ingest.locking import DailyStoreLockedError, sync_lock
 from quant.market_data.daily.ingest.shards import shard_directory
+from quant.market_data.daily.schema import apply_schema
 from quant.qmt_downloader.storage import DailyPartitionStore
 
 KLINE_COLUMNS = [
@@ -372,6 +373,93 @@ class DailySyncTest(unittest.TestCase):
             finally:
                 connection.close()
             self.assertEqual(after, 0)
+
+
+class CorporateActionDeletionTest(unittest.TestCase):
+    """``delete_corporate_actions`` 的删除范围。"""
+
+    @staticmethod
+    def _seeded_connection(ex_dates):
+        """建一个已建表并灌入给定除权日记录的内存目录库。
+
+        参数：
+            ex_dates: 需要预先写入的八位除权日序列，每个日期一条记录。
+
+        返回：
+            已插入 ``len(ex_dates)`` 行 ``corporate_actions`` 的 DuckDB 连接。
+        """
+        connection = duckdb.connect()
+        apply_schema(connection, Path("."), create_view=False)
+        frame = pd.DataFrame(
+            [
+                {
+                    "code": "000001.SZ",
+                    "ex_date": datetime.strptime(value, "%Y%m%d").date(),
+                    "cash_dividend_per_share": 0.1,
+                    "bonus_share_per_share": 0.0,
+                    "capitalization_per_share": 0.0,
+                    "rights_issue_per_share": 0.0,
+                    "rights_issue_price": 0.0,
+                    "share_reform_flag": 0.0,
+                    "adjustment_factor": 1.01,
+                }
+                for value in ex_dates
+            ]
+        )
+        connection.register("seed_actions", frame)
+        connection.execute("INSERT INTO corporate_actions SELECT * FROM seed_actions")
+        connection.unregister("seed_actions")
+        return connection
+
+    def test_large_deletion_only_removes_the_named_dates(self) -> None:
+        """删除数超过分批阈值时，未点名的除权日必须原样保留。
+
+        回归用例：之前这种规模直接 ``DELETE FROM corporate_actions`` 整表清空，
+        并指望随后的 refresh 重新灌回来；但本次没有脏除权分区时 refresh 会直接
+        返回，除权表就此为空，之后所有复权系数都退化成 1.0。
+        """
+        # 夹具规模跟着真实阈值走：写死 200 的话，阈值一旦调大，用例会静默退化成
+        # 单批路径，看上去仍然通过，却不再覆盖分批。
+        threshold = aux_tables._GLOB_THRESHOLD
+        removed_count = threshold + 100
+        all_dates = [
+            (date(2024, 1, 1) + timedelta(days=offset)).strftime("%Y%m%d")
+            for offset in range(removed_count + 100)
+        ]
+        removed, kept = all_dates[:removed_count], all_dates[removed_count:]
+        connection = self._seeded_connection(all_dates)
+        try:
+            self.assertGreater(len(removed), threshold)
+            deleted = aux_tables.delete_corporate_actions(connection, removed)
+            self.assertEqual(deleted, len(removed))
+            remaining = connection.execute(
+                "SELECT count(*) FROM corporate_actions"
+            ).fetchone()[0]
+            self.assertEqual(remaining, len(kept))
+            earliest = connection.execute(
+                "SELECT min(ex_date) FROM corporate_actions"
+            ).fetchone()[0]
+            self.assertEqual(earliest, datetime.strptime(kept[0], "%Y%m%d").date())
+        finally:
+            connection.close()
+
+    def test_small_deletion_still_removes_exactly_the_named_dates(self) -> None:
+        """低于阈值时的删除范围与分批路径保持一致。"""
+        all_dates = ["20240102", "20240103", "20240104"]
+        connection = self._seeded_connection(all_dates)
+        try:
+            self.assertEqual(
+                aux_tables.delete_corporate_actions(connection, ["20240103"]), 1
+            )
+            rows = connection.execute(
+                "SELECT ex_date FROM corporate_actions ORDER BY ex_date"
+            ).fetchall()
+            self.assertEqual(
+                [item[0] for item in rows],
+                [date(2024, 1, 2), date(2024, 1, 4)],
+            )
+        finally:
+            connection.close()
 
 
 class SyncLockTest(unittest.TestCase):

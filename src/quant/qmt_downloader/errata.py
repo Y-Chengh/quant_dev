@@ -11,6 +11,7 @@
 因此只允许使用标准库和 pandas，不写 __future__ 导入，不写变量注解。
 """
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -34,7 +35,10 @@ def load_errata_overrides(path):
     返回：
         以 ``(symbol, trade_date)`` 为键、``{field: value}`` 为值的字典。
         ``symbol`` 统一转为去空白的大写，``trade_date`` 统一转为去空白字符串，
-        ``value`` 保持原始字符串，由调用方按目标列类型转换。
+        ``value`` 保持原始字符串，由调用方按目标列类型转换；但装载时即校验它能转成
+        有限浮点数。允许覆盖的字段全部是数值列，两个消费方也都按数值处理：不在这里
+        拦住非数值取值，``apply_errata_overrides`` 会把字符串原样写进数值列，而
+        ``errata_pivot_frame`` 抛出的 ``float()`` 报错不含证券、日期和字段定位。
     """
 
     if path is None:
@@ -63,6 +67,19 @@ def load_errata_overrides(path):
             )
         value = row["value"]
         value = "" if pd.isna(value) else str(value).strip()
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            numeric = None
+        # 空串、非数字文本、nan 与 inf 一并拦在这里：它们进到任一消费方都只会
+        # 污染数值列，或者在更下游炸出一条没有定位信息的报错。
+        if numeric is None or not math.isfinite(numeric):
+            raise ValueError(
+                "勘误表 {0} 中 {1} {2} 的字段 {3} 取值 {4!r} 不是有限数值；"
+                "允许覆盖的日线字段均为数值列".format(
+                    csv_path, symbol, trade_date, field, value
+                )
+            )
         overrides.setdefault((symbol, trade_date), {})[field] = value
     return overrides
 
@@ -140,7 +157,8 @@ def _coerce_value(value):
 
     返回：
         能转换成 ``float`` 时返回浮点数；否则原样返回字符串，留给调用方
-        自行判断（当前允许覆盖的字段均为数值字段，理论上总能转换成功）。
+        自行判断。经 ``load_errata_overrides`` 装载的值一定能转换成功——该函数
+        已在入口拒绝一切非有限数值——因此回退分支只对手工构造的覆盖字典有意义。
     """
 
     try:

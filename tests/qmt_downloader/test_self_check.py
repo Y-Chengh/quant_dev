@@ -16,6 +16,8 @@ from quant.qmt_downloader.self_check import (
     SelfCheckConfig,
     run_full_sample_self_check,
 )
+from quant.qmt_downloader.self_check.checker import QmtDataSelfChecker
+from quant.qmt_downloader.self_check.models import _ScanState, _SymbolStats
 from quant.qmt_downloader.storage import DailyPartitionStore
 
 SYMBOLS = ["000001.SZ", "600000.SH"]
@@ -1357,6 +1359,63 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertNotIn("PRE_CLOSE_DISCONTINUITY", set(
                 pd.read_csv(result.report_dir / "statistical_anomalies.csv", encoding="utf-8-sig")["issue_code"]
             ))
+
+
+class RowIssueSourcePathTests(unittest.TestCase):
+    """行级问题的来源文件必须逐行判定，不能沿用上一行的取值。"""
+
+    def test_row_without_source_file_falls_back_to_partition_path(self) -> None:
+        """合并帧里缺少 ``_source_file`` 的行必须回落到分区级路径。
+
+        回归用例：来源路径原本是循环外的一个变量，一旦某行带上批次路径，
+        后续没有该列取值的行都会继承它，问题被指向一个与自己无关的批次文件。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checker = QmtDataSelfChecker(SelfCheckConfig(output_root=root))
+            checker.source_mode = "staging"
+            partition = root / "kline_daily_20240102"
+            batch = partition / "batch_00000.csv"
+            # 两行都是「未停牌但零成交」，因此各自都会产生一条行级问题；
+            # 只有第二行没有来源文件列。
+            frame = pd.DataFrame(
+                [
+                    {
+                        **_bar("000001.SZ", "20240102", 10.0, 9.8, volume=0.0, amount=0.0),
+                        "_source_file": str(batch),
+                        "_source_row": 2,
+                    },
+                    {
+                        **_bar("600000.SH", "20240102", 20.0, 19.8, volume=0.0, amount=0.0),
+                        "_source_file": float("nan"),
+                        "_source_row": float("nan"),
+                    },
+                ]
+            )
+            lifecycle = dict.fromkeys(SYMBOLS, ("20240101", None))
+            stats = {code: _SymbolStats() for code in SYMBOLS}
+
+            present = checker._validate_rows(
+                frame,
+                "20240102",
+                partition,
+                set(SYMBOLS),
+                lifecycle,
+                set(),
+                stats,
+                _ScanState(),
+            )
+
+            self.assertEqual(present, set(SYMBOLS))
+            by_code = {
+                issue.code: issue
+                for issue in checker.issues
+                if issue.issue_code == "ACTIVE_ZERO_VOLUME"
+            }
+            self.assertEqual(set(by_code), set(SYMBOLS))
+            self.assertEqual(by_code["000001.SZ"].source_file, str(batch))
+            self.assertEqual(by_code["600000.SH"].source_file, str(partition))
 
 
 if __name__ == "__main__":

@@ -11,7 +11,7 @@
 | `symbol` | 证券代码，格式与 QMT 一致（如 `002062.SZ`） |
 | `trade_date` | 出问题的交易日，`YYYYMMDD` |
 | `field` | 需要覆盖的日线字段名，取值只能是 `open`/`high`/`low`/`close`/`pre_close`/`volume`/`amount`/`suspend_flag` 之一 |
-| `value` | 覆盖后的取值；只改这一个字段，同一行的其它字段保持源数据原值不变 |
+| `value` | 覆盖后的取值；只改这一个字段，同一行的其它字段保持源数据原值不变。必须能转成**有限数值**（允许覆盖的日线字段全是数值列），空值、非数字文本以及 `nan`/`inf` 会在装载时报错，并给出证券、交易日和字段三项定位 |
 | `issue_type` | 问题类型简短标签，如 `missing_suspension`（停牌未在源数据中体现） |
 | `description` | 人工核实结论，说明实际情况与 QMT 数据的差异 |
 | `found_date` | 发现/记录日期，`YYYYMMDD` |
