@@ -4,7 +4,7 @@
 
 ## 文件职责
 
-- `qmt_run_downloader.py`（项目根目录）：在大 QMT 编辑器中运行的唯一入口。
+- `scripts/qmt_run_downloader.py`：在大 QMT 编辑器中运行的唯一入口。
 - `config.py`：JSON 配置读取和校验。
 - `gateway.py`：大 QMT 行情、上市退市、原始财务和除权接口适配。
 - `runner.py`：批量回溯、日增量、分批和断点续传编排。
@@ -16,10 +16,10 @@
 
 ## 第一次小范围测试
 
-1. 确认项目位于 `C:\Users\win10\Documents\quant`。如果移动了目录，同时修改根目录 `qmt_run_downloader.py` 的 `PROJECT_ROOT` 和 `CONFIG_PATH`。
+1. 确认项目位于 `C:\Users\win10\Documents\quant`。如果移动了目录，只需修改 `scripts/qmt_run_downloader.py` 的 `PROJECT_ROOT`，`SOURCE_ROOT` 与 `CONFIG_PATH` 会随之推导。
 2. 在大 QMT 的“数据管理”中先下载财务数据。内置 Python 的财务读取接口只读取客户端已有财务缓存，不能在本工具内自动补齐财务缓存。
-3. 打开根目录 `qmt_run_downloader.py`，使用大 QMT 内置 Python 运行，**不要勾选“启动本地 Python”**。
-4. 测试配置为 `config.test.json`：两只股票、`20260810` 至 `20260812`、每批一只，结果写入 `D:\qmt_data_test`。
+3. 打开 `scripts/qmt_run_downloader.py`，使用大 QMT 内置 Python 运行，**不要勾选“启动本地 Python”**。
+4. 测试配置放在 `configs/qmt_downloader/` 下：两只股票、`20260810` 至 `20260812`、每批一只，结果写入 `D:\qmt_data_test`。
 5. 查看 QMT 输出窗口，同时检查 `D:\qmt_data_test\logs\downloader.log` 和 `D:\qmt_data_test\reports\issues_*.csv`。
 
 测试日期位于未来或服务器尚无该交易日数据时，日线会为空并在问题报告中明确提示。此时应把配置日期改为客户端已有的最近三个交易日。

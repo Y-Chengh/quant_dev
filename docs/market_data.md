@@ -3,9 +3,11 @@
 ## 启动网页
 
 ```powershell
-cd C:\Users\win10\Documents\quant\market_service
-C:\Users\win10\AppData\Local\Programs\Python\Python311\python.exe run_server.py
+quant-market-server
 ```
+
+等价写法：`python -m quant.cli.market_server`；也可直接双击
+`scripts\start_market_service.bat`。可用 `--host`、`--port` 覆盖默认值。
 
 浏览器打开 <http://127.0.0.1:8000>，接口文档位于 <http://127.0.0.1:8000/docs>。
 
@@ -17,7 +19,7 @@ C:\Users\win10\AppData\Local\Programs\Python\Python311\python.exe run_server.py
 
 ```python
 from datetime import date, datetime
-from market_service import (
+from quant.market_data import (
     KlinePeriod,
     KlineQuery,
     MarketDataClient,

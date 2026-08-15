@@ -6,10 +6,10 @@
 
 ## 快速运行
 
-程序直接通过 `market_service.client.MarketDataClient` 读取 `bars_5m` 数据。默认以数据库最后一个行情时点为终点，向前取3年，并研究代码表中的前20只股票。
+程序直接通过 `quant.market_data.client.MarketDataClient` 读取 `bars_5m` 数据。默认以数据库最后一个行情时点为终点，向前取3年，并研究代码表中的前20只股票。
 
 ```powershell
-python run_factor_demo.py
+quant-factor-demo
 ```
 
 主实验会对验证集预测同步执行 Top 10 日内等权回测：按模型分数选股，在目标日
@@ -20,7 +20,7 @@ python run_factor_demo.py
 常态化配置可以放入 YAML，并在命令行按需覆盖其中的值：
 
 ```powershell
-python run_factor_demo.py --config experiment.yaml --log-level DEBUG
+quant-factor-demo --config experiment.yaml --log-level DEBUG
 ```
 
 训练方式由 `--training-mode` 控制。默认 `rolling` 会在每个验证日使用此前全部
@@ -28,25 +28,25 @@ python run_factor_demo.py --config experiment.yaml --log-level DEBUG
 再对整个验证集测试：
 
 ```powershell
-python run_factor_demo.py --training-mode single --validation-start 2024-01-01
+quant-factor-demo --training-mode single --validation-start 2024-01-01
 ```
 
 YAML 使用与命令行参数对应的扁平 `snake_case` 键；列表和布尔参数分别使用
 YAML 列表和 `true`/`false`。未知参数或无效值会直接报错。完整配置示例见
-`factor_config.example.yaml`。如果命令行切换了 YAML 中配置的模型，原模型独有的
+`configs/factor_research/example.yaml`。如果命令行切换了 YAML 中配置的模型，原模型独有的
 配置项会被忽略，共用配置项仍会应用到新模型。
 
 运行时可以只选择部分因子，并指定缓存目录：
 
 ```powershell
-python run_factor_demo.py --factors return_1d return_5d realized_vol --factor-cache-dir .factor_cache
+quant-factor-demo --factors return_1d return_5d realized_vol --factor-cache-dir .factor_cache
 ```
 
 搜索报告中的 `canonical`/`expression_str` 可以直接作为临时因子加入实验；程序会
 安全解析表达式，并用稳定的 `fg_...` 因子 ID 作为模型特征列名：
 
 ```powershell
-python run_factor_demo.py --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
+quant-factor-demo --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
 ```
 
 这里显式传入空的 `--factors`，表示只测试搜索因子；省略它则会在默认正式因子
@@ -59,39 +59,39 @@ python run_factor_demo.py --factors --factor-expressions 'cs_rank(delta(column(c
 模块自行注册：
 
 ```powershell
-python run_factor_demo.py --model simple_decision_tree --max-depth 3 --min-samples-leaf 20
+quant-factor-demo --model simple_decision_tree --max-depth 3 --min-samples-leaf 20
 ```
 
 使用 scikit-learn 梯度提升树：
 
 ```powershell
-python run_factor_demo.py --model gradient_boosting_tree --n-estimators 100 --learning-rate 0.1 --max-depth 3
+quant-factor-demo --model gradient_boosting_tree --n-estimators 100 --learning-rate 0.1 --max-depth 3
 ```
 
 使用支持多线程的 LightGBM（`--n-jobs -1` 表示使用全部可用 CPU）：
 
 ```powershell
-python run_factor_demo.py --model lightgbm --n-estimators 300 --learning-rate 0.03 --num-leaves 15 --n-jobs -1
+quant-factor-demo --model lightgbm --n-estimators 300 --learning-rate 0.03 --num-leaves 15 --n-jobs -1
 ```
 
 原样输出最后一个搜索因子，以复核网格搜索与主实验的 IC 口径：
 
 ```powershell
-python run_factor_demo.py --model factor_passthrough --task regression --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
+quant-factor-demo --model factor_passthrough --task regression --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
 ```
 
 `factor_passthrough` 不拟合目标，只能用于指标核对，不是可部署的预测模型。复核
 搜索报告时应直接复制报告生成的完整命令，确保数据库、日期范围、验证起点和证券池
 均与搜索一致。
 
-新增模型时，在 `factor_research/models/` 中增加具体模型和工厂，并使用
+新增模型时，在 `src/quant/factor_research/models/` 中增加具体模型和工厂，并使用
 `@register_model_factory` 注册。工厂通过 `add_arguments()` 声明自己的命令行
-参数，通过 `from_args()` 从 `args` 构建实例；无需修改 `run_factor_demo.py`。
+参数，通过 `from_args()` 从 `args` 构建实例；无需修改 `quant-factor-demo`。
 
 使用 `--log-level` 控制日志详细程度，默认是 `INFO`：
 
 ```powershell
-python run_factor_demo.py --log-level DEBUG
+quant-factor-demo --log-level DEBUG
 ```
 
 `INFO` 显示因子和验证进度，`DEBUG` 额外显示缓存路径、数据指纹和逐日训练明细，`WARNING` 显示缓存损坏或校验失败，`ERROR` 显示计算异常。
@@ -99,7 +99,7 @@ python run_factor_demo.py --log-level DEBUG
 日志默认同时输出到终端和 `logs/` 目录。程序在 `run/` 下按运行开始日期和 24 小时制小时建立 `YYYY-MM-DD/HH` 归档子目录，每次运行在其中生成独立的“时间戳 + 随机ID”文件，例如 `logs/run/2026-08-02/20/factor_demo_20260802_203015_a1b2c3d4.log`。日志首行记录本次全部运行参数。文件达到 10 MB 后自动轮转，最多保留 5 个历史文件；可通过 `--log-dir` 修改归档根目录：
 
 ```powershell
-python run_factor_demo.py --log-dir D:\factor-logs
+quant-factor-demo --log-dir D:\factor-logs
 ```
 
 运行完成后，同一小时归档目录还会生成同名 `.md` 评估报告、`_accuracy.svg`
@@ -109,7 +109,7 @@ python run_factor_demo.py --log-dir D:\factor-logs
 
 运行结束时，`INFO` 还会输出行情加载、基础聚合、因子耗时排行、数据集构建，以及验证预处理/训练/预测的分项耗时，可用于定位性能瓶颈。
 
-每个因子由 `factor_research/factor_factories/` 下独立的工厂文件计算。缓存按因子实现指纹和输入行情指纹保存为 Parquet；工厂或公共计算逻辑变化时旧缓存会自动失效，缓存缺失或校验不通过时会自动重新计算。使用 `--no-factor-cache` 可以临时禁用缓存。
+每个因子由 `src/quant/factor_research/factor_factories/` 下独立的工厂文件计算。缓存按因子实现指纹和输入行情指纹保存为 Parquet；工厂或公共计算逻辑变化时旧缓存会自动失效，缓存缺失或校验不通过时会自动重新计算。使用 `--no-factor-cache` 可以临时禁用缓存。
 
 新增因子时不需要修改注册表，只需在该目录新增模块并使用装饰器：
 
@@ -131,13 +131,13 @@ class MyFactorFactory(FactorFactory):
 指定窗口和股票：
 
 ```powershell
-python run_factor_demo.py --start 2022-01-01 --end 2025-01-01 --codes 000001.SZ 600000.SH
+quant-factor-demo --start 2022-01-01 --end 2025-01-01 --codes 000001.SZ 600000.SH
 ```
 
 如数据库不在默认的 `D:\量化\market.duckdb`：
 
 ```powershell
-python run_factor_demo.py --database C:\data\market.duckdb
+quant-factor-demo --database C:\data\market.duckdb
 ```
 
 框架默认生成日收益、5日动量、波动率、成交量、日内波动、上涨K线比例和尾盘量价等简单因子。`validation-start` 默认是研究结束日期往前1年；该日期之前是训练集，该日期起是验证集。`rolling` 模式从该日期开始逐日扩展训练，`single` 模式则固定使用这份训练集。

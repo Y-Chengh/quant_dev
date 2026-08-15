@@ -1,11 +1,11 @@
 # 命令行参数说明
 
-本文档以主实验入口 `run_factor_demo.py` 为主，说明当前 `argparse` 参数、默认行为和常用命令。文末附有数据构建、行情下载和单因子检查脚本的参数速查。
+本文档以主实验入口 `quant-factor-demo` 为主，说明当前 `argparse` 参数、默认行为和常用命令。文末附有数据构建、行情下载和单因子检查脚本的参数速查。
 
 ## 1. 基本用法
 
 ```powershell
-python run_factor_demo.py [通用参数] [所选模型的专属参数]
+quant-factor-demo [通用参数] [所选模型的专属参数]
 ```
 
 不传参数时，程序会：
@@ -24,9 +24,9 @@ python run_factor_demo.py [通用参数] [所选模型的专属参数]
 查看实际可用参数：
 
 ```powershell
-python run_factor_demo.py --help
-python run_factor_demo.py --model gradient_boosting_tree --help
-python run_factor_demo.py --model lightgbm --help
+quant-factor-demo --help
+quant-factor-demo --model gradient_boosting_tree --help
+quant-factor-demo --model lightgbm --help
 ```
 
 任务类型由 `--task` 控制：`classification`（默认）执行涨跌二分类，
@@ -114,7 +114,7 @@ volume_ratio_5d
 
 ### 3.3 `lightgbm`
 
-基于 LightGBM 的二分类与连续涨跌幅回归模型。使用前需安装 `requirements-factor-research.txt` 中的依赖。
+基于 LightGBM 的二分类与连续涨跌幅回归模型。使用前需安装 `pyproject.toml` 中的 `research` 可选依赖。
 
 | 参数 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -144,7 +144,7 @@ NaN/无穷值样本会在日期切分前排除，与搜索 IC 的有效样本口
 ### 4.1 按默认配置运行
 
 ```powershell
-python run_factor_demo.py
+quant-factor-demo
 ```
 
 ### 4.2 设置 Top N、滑点和手续费
@@ -152,13 +152,13 @@ python run_factor_demo.py
 以下示例每天选择前 10 只证券，假设单边滑点 3 bps、单边手续费 1 bps：
 
 ```powershell
-python run_factor_demo.py --backtest-top-n 10 --slippage-bps 3 --commission-bps 1
+quant-factor-demo --backtest-top-n 10 --slippage-bps 3 --commission-bps 1
 ```
 
 ### 4.3 指定数据库和研究区间
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --database C:\data\market.duckdb `
   --start 2022-01-01 `
   --end 2025-01-01 `
@@ -169,45 +169,45 @@ python run_factor_demo.py `
 
 ```powershell
 $env:MARKET_DB_PATH = "C:\data\market.duckdb"
-python run_factor_demo.py
+quant-factor-demo
 ```
 
 ### 4.4 指定证券
 
 ```powershell
-python run_factor_demo.py --codes 000001.SZ 600000.SH 600519.SH
+quant-factor-demo --codes 000001.SZ 600000.SH 600519.SH
 ```
 
 让程序自动选择前 50 只证券：
 
 ```powershell
-python run_factor_demo.py --symbol-limit 50
+quant-factor-demo --symbol-limit 50
 ```
 
 ### 4.5 只研究部分因子
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --factors return_1d return_5d realized_vol volume_ratio_5d
 ```
 
 只研究一个搜索表达式：
 
 ```powershell
-python run_factor_demo.py --factors `
+quant-factor-demo --factors `
   --factor-expressions 'cs_rank(delta(column(close),periods=5))'
 ```
 
 因子缓存异常或需要强制重新计算时：
 
 ```powershell
-python run_factor_demo.py --no-factor-cache
+quant-factor-demo --no-factor-cache
 ```
 
 把缓存和运行产物放到指定目录：
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --factor-cache-dir D:\factor-cache `
   --log-dir D:\factor-logs
 ```
@@ -215,7 +215,7 @@ python run_factor_demo.py `
 ### 4.6 快速决策树基线
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --model simple_decision_tree `
   --max-depth 3 `
   --min-samples-leaf 20 `
@@ -225,7 +225,7 @@ python run_factor_demo.py `
 如果只想快速检查流程，可同时缩小证券数、日期范围和因子集合：
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --start 2024-01-01 `
   --validation-start 2024-10-01 `
   --symbol-limit 5 `
@@ -236,7 +236,7 @@ python run_factor_demo.py `
 ### 4.7 梯度提升树
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --model gradient_boosting_tree `
   --n-estimators 100 `
   --learning-rate 0.1 `
@@ -251,7 +251,7 @@ python run_factor_demo.py `
 偏稳健的常用起点：
 
 ```powershell
-python run_factor_demo.py `
+quant-factor-demo `
   --model lightgbm `
   --n-estimators 300 `
   --learning-rate 0.03 `
@@ -269,13 +269,13 @@ python run_factor_demo.py `
 ### 4.9 调试和详细日志
 
 ```powershell
-python run_factor_demo.py --debug
+quant-factor-demo --debug
 ```
 
 仅希望减少输出时：
 
 ```powershell
-python run_factor_demo.py --log-level WARNING
+quant-factor-demo --log-level WARNING
 ```
 
 ## 5. 使用注意事项
@@ -289,7 +289,7 @@ python run_factor_demo.py --log-level WARNING
 
 ## 6. 其他命令行脚本速查
 
-### 6.1 `run_single_factor_test.py`
+### 6.1 `quant-single-factor-test`
 
 使用最近一个月行情检查 `return_1d` 因子。
 
@@ -302,12 +302,12 @@ python run_factor_demo.py --log-level WARNING
 | `--debug` | 关闭 | 开启调试标记。 |
 
 ```powershell
-python run_single_factor_test.py `
+quant-single-factor-test `
   --codes 000001.SZ 600000.SH `
   --output .\output\return_1d.csv
 ```
 
-### 6.2 `market_service/build_database.py`
+### 6.2 `quant.market_data.build_database`
 
 从年度压缩包构建标准化 Parquet 数据和 DuckDB 目录。
 
@@ -316,10 +316,10 @@ python run_single_factor_test.py `
 | `--root` | `D:\量化` | 原始年度压缩包所在目录，也是生成 `extracted_daily/`、`bars_5m/` 和 `market.duckdb` 的根目录。 |
 
 ```powershell
-python market_service/build_database.py --root D:\量化
+python -m quant.market_data.build_database --root D:\量化
 ```
 
-### 6.3 `download_ifind_minute.py`
+### 6.3 `quant-ifind-download`
 
 通过 iFinD 下载单只证券的分钟行情。账号密码优先从 `IFIND_USERNAME`、`IFIND_PASSWORD` 读取，缺失时交互输入。
 
@@ -336,7 +336,7 @@ python market_service/build_database.py --root D:\量化
 | `--retry` | `3` | 单日请求失败时的最大尝试次数。 |
 
 ```powershell
-python download_ifind_minute.py `
+quant-ifind-download `
   --code 600000.SH `
   --start 2026-03-01 `
   --end 2026-03-31 `

@@ -11,26 +11,68 @@
 
 ## 目录说明
 
-- `factor_research/factor_factories/`：因子工厂，每个具体因子使用独立文件。
-- `factor_research/factor_dsl/`：不可变因子表达式、算子注册和日频执行上下文。
-- `factor_research/factor_search/`：网格/遗传搜索、一次性上下文、候选评价及并行后端。
-- `factor_research/models/`：预测模型抽象、具体模型及模型工厂。
-- `factor_research/factors.py`：日频聚合、因子计算和缓存流程。
-- `factor_research/dataset.py`：特征、标签及训练数据集构建。
-- `factor_research/experiment.py`：滚动训练、预测和实验结果汇总。
-- `factor_research/backtesting.py`：验证集 Top N 日内等权回测、交易成本、随机/等权
-  基准、横截面分组及收益价差诊断。
-- `factor_research/metrics.py`：分类、回归及每日横截面 IC/Rank IC 评估指标。
-- `factor_research/reporting.py`：Markdown/HTML 双格式评估报告和图表输出。
-- `tests/`：单元测试和端到端测试。
-- `qmt_daily_downloader/`：仅使用大 QMT 内置 Python 的日线、财务和除权数据按日分区保存工具；
-  根目录 `qmt_run_downloader.py` 是大 QMT 策略入口。
-- `run_qmt_data_self_check.py`：在外部 Python 中全量审计 QMT 日线分区、证券生命周期、
-  缺失区间、停牌成交量和统计异常，并输出不修改原始数据的详细报告。
+项目采用 src layout，全部库代码位于 `src/quant/` 下的统一命名空间包中，
+通过 `pip install -e .` 安装后以 `quant.*` 导入。
+
+顶层目录：
+
+- `src/quant/`：全部库代码。
+- `scripts/`：不经 pip 安装、需按文件路径直接运行的入口（大 QMT 编辑器等）。
+- `configs/`：配置样例，按子系统分目录。
+- `docs/`：详细文档。
+- `tests/`：测试，目录结构与 `src/quant/` 一一对应。
+- `pyproject.toml`：打包、依赖分组、命令行入口与 ruff/mypy/pytest 配置。
+
+因子研究 `src/quant/factor_research/`：
+
+- `factor_factories/`：因子工厂，每个具体因子使用独立文件。
+- `factor_dsl/`：不可变因子表达式、算子注册和日频执行上下文。
+- `factor_search/`：网格/遗传搜索、一次性上下文、候选评价及并行后端。
+- `models/`：预测模型抽象、具体模型及模型工厂。
+- `factors.py`：日频聚合、因子计算和缓存流程。
+- `dataset.py`：特征、标签及训练数据集构建。
+- `experiment.py`：滚动训练、预测和实验结果汇总。
+- `backtesting.py`：验证集 Top N 日内等权回测、交易成本、随机/等权基准、
+  横截面分组及收益价差诊断。
+- `metrics.py`：分类、回归及每日横截面 IC/Rank IC 评估指标。
+- `reporting.py`：Markdown/HTML 双格式评估报告和图表输出。
+
+其余子包：
+
+- `src/quant/config/`：项目根目录、配置目录和行情库路径的唯一解析入口；
+  优先级为显式传参 > 环境变量 > 内置回退值。任何模块都不得再内联书写绝对路径。
+- `src/quant/market_data/`：本地 DuckDB 行情库、查询客户端与 FastAPI 网页服务。
+- `src/quant/qmt_downloader/`：仅使用大 QMT 内置 Python 的日线、财务和除权数据
+  按日分区保存工具；`scripts/qmt_run_downloader.py` 是大 QMT 策略入口。
+- `src/quant/cli/`：命令行入口，只做参数解析、配置装载、日志初始化和调用库层，
+  不得承载可复用的业务逻辑。每个模块对应 `pyproject.toml` 中的一个
+  `console_scripts` 入口：
+
+  | 命令 | 模块 |
+  | --- | --- |
+  | `quant-factor-demo` | `quant.cli.factor_demo` |
+  | `quant-grid-search` | `quant.cli.grid_search` |
+  | `quant-market-server` | `quant.cli.market_server` |
+  | `quant-qmt-self-check` | `quant.cli.qmt_self_check` |
+  | `quant-single-factor-test` | `quant.cli.single_factor_test` |
+  | `quant-ifind-download` | `quant.cli.ifind_download` |
+  | `quant-build-market-db` | `quant.market_data.build_database` |
+
+  其中 `quant-qmt-self-check` 在外部 Python 中全量审计 QMT 日线分区、证券生命
+  周期、缺失区间、停牌成交量和统计异常，输出不修改原始数据的详细报告。
+
+## 分层约束
+
+- `quant.qmt_downloader` 必须能在大 QMT 内置 Python 中直接导入，
+  因此只允许依赖标准库和 pandas，不得导入 `quant` 的其它子包，
+  也不得使用较新的语法糖；`scripts/qmt_run_downloader.py` 必须保持纯 ASCII 源码。
+- `src/quant/__init__.py` 与 `src/quant/cli/__init__.py` 不得导入任何子模块，
+  避免轻量场景被迫加载全部三方依赖。
+- 命令行层可以依赖库层，库层不得反向依赖 `quant.cli`。
 
 ## 因子开发规范
 
-- 每个具体因子放在 `factor_research/factor_factories/` 下的独立 Python 文件中。
+- 每个具体因子放在 `src/quant/factor_research/factor_factories/` 下的独立 Python 文件中。
 - 因子类必须继承 `FactorFactory`，使用 `@register_factor` 注册，并定义唯一的
   `snake_case` 名称。
 - `compute(bars, daily)` 必须为 `daily` 的每一行返回一个值，并保留
@@ -81,7 +123,7 @@
 
 ## 模型开发规范
 
-- 模型相关代码统一放在 `factor_research/models/`。
+- 模型相关代码统一放在 `src/quant/factor_research/models/`。
 - 通用抽象定义在 `models/base.py`；一个具体模型及其工厂放在独立模块中。
 - 具体模型继承 `DirectionModel`，并实现：
   - `fit(X, y)`
@@ -135,19 +177,27 @@
 
 ## 验证要求
 
+首次准备环境（或依赖变化后）：
+
+```powershell
+.venv\Scripts\python.exe -m pip install -e ".[research,service,dev]"
+```
+
 修改完成后按风险执行以下检查：
 
 ```powershell
-python -m compileall -q factor_research tests
-python -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m compileall -q src tests scripts
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m ruff check .
 git diff --check
 ```
 
-- 后续运行 `run_factor_demo.py` 的回测（包括修改后的自动验证回测）必须统一加载
-  `C:\Users\win10\Documents\quant\factor_config.example.diff.yaml`：
-  `python run_factor_demo.py --config C:\Users\win10\Documents\quant\factor_config.example.diff.yaml`。
-- 不涉及模型或数据代码的修改无需运行 `run_factor_demo.py` 模型验证；涉及模型或
-  数据代码时，应按改动风险运行上述回测并核对验证结果。
+`python -m pytest` 与 `unittest discover` 等价，两者都能跑通全量用例。
+
+- 涉及模型或数据代码的改动，应按风险运行回测验证并核对结果：
+  `quant-factor-demo --config configs\factor_research\example.yaml`。
+  同一次对比实验必须始终使用同一份配置，避免前后结果不可比。
+- 不涉及模型或数据代码的修改无需运行回测。
 
 如果本地 Python、依赖或虚拟环境不可用，应至少执行 `git diff --check` 和静态
 引用检查，并在交付说明中明确指出未运行的验证及原因。
