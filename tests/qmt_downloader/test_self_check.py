@@ -303,6 +303,55 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertNotIn("INVALID_LIFECYCLE_RANGE", codes)
             self.assertNotIn("DATA_AFTER_DELISTING", codes)
 
+    def test_suspended_placeholder_rows_before_listing_are_not_flagged(self) -> None:
+        """上市前 suspend_flag=1 的停牌占位行不应触发 DATA_BEFORE_LISTING。
+
+        QMT 会为部分证券在上市前用停牌标志占位填充历史日期的空行，这类行不
+        代表行情归属错误；同一证券若存在 suspend_flag=0 的上市前行情，说明
+        是真实的归属错误，仍应报告。
+        """
+
+        symbols = ["000001.SZ", "600000.SH"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [
+                    {"code": "000001.SZ", "open_date": "20240103", "expire_date": ""},
+                    {"code": "600000.SH", "open_date": "20240103", "expire_date": ""},
+                ],
+                symbols,
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [
+                    _bar("000001.SZ", "20240102", 0.0, 0.0, volume=0, amount=0, suspend_flag=1),
+                    _bar("600000.SH", "20240102", 20.0, 19.8),
+                ],
+                symbols,
+            )
+            _write_kline(
+                store,
+                "20240103",
+                [_bar("000001.SZ", "20240103", 10.0, 10.0), _bar("600000.SH", "20240103", 20.0, 20.0)],
+                symbols,
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            before_listing = result.issues.loc[result.issues["issue_code"] == "DATA_BEFORE_LISTING"]
+            self.assertNotIn("000001.SZ", set(before_listing["code"]))
+            self.assertIn("600000.SH", set(before_listing["code"]))
+
     def test_missing_lifecycle_and_volume_errors_include_evidence(self) -> None:
         """缺失区间、上市退市越界和停牌成交量矛盾应含完整定位与建议。"""
 

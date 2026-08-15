@@ -193,7 +193,14 @@ class _RowValidationMixin(_CheckerState):
             in_lifecycle = date_value >= open_date and (
                 expire_date is None or date_value <= expire_date
             )
-            if date_value < open_date and (code, "before") not in self._lifecycle_issue_keys:
+            # QMT 会在部分证券上市前用 suspend_flag=1 的停牌占位行填充历史日期，
+            # 这类行不是真实行情归属错误，不计入 DATA_BEFORE_LISTING。
+            suspend_flag = _finite_float(row.get("suspend_flag"))
+            if (
+                date_value < open_date
+                and suspend_flag != 1.0
+                and (code, "before") not in self._lifecycle_issue_keys
+            ):
                 self._lifecycle_issue_keys.add((code, "before"))
                 self._row_issue(
                     "DATA_BEFORE_LISTING",
@@ -229,26 +236,23 @@ class _RowValidationMixin(_CheckerState):
                 # 上市前/退市后的 QMT 占位行只用于生命周期审计；其零价格和零成交量
                 # 不应再次被当作行情字段损坏，从而避免全样本报告产生百万级重复错误。
                 continue
-            if not in_lifecycle:
-                continue
             invalid = self._validate_numeric_row(row, code, date_value, path, index, stats)
             if invalid:
                 stats[code].invalid_rows += 1
-            if in_lifecycle:
-                self._validate_continuity(
-                    row,
-                    code,
-                    date_value,
-                    path,
-                    index,
-                    corporate_actions,
-                    state,
-                )
+            self._validate_continuity(
+                row,
+                code,
+                date_value,
+                path,
+                index,
+                corporate_actions,
+                state,
+            )
         return present
 
     def _validate_numeric_row(
         self,
-        row: pd.Series,
+        row: dict[str, Any],
         code: str,
         date_value: str,
         path: Path,
