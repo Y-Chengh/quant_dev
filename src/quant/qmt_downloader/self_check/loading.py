@@ -423,7 +423,7 @@ class _ReferenceLoadingMixin(_CheckerState):
             if open_date is None:
                 self._add_issue(
                     "OPEN_DATE_MISSING",
-                    "WARNING",
+                    "INFO",
                     "instrument_info",
                     "证券缺少合法上市日期，无法准确确定应有行情起点。",
                     code=code,

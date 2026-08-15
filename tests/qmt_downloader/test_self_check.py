@@ -618,8 +618,8 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             for column in ("expected", "actual", "evidence", "possible_causes", "suggested_action", "source_file"):
                 self.assertTrue(errors[column].map(bool).all(), column)
 
-    def test_missing_open_date_is_warning_not_error(self) -> None:
-        """open_date 缺失只报 WARNING，不应单独把自检结论判定为未通过。"""
+    def test_missing_open_date_is_info_not_error(self) -> None:
+        """open_date 缺失只报 INFO，不应单独把自检结论判定为未通过。"""
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -652,7 +652,7 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             )
             missing = result.issues.loc[result.issues["issue_code"] == "OPEN_DATE_MISSING"]
             self.assertEqual(len(missing), 1)
-            self.assertEqual(missing.iloc[0]["level"], "WARNING")
+            self.assertEqual(missing.iloc[0]["level"], "INFO")
             self.assertEqual(result.summary["status"], "passed")
 
     def test_date_mismatch_does_not_count_as_present(self) -> None:
