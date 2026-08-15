@@ -19,11 +19,8 @@ from quant.qmt_downloader.config import (
 )
 from quant.qmt_downloader.finance import materialize_finance_daily
 from quant.qmt_downloader.gateway import FINANCE_FIELDS, QmtGateway
-from quant.qmt_downloader.runner import (
-    QmtDailyDownloader,
-    _format_elapsed,
-    _make_job_key,
-)
+from quant.qmt_downloader.runner import QmtDailyDownloader
+from quant.qmt_downloader.runner.helpers import _format_elapsed, _make_job_key
 from quant.qmt_downloader.state import CheckpointStore
 from quant.qmt_downloader.storage import DailyPartitionStore
 from quant.qmt_downloader.validation import (

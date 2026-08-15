@@ -94,7 +94,10 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # 大 QMT 内置 Python 版本较旧，禁止 pyupgrade 把兼容写法改成新语法。
-"src/quant/qmt_downloader/*" = ["UP"]
+# 只豁免真正位于 QMT 导入链上的模块；self_check 包只在外部 Python 运行，
+# 仍需遵守全部现代化规则，因此不在此列。
+"src/quant/qmt_downloader/*.py" = ["UP"]
+"src/quant/qmt_downloader/runner/*.py" = ["UP"]
 # 大 QMT 策略入口的特殊约束：
 # E402 必须先注入 sys.path 再导入 quant，导入不能提到文件顶部；
 # F821 download_history_data 由大 QMT 运行时注入，静态分析看不到；
