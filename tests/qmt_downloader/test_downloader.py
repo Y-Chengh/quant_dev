@@ -1132,14 +1132,20 @@ class DownloaderTests(unittest.TestCase):
         执行，一旦写入 ``from __future__ import annotations`` 就会直接抛出
         ``SyntaxError: future feature annotations is not defined``。``self_check``
         只在外部 Python 的 ``quant-qmt-self-check`` 中使用，不在导入链内。
+
+        这里按目录递归收集：``qmt_downloader`` 下的子包同样会被大 QMT 导入，
+        若只扫描顶层 ``*.py``，新增子包会静默逃出本约束。
         """
         source_root = Path(__file__).resolve().parents[2] / "src" / "quant"
         chain = [source_root / "__init__.py"]
         chain.extend(
             path
-            for path in sorted((source_root / "qmt_downloader").glob("*.py"))
-            if path.name != "self_check.py"
+            for path in sorted((source_root / "qmt_downloader").rglob("*.py"))
+            if "self_check" not in path.relative_to(source_root).parts
         )
+        # 防止收集逻辑写错时静默通过：导入链至少应包含入口支持与运行器模块。
+        collected = {path.name for path in chain}
+        self.assertIn("qmt_entry_support.py", collected)
         for path in chain:
             tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
             # 按语法树判断真实导入语句，避免文档字符串里提到该写法就误报。
@@ -1151,7 +1157,7 @@ class DownloaderTests(unittest.TestCase):
             self.assertNotIn(
                 "__future__",
                 modules,
-                f"{path.name} 位于大 QMT 导入链，不能使用 __future__ 导入",
+                f"{path.relative_to(source_root)} 位于大 QMT 导入链，不能使用 __future__ 导入",
             )
 
     def test_sales_gross_profit_is_not_requested(self):
