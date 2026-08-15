@@ -92,8 +92,8 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
         "- 实际有效范围记录：{0}".format(summary["actual_expected_rows"]),
         "- 缺失记录：{0}".format(summary["missing_rows"]),
         "- 连续缺失区间：{0}".format(summary["missing_spans"]),
-        "- ERROR：{0}".format(summary["errors"]),
-        "- WARNING：{0}".format(summary["warnings"]),
+        "- ERROR：{0}（详见 `errors.csv`）".format(summary["errors"]),
+        "- WARNING：{0}（详见 `warnings.csv`）".format(summary["warnings"]),
         "- INFO：{0}（仅供参考，不计入结论，详见 `info.csv`）".format(summary["info"]),
         "- 使用独立 QMT 交易日历：{0}".format("是" if summary["authoritative_calendar"] else "否"),
         "",
@@ -107,8 +107,8 @@ def _summary_markdown(summary: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "完整定位、理论值、实际值、证据、可能原因和处理建议见 `issues.csv`"
-            "（只含 ERROR/WARNING）；INFO 级问题单独列在 `info.csv`。",
+            "完整定位、理论值、实际值、证据、可能原因和处理建议按级别分别列在"
+            " `errors.csv`、`warnings.csv`、`info.csv` 三个文件中，互不混杂。",
             "连续缺失日期见 `missing_spans.csv`，逐日和逐证券覆盖率见对应 CSV。",
             "脚本只报告问题，不会修改、填充或删除任何原始数据。",
             "",

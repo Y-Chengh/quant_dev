@@ -110,16 +110,20 @@ class _SummaryReportMixin(_CheckerState):
             coverage_symbols: 每只证券的应有、实有、停牌和异常统计。
 
         返回：
-            无返回值；任一文件写入失败时抛出对应文件系统异常。``issues.csv`` 及各
-            分类明细只含 ERROR/WARNING 级问题；INFO 级问题只供参考，单独写入
-            ``info.csv``，不再混入「报错」类报告。
+            无返回值；任一文件写入失败时抛出对应文件系统异常。``errors.csv``、
+            ``warnings.csv``、``info.csv`` 按 ERROR/WARNING/INFO 三个级别分别落盘，
+            互不混杂；各分类明细（lifecycle/volume/partition/statistical）仍汇总
+            ERROR 与 WARNING 两级，不含仅供参考的 INFO。
         """
 
-        non_info = issues[issues["level"] != "INFO"]
+        errors_only = issues[issues["level"] == "ERROR"]
+        warnings_only = issues[issues["level"] == "WARNING"]
         info_only = issues[issues["level"] == "INFO"]
+        non_info = issues[issues["level"] != "INFO"]
         _write_json_atomic(report_dir / "summary.json", summary)
         _write_text_atomic(report_dir / "summary.md", _summary_markdown(summary))
-        _write_csv_atomic(report_dir / "issues.csv", non_info)
+        _write_csv_atomic(report_dir / "errors.csv", errors_only)
+        _write_csv_atomic(report_dir / "warnings.csv", warnings_only)
         _write_csv_atomic(report_dir / "info.csv", info_only)
         _write_csv_atomic(report_dir / "missing_spans.csv", missing_spans)
         _write_csv_atomic(report_dir / "coverage_by_date.csv", coverage_dates)

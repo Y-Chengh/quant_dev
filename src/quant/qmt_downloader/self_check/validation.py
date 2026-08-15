@@ -669,7 +669,7 @@ class _RowValidationMixin(_CheckerState):
                 "possible_causes", "数据下载失败、文件损坏、字段口径变化或配置不一致"
             )
             details.setdefault(
-                "suggested_action", "查看 issues.csv 的证据后重新核对或 repair 相关数据"
+                "suggested_action", "查看 errors.csv 的证据后重新核对或 repair 相关数据"
             )
             details.setdefault("source_file", str(self.root))
         self.issues.append(
