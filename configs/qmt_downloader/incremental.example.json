@@ -8,7 +8,7 @@
   "incremental_lag_auto_cutoff": "16:00",
   "symbols": [],
   "sector": "沪深A股",
-  "batch_size": 300,
+  "batch_size": 600,
   "retry_count": 3,
   "kline_gap_retry_count": 2,
   "calendar_symbol": "000001.SH",
@@ -18,8 +18,8 @@
   "datasets": [
     "kline_1d",
     "finance_raw",
-    "finance_daily",
-    "corporate_actions"
+    // "finance_daily",
+    // "corporate_actions"
   ],
   "finance_lookback_start": "20000101",
   "log_max_bytes": 20971520,

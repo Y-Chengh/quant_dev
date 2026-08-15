@@ -1,5 +1,6 @@
 """大 QMT 下载器的接口替身、日分区和断点续传测试。"""
 
+import ast
 import io
 import json
 import logging
@@ -11,10 +12,18 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from quant.qmt_downloader.config import DownloaderConfig, _resolve_incremental_lag_days
+from quant.qmt_downloader.config import (
+    DownloaderConfig,
+    _resolve_incremental_lag_days,
+    strip_jsonc,
+)
 from quant.qmt_downloader.finance import materialize_finance_daily
 from quant.qmt_downloader.gateway import FINANCE_FIELDS, QmtGateway
-from quant.qmt_downloader.runner import QmtDailyDownloader, _make_job_key
+from quant.qmt_downloader.runner import (
+    QmtDailyDownloader,
+    _format_elapsed,
+    _make_job_key,
+)
 from quant.qmt_downloader.state import CheckpointStore
 from quant.qmt_downloader.storage import DailyPartitionStore
 from quant.qmt_downloader.validation import (
@@ -514,6 +523,86 @@ class DownloaderTests(unittest.TestCase):
         self.assertEqual(_resolve_incremental_lag_days(1), 1)
         with self.assertRaises(ValueError):
             _resolve_incremental_lag_days("auto", datetime(2026, 8, 15, 16, 0), "25:00")
+
+    def test_summary_reports_total_elapsed_time(self):
+        """每种结束路径的摘要都必须带总耗时，并写入日志。"""
+        self.assertEqual(_format_elapsed(0), "0:00:00")
+        self.assertEqual(_format_elapsed(3 * 3600 + 4 * 60 + 5), "3:04:05")
+        self.assertEqual(_format_elapsed(59.9), "0:00:59")
+        self.assertEqual(_format_elapsed(-1), "0:00:00")
+
+        with tempfile.TemporaryDirectory() as directory:
+            stream = io.StringIO()
+            logger = logging.getLogger("elapsed_test")
+            logger.handlers = [logging.StreamHandler(stream)]
+            logger.setLevel(logging.INFO)
+            runner = _build_runner(
+                _config(directory),
+                FakeContext(),
+                lambda code, period, start, end: None,
+                logger=logger,
+            )
+            summary = runner.run()
+            self.assertGreaterEqual(summary["elapsed_seconds"], 0.0)
+            self.assertRegex(summary["elapsed"], r"^\d+:\d{2}:\d{2}$")
+            self.assertIn("任务结束 用时={0}".format(summary["elapsed"]), stream.getvalue())
+
+    def test_config_from_jsonc_keeps_comments_out_of_values(self):
+        """配置文件应支持行注释、块注释和末尾逗号，且不影响解析结果。"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plain = root / "plain.json"
+            annotated = root / "annotated.json"
+            plain.write_text(
+                json.dumps(_config_values(directory), ensure_ascii=False),
+                encoding="utf-8",
+            )
+            annotated.write_text(
+                "// 顶部注释：小区间回溯\n"
+                "{\n"
+                '  "output_root": "{0}", // 输出目录，注意 // 在字符串里不是注释\n'
+                '  "mode": "backfill",\n'
+                "  /* 日期区间\n"
+                "     跨行说明 */\n"
+                '  "start_date": "20240102",\n'
+                '  "end_date": "20240103",\n'
+                '  "symbols": [\n'
+                '    "000001.SZ",\n'
+                '    "600000.SH",\n'
+                "  ],\n"
+                '  "batch_size": 1,\n'
+                '  "retry_count": 1,\n'
+                '  "download_kline": true,\n'
+                '  "datasets": ["kline_1d", "finance_raw", "finance_daily",'
+                ' "corporate_actions"],\n'
+                '  "finance_lookback_start": "20230101",\n'
+                "}\n".replace("{0}", directory.replace("\\", "\\\\")),
+                encoding="utf-8",
+            )
+            expected = DownloaderConfig.from_json(plain)
+            actual = DownloaderConfig.from_json(annotated)
+            self.assertEqual(actual.mode, expected.mode)
+            self.assertEqual(actual.start_date, expected.start_date)
+            self.assertEqual(actual.end_date, expected.end_date)
+            self.assertEqual(actual.symbols, expected.symbols)
+            self.assertEqual(actual.datasets, expected.datasets)
+            self.assertEqual(actual.output_root, expected.output_root)
+            self.assertEqual(
+                _make_job_key(actual, actual.symbols),
+                _make_job_key(expected, expected.symbols),
+            )
+
+    def test_strip_jsonc_preserves_strings_and_line_numbers(self):
+        """注释清理不得改动字符串内容、总长度和行号。"""
+        text = '{\n  "a": "http://x//y", // 说明\n  /* 块 */ "b": [1, 2,],\n}\n'
+        stripped = strip_jsonc(text)
+        self.assertEqual(len(stripped), len(text))
+        self.assertEqual(stripped.count("\n"), text.count("\n"))
+        self.assertEqual(json.loads(stripped), {"a": "http://x//y", "b": [1, 2]})
+        self.assertNotIn("说明", stripped)
+        self.assertEqual(strip_jsonc('{"p": "D:\\\\qmt//data"}').count("/"), 2)
+        with self.assertRaises(ValueError):
+            strip_jsonc('{"a": /* 未闭合\n}')
 
     def test_config_rejects_empty_datasets(self):
         """空数据集配置不得生成没有任何业务文件的虚假成功任务。"""
@@ -1036,6 +1125,35 @@ class DownloaderTests(unittest.TestCase):
         source = entry_path.read_bytes()
         self.assertEqual(source.decode("ascii").encode("ascii"), source)
 
+    def test_qmt_import_chain_avoids_future_annotations(self):
+        """大 QMT 内置 Python 早于 3.7，导入链上不得出现 __future__ 导入。
+
+        ``quant/__init__.py`` 与 ``quant.qmt_downloader`` 各模块都会在大 QMT 中被
+        执行，一旦写入 ``from __future__ import annotations`` 就会直接抛出
+        ``SyntaxError: future feature annotations is not defined``。``self_check``
+        只在外部 Python 的 ``quant-qmt-self-check`` 中使用，不在导入链内。
+        """
+        source_root = Path(__file__).resolve().parents[2] / "src" / "quant"
+        chain = [source_root / "__init__.py"]
+        chain.extend(
+            path
+            for path in sorted((source_root / "qmt_downloader").glob("*.py"))
+            if path.name != "self_check.py"
+        )
+        for path in chain:
+            tree = ast.parse(path.read_text(encoding="utf-8"), str(path))
+            # 按语法树判断真实导入语句，避免文档字符串里提到该写法就误报。
+            modules = [
+                node.module
+                for node in ast.walk(tree)
+                if isinstance(node, ast.ImportFrom)
+            ]
+            self.assertNotIn(
+                "__future__",
+                modules,
+                f"{path.name} 位于大 QMT 导入链，不能使用 __future__ 导入",
+            )
+
     def test_sales_gross_profit_is_not_requested(self):
         """确保不请求对银行股通常为空的销售毛利率字段。"""
         self.assertNotIn(
@@ -1381,20 +1499,23 @@ def _config_values(directory):
     }
 
 
-def _build_runner(config, context, history_downloader):
+def _build_runner(config, context, history_downloader, logger=None):
     """组装使用测试替身的下载器。
 
     参数：
         config: 测试下载配置。
         context: 大 QMT ``ContextInfo`` 替身。
         history_downloader: 历史行情下载函数替身。
+        logger: 可选日志对象；需要断言日志内容时传入自备处理器的 logger，
+            缺省创建一条丢弃全部输出的独立 logger。
 
     返回：
         可直接执行的 ``QmtDailyDownloader``。
     """
-    logger = logging.getLogger(f"qmt_daily_downloader_test_{id(context)}")
-    logger.handlers = [logging.NullHandler()]
-    logger.propagate = False
+    if logger is None:
+        logger = logging.getLogger(f"qmt_daily_downloader_test_{id(context)}")
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
     store = DailyPartitionStore(config.output_root)
     state = CheckpointStore(config.output_root / "state" / "downloader_state.sqlite")
     gateway = QmtGateway(context, history_downloader, logger, retry_count=1)

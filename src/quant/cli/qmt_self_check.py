@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from quant.config import default_qmt_config_path
+from quant.qmt_downloader.config import strip_jsonc
 from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
 
 DEFAULT_CONFIG = default_qmt_config_path("kline_only.backfill.json")
@@ -73,17 +74,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def load_config_defaults(path: Path) -> dict[str, object]:
-    """读取下载器 JSON 中与自检相关的根目录和日期范围。
+    """读取下载器 JSONC 中与自检相关的根目录和日期范围。
 
     参数：
-        path: QMT 下载器 JSON 配置文件路径。
+        path: QMT 下载器配置文件路径；与下载器本身一致，允许 ``//`` 行注释、
+            ``/* */`` 块注释和末尾多余逗号。
 
     返回：
         至少可能包含 ``output_root``、``start_date`` 和 ``end_date`` 的配置字典。
     """
 
-    with Path(path).open("r", encoding="utf-8-sig") as handle:
-        values = json.load(handle)
+    config_path = Path(path)
+    with config_path.open("r", encoding="utf-8-sig") as handle:
+        text = handle.read()
+    try:
+        values = json.loads(strip_jsonc(text))
+    except ValueError as error:
+        raise ValueError(f"下载器配置 {config_path} 解析失败：{error}")
     if not isinstance(values, dict):
         raise ValueError("下载器配置根节点必须是 JSON 对象")
     return values

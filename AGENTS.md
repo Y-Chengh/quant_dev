@@ -63,9 +63,19 @@
 
 ## 分层约束
 
-- `quant.qmt_downloader` 必须能在大 QMT 内置 Python 中直接导入，
-  因此只允许依赖标准库和 pandas，不得导入 `quant` 的其它子包，
-  也不得使用较新的语法糖；`scripts/qmt_run_downloader.py` 必须保持纯 ASCII 源码。
+- `quant.qmt_downloader` 必须能在大 QMT 内置 Python 中直接导入，因此只允许依赖
+  标准库和 pandas，不得导入 `quant` 的其它子包，也不得使用较新的语法糖。
+- 大 QMT 内置 Python 早于 3.7：导入链上的 `src/quant/__init__.py` 和
+  `src/quant/qmt_downloader/*.py`（仅在外部 Python 运行的 `self_check.py` 除外）
+  都不得写 `from __future__ import annotations`，否则大 QMT 直接抛
+  `SyntaxError: future feature annotations is not defined`。入口脚本 `init()`
+  会打印 `sys.version`，便于确认实际解释器版本。该约束由
+  `test_qmt_import_chain_avoids_future_annotations` 守护。
+- `scripts/qmt_run_downloader.py` 必须保持纯 ASCII 源码：该入口需整份复制进大 QMT
+  编辑器，而编辑器按 GBK 保存源码，文件头的 UTF-8 编码声明会把任何非 ASCII 字节
+  解成 `SyntaxError: (unicode error) 'utf-8' codec can't decode byte`。因此其文档
+  字符串和注释一律使用英文，中文说明放在 `docs/qmt_downloader.md`。该约束由
+  `test_qmt_entry_source_is_ascii_safe` 守护。
 - `src/quant/__init__.py` 与 `src/quant/cli/__init__.py` 不得导入任何子模块，
   避免轻量场景被迫加载全部三方依赖。
 - 命令行层可以依赖库层，库层不得反向依赖 `quant.cli`。
@@ -161,7 +171,8 @@
 
 ## 函数开发规范
 
-- 每个函数和方法都必须有中文文档字符串，说明职责、关键口径及返回结果。
+- 每个函数和方法都必须有中文文档字符串，说明职责、关键口径及返回结果。唯一例外
+  是 `scripts/qmt_run_downloader.py`，原因见上文分层约束。
 - 文档字符串的“参数”部分必须逐项列出每个形参（隐式实例或类参数
   `self`/`cls` 除外），并说明该变量的具体业务含义、单位、可选值或缺省行为；
   不得只重复参数名或类型注解。

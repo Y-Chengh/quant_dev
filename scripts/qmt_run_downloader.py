@@ -1,5 +1,15 @@
 # -*- coding: utf-8 -*-
-u"""\u5927 QMT \u5185\u7f6e Python \u7b56\u7565\u5165\u53e3\uff1b\u53ea\u9700\u5728 QMT \u4e2d\u8fd0\u884c\u672c\u6587\u4ef6\u3002"""
+"""Strategy entry point for the miniQMT built-in Python interpreter.
+
+This file must stay pure ASCII. The miniQMT editor stores pasted source as GBK,
+so any non-ASCII byte makes the utf-8 coding declaration above fail with
+"SyntaxError: (unicode error) 'utf-8' codec can't decode byte ...". Chinese
+documentation for this downloader lives in docs/qmt_downloader.md instead.
+
+Usage: open this file in the miniQMT editor and run it WITHOUT the
+"start local Python" option, otherwise ContextInfo and the built-in
+download_history_data global are not injected.
+"""
 
 import sys
 import traceback
@@ -17,25 +27,30 @@ from quant.qmt_downloader.qmt_entry_support import run_download
 
 
 def init(C):
-    u"""\u521d\u59cb\u5316\u5927 QMT \u7b56\u7565\uff0c\u4e0b\u8f7d\u4efb\u52a1\u5b9e\u9645\u5728 ``after_init`` \u4e2d\u542f\u52a8\u3002
+    """Initialize the miniQMT strategy; the download runs in ``after_init``.
 
-    \u53c2\u6570\uff1a
-        C: \u5927 QMT \u6ce8\u5165\u7684 ``ContextInfo``\uff1b\u672c\u56de\u8c03\u4e0d\u8bfb\u53d6\u884c\u60c5\u4e5f\u4e0d\u4e0b\u5355\u3002
+    Args:
+        C: ContextInfo injected by miniQMT. This callback neither reads market
+            data nor places orders.
 
-    \u8fd4\u56de\uff1a
-        \u65e0\u8fd4\u56de\u503c\u3002
+    Returns:
+        None.
     """
-    print("QMT daily downloader init")
+    # The interpreter version decides which syntax quant.qmt_downloader may use,
+    # so print it up front to make compatibility failures easy to diagnose.
+    print("QMT daily downloader init, python {0}".format(sys.version))
 
 
 def after_init(C):
-    u"""\u5728\u5927 QMT \u73af\u5883\u51c6\u5907\u5b8c\u6210\u540e\u6267\u884c\u4e14\u4ec5\u6267\u884c\u4e00\u6b21\u4e0b\u8f7d\u4efb\u52a1\u3002
+    """Run the download task exactly once after miniQMT finishes startup.
 
-    \u53c2\u6570\uff1a
-        C: \u5927 QMT \u6ce8\u5165\u7684 ``ContextInfo``\uff0c\u7528\u4e8e\u8c03\u7528\u884c\u60c5\u3001\u8d22\u52a1\u548c\u9664\u6743\u63a5\u53e3\u3002
+    Args:
+        C: ContextInfo injected by miniQMT, used for market data, financial
+            statement and corporate action interfaces.
 
-    \u8fd4\u56de\uff1a
-        \u65e0\u8fd4\u56de\u503c\uff1b\u5f02\u5e38\u4f1a\u5b8c\u6574\u6253\u5370\u5e76\u7ee7\u7eed\u5411 QMT \u629b\u51fa\u4ee5\u663e\u793a\u5931\u8d25\u72b6\u6001\u3002
+    Returns:
+        None. Exceptions are printed in full and re-raised so miniQMT shows the
+        strategy as failed.
     """
     global _STARTED
     if _STARTED:
@@ -51,12 +66,13 @@ def after_init(C):
 
 
 def handlebar(C):
-    u"""\u4fdd\u7559\u5927 QMT \u6807\u51c6\u56de\u8c03\uff0c\u4f46\u4e0d\u5728\u6bcf\u6839\u884c\u60c5\u67f1\u4e0a\u91cd\u590d\u4e0b\u8f7d\u3002
+    """Keep the standard miniQMT callback without downloading on every bar.
 
-    \u53c2\u6570\uff1a
-        C: \u5927 QMT \u6ce8\u5165\u7684 ``ContextInfo``\uff1b\u8be5\u53c2\u6570\u4ec5\u7528\u4e8e\u6ee1\u8db3\u6807\u51c6\u7b56\u7565\u7b7e\u540d\u3002
+    Args:
+        C: ContextInfo injected by miniQMT. Only present to satisfy the
+            standard strategy signature; it is unused.
 
-    \u8fd4\u56de\uff1a
-        \u65e0\u8fd4\u56de\u503c\u3002
+    Returns:
+        None.
     """
     return None

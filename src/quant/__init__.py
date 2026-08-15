@@ -5,9 +5,11 @@
 ``factor_research`` 依赖 scikit-learn 与 lightgbm，
 ``market_data`` 依赖 duckdb 与 fastapi。
 在包入口做即时导入会让轻量场景被迫加载全部三方依赖，因此这里保持空实现。
-"""
 
-from __future__ import annotations
+本文件位于 ``quant.qmt_downloader`` 的导入链首位，会被大 QMT 内置 Python 执行。
+该解释器早于 3.7，没有 ``from __future__ import annotations``，因此这里不得书写
+任何仅高版本可用的语法或 ``__future__`` 导入。
+"""
 
 __version__ = "0.1.0"
 

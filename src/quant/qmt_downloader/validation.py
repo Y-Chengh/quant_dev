@@ -150,15 +150,54 @@ def find_missing_kline(frame, symbols, trade_dates):
         每个填充后仍缺失的证券日一条 ``WARNING``；停牌日应由 QMT 的
         ``suspend_flag=1`` 补齐行表示，不会进入缺口日志。
     """
-    existing = set()
-    if not frame.empty:
-        existing = set(zip(frame["code"].astype(str), frame["trade_date"].astype(str)))
+    existing = _existing_pairs(frame)
     issues = []
     for code in symbols:
         for trade_date in trade_dates:
             if (code, trade_date) not in existing:
                 issues.append(_issue("WARNING", "kline_1d", code, trade_date, "填充后仍无日线；可能为未上市、退市或本地缓存缺失"))
     return issues
+
+
+def missing_dates_by_code(frame, symbols, trade_dates):
+    """按证券汇总缺失交易日，不为每个证券日构造问题字典。
+
+    与 ``find_missing_kline`` 判定口径完全一致，供只需要缺失集合的调用方使用；
+    全区间回溯下单批次的缺失证券日可达数十万个，逐个物化问题字典既慢又占内存。
+
+    参数：
+        frame: 当前批次已经取得的标准日线数据。
+        symbols: 本次请求的完整证券代码列表。
+        trade_dates: 需要检查的交易日序列。
+
+    返回：
+        ``code -> 缺失交易日集合`` 字典；没有缺失的证券不出现在结果中。
+    """
+    existing = _existing_pairs(frame)
+    dates = [str(trade_date) for trade_date in trade_dates]
+    output = {}
+    for code in symbols:
+        code_key = str(code)
+        missing = {
+            trade_date for trade_date in dates if (code_key, trade_date) not in existing
+        }
+        if missing:
+            output[code_key] = missing
+    return output
+
+
+def _existing_pairs(frame):
+    """取出已有行情的证券和交易日联合键集合。
+
+    参数：
+        frame: 标准日线 ``DataFrame``，允许为空。
+
+    返回：
+        ``(code, trade_date)`` 字符串二元组集合。
+    """
+    if frame is None or frame.empty:
+        return set()
+    return set(zip(frame["code"].astype(str), frame["trade_date"].astype(str)))
 
 
 def _issue(level, dataset, code, date_value, message):

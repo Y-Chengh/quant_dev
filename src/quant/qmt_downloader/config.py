@@ -30,6 +30,71 @@ if _SHANGHAI_TZ is None:
     _SHANGHAI_TZ = timezone(timedelta(hours=8), name="CST")
 
 
+def strip_jsonc(text):
+    """把 JSONC 文本转换为标准 JSON 文本，便于交给 ``json`` 解析。
+
+    去掉 ``//`` 行注释、``/* */`` 块注释，并清除对象或数组闭合括号前的多余逗号。
+    注释和多余逗号都替换为等长空白且保留换行，因此解析报错的行列号仍与原始文件
+    一致。字符串字面量内部的 ``//``、``/*`` 和逗号原样保留，Windows 路径中的
+    ``\\\\`` 等转义序列不会被误判为字符串结束。
+
+    参数：
+        text: 配置文件原始文本，已去除 BOM，可以包含注释和多余逗号。
+
+    返回：
+        与输入等长的标准 JSON 文本；本函数不校验语义，非法结构仍由 ``json`` 报错。
+    """
+    result = []
+    index = 0
+    length = len(text)
+    in_string = False
+    # 最近一个尚未确认是否多余的逗号在 result 中的下标；-1 表示当前没有待定逗号。
+    pending_comma = -1
+    while index < length:
+        char = text[index]
+        if in_string:
+            result.append(char)
+            if char == "\\" and index + 1 < length:
+                result.append(text[index + 1])
+                index += 2
+                continue
+            if char == '"':
+                in_string = False
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            pending_comma = -1
+            result.append(char)
+            index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "/":
+            while index < length and text[index] not in "\r\n":
+                result.append(" ")
+                index += 1
+            continue
+        if char == "/" and index + 1 < length and text[index + 1] == "*":
+            end = text.find("*/", index + 2)
+            if end < 0:
+                raise ValueError("下载器配置存在未闭合的块注释 /*")
+            for blanked in text[index : end + 2]:
+                result.append(blanked if blanked in "\r\n" else " ")
+            index = end + 2
+            continue
+        if char == ",":
+            pending_comma = len(result)
+        elif char in "}]":
+            if pending_comma >= 0:
+                result[pending_comma] = " "
+            pending_comma = -1
+        elif not char.isspace():
+            # 逗号后出现真实内容说明它是分隔符；空白和注释不改变待定状态。
+            pending_comma = -1
+        result.append(char)
+        index += 1
+    return "".join(result)
+
+
 class DownloaderConfig(object):
     """保存经过校验的大 QMT 下载任务配置。"""
 
@@ -87,17 +152,25 @@ class DownloaderConfig(object):
 
     @classmethod
     def from_json(cls, path):
-        """从 UTF-8 JSON 文件构造下载配置。
+        """从 UTF-8 JSONC 文件构造下载配置。
 
         参数：
-            path: 配置文件路径；文件内容必须是 JSON 对象，未知键会被忽略。
+            path: 配置文件路径；内容为 JSON 对象，允许 ``//`` 行注释、``/* */``
+                块注释和对象或数组末尾的多余逗号，未知键会被忽略。
 
         返回：
             已完成字段和业务规则校验的 ``DownloaderConfig``。
         """
         config_path = Path(path)
         with config_path.open("r", encoding="utf-8-sig") as handle:
-            values = json.load(handle)
+            text = handle.read()
+        try:
+            values = json.loads(strip_jsonc(text))
+        except ValueError as error:
+            # 注释和多余逗号已替换为等长空白，因此报错的行列号仍指向原文件位置。
+            raise ValueError(
+                "下载器配置 {0} 解析失败：{1}".format(config_path, error)
+            )
         if not isinstance(values, dict):
             raise ValueError("下载器配置根节点必须是 JSON 对象")
         return cls(values)

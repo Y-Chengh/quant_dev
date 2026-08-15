@@ -17,7 +17,12 @@ from .gateway import (
     KLINE_COLUMNS,
 )
 from .storage import IssueCollector
-from .validation import correct_kline_prices, find_missing_kline, validate_kline
+from .validation import (
+    correct_kline_prices,
+    find_missing_kline,
+    missing_dates_by_code,
+    validate_kline,
+)
 
 
 class QmtDailyDownloader(object):
@@ -44,13 +49,35 @@ class QmtDailyDownloader(object):
         self.batches = []
         self.job_key = ""
         self.partition_scope = {}
+        self.started_at = None
+
+    def _with_elapsed(self, summary):
+        """把本次运行的总耗时写入摘要字典。
+
+        耗时从 ``run`` 入口开始计时，覆盖证券池解析、下载、校验和分区落盘的全过程；
+        无论任务成功、无业务下载还是已是最新，返回的摘要都带有耗时字段。
+
+        参数：
+            summary: 已填好业务字段的摘要字典；本方法原地补充耗时后返回同一对象。
+
+        返回：
+            追加了 ``elapsed_seconds``（浮点秒，保留三位小数）和 ``elapsed``
+            （``H:MM:SS`` 文本）的摘要字典。
+        """
+        seconds = 0.0 if self.started_at is None else time.time() - self.started_at
+        summary["elapsed_seconds"] = round(seconds, 3)
+        summary["elapsed"] = _format_elapsed(seconds)
+        return summary
 
     def run(self):
         """依次执行证券池解析、数据抽取、质量检查和日分区保存。
 
         返回：
-            本次运行摘要字典，包含任务标识、证券数、交易日数、问题数和报告路径。
+            本次运行摘要字典，包含任务标识、证券数、交易日数、问题数、报告路径和
+            总耗时。
         """
+        # 计时起点放在最前，让证券池解析和交易日历请求也计入总耗时。
+        self.started_at = time.time()
         self.symbols = self.gateway.resolve_symbols(self.config.symbols, self.config.sector)
         self.partition_scope = {
             "schema_version": 2,
@@ -94,7 +121,12 @@ class QmtDailyDownloader(object):
                 "issue_report": str(report_path),
                 "status": "up_to_date",
             }
-            self.logger.info("增量数据已是最新，无需下载 summary=%s", json.dumps(summary, ensure_ascii=False))
+            self._with_elapsed(summary)
+            self.logger.info(
+                "增量数据已是最新，无需下载 用时=%s summary=%s",
+                summary["elapsed"],
+                json.dumps(summary, ensure_ascii=False),
+            )
             return summary
 
         trade_dates, calendar_issues = self.gateway.fetch_trading_dates(
@@ -110,11 +142,13 @@ class QmtDailyDownloader(object):
 
         all_datasets_succeeded = True
         if "kline_1d" in self.config.datasets or "finance_daily" in self.config.datasets:
-            failed = self._collect_kline(trade_dates)
-            if failed:
-                all_datasets_succeeded = False
-                self.issues.add("ERROR", "kline_1d", "", "", "存在失败批次，未生成最终日线分区；下次以相同配置运行会从断点继续")
+            lifecycle = {}
+            instrument_info = None
+            instrument_failed = False
             if "kline_1d" in self.config.datasets:
+                # 生命周期信息必须先于日线收集取得：逐日缺口检查据此在生成阶段就跳过
+                # 未上市和已退市的证券日。全区间回溯下这类证券日占三成以上，若等到收集
+                # 结束后再过滤，中间会堆积上千万条随即被丢弃的提示。
                 instrument_info, instrument_failed = self._collect_instrument_info()
                 if instrument_failed:
                     all_datasets_succeeded = False
@@ -125,7 +159,19 @@ class QmtDailyDownloader(object):
                         "",
                         "上市退市信息获取失败，无法可靠过滤日线缺失提示",
                     )
+                    self.logger.error(
+                        "缺少上市退市信息，跳过本次日线收集以免产生无法过滤的缺失提示；"
+                        "修复后重新运行会从断点继续"
+                    )
                 else:
+                    lifecycle = _lifecycle_windows(instrument_info)
+            if not instrument_failed:
+                failed = self._collect_kline(trade_dates, lifecycle)
+                if failed:
+                    all_datasets_succeeded = False
+                    self.issues.add("ERROR", "kline_1d", "", "", "存在失败批次，未生成最终日线分区；下次以相同配置运行会从断点继续")
+                if instrument_info is not None:
+                    # 生成阶段已按存续期过滤，这里作为兜底再扫一遍，正常情况下不会命中。
                     self._filter_kline_issues(instrument_info)
 
         if "finance_raw" in self.config.datasets or "finance_daily" in self.config.datasets:
@@ -171,7 +217,12 @@ class QmtDailyDownloader(object):
             "issue_report": str(report_path),
             "line_correct_report": str(correction_report_path),
         }
-        self.logger.info("任务结束 summary=%s", json.dumps(summary, ensure_ascii=False))
+        self._with_elapsed(summary)
+        self.logger.info(
+            "任务结束 用时=%s summary=%s",
+            summary["elapsed"],
+            json.dumps(summary, ensure_ascii=False),
+        )
         return summary
 
     def _collect_instrument_info(self):
@@ -307,12 +358,7 @@ class QmtDailyDownloader(object):
         返回：
             无返回值；未上市或已退市期间的缺失提示从问题报告中移除，其他缺失保留。
         """
-        lifecycle = {}
-        for row in instrument_info.to_dict("records"):
-            lifecycle[str(row.get("code"))] = (
-                str(row.get("open_date") or ""),
-                str(row.get("expire_date") or ""),
-            )
+        lifecycle = _lifecycle_windows(instrument_info)
         kept = []
         removed = 0
         for issue in self.issues.items:
@@ -349,7 +395,12 @@ class QmtDailyDownloader(object):
             "issue_report": str(report_path),
             "status": status,
         }
-        self.logger.info("任务无业务下载 summary=%s", json.dumps(summary, ensure_ascii=False))
+        self._with_elapsed(summary)
+        self.logger.info(
+            "任务无业务下载 用时=%s summary=%s",
+            summary["elapsed"],
+            json.dumps(summary, ensure_ascii=False),
+        )
         return summary
 
     def _log_batch_progress(self, dataset, batch_id, symbols, status):
@@ -553,9 +604,7 @@ class QmtDailyDownloader(object):
         output = {}
         if frame is None or frame.empty or not dates:
             return output
-        missing_by_code = {}
-        for issue in find_missing_kline(frame, symbols, dates):
-            missing_by_code.setdefault(str(issue["code"]), set()).add(str(issue["date"]))
+        missing_by_code = missing_dates_by_code(frame, symbols, dates)
         span_by_code = {}
         for code_value, date_value in zip(
             frame["code"].astype(str), frame["trade_date"].astype(str)
@@ -765,15 +814,18 @@ class QmtDailyDownloader(object):
             reason,
         )
 
-    def _collect_kline(self, expected_trade_dates):
+    def _collect_kline(self, expected_trade_dates, lifecycle=None):
         """按证券批次下载日线并写入可恢复 staging。
 
         参数：
             expected_trade_dates: 大 QMT 交易日历返回的预期交易日序列。
+            lifecycle: ``_lifecycle_windows`` 生成的证券生命周期映射；逐日缺口检查
+                据此跳过未上市和已退市的证券日。缺省或为空时不做筛选。
 
         返回：
             至少一个批次或预期交易日未完成时返回 ``True``；成功时逐日写最终分区。
         """
+        lifecycle = lifecycle or {}
         dataset = "kline_1d"
         failed = False
         for batch_id, symbols in enumerate(self.batches):
@@ -912,7 +964,9 @@ class QmtDailyDownloader(object):
             if daily.empty:
                 missing_dates.append(trade_date)
             else:
-                quality_issues = find_missing_kline(daily, self.symbols, [trade_date])
+                quality_issues = find_missing_kline(
+                    daily, _codes_alive_on(self.symbols, lifecycle, trade_date), [trade_date]
+                )
                 self.issues.extend(quality_issues)
                 self._log_global_issue_details(dataset, quality_issues)
         if missing_dates:
@@ -1444,6 +1498,54 @@ class QmtDailyDownloader(object):
             self.logger.info("整日完成水位写入 date=%s path=%s", trade_date, path)
 
 
+def _lifecycle_windows(instrument_info):
+    """把上市退市信息表转成证券生命周期映射。
+
+    参数：
+        instrument_info: ``fetch_instrument_info`` 返回的证券生命周期信息表。
+
+    返回：
+        ``code -> (open_date, expire_date)`` 字典；日期缺失时用空字符串表示该侧
+        不设边界，调用方据此判定某交易日是否处于存续期。
+    """
+    lifecycle = {}
+    if instrument_info is None or instrument_info.empty:
+        return lifecycle
+    for row in instrument_info.to_dict("records"):
+        open_date = row.get("open_date")
+        expire_date = row.get("expire_date")
+        lifecycle[str(row.get("code"))] = (
+            "" if pd.isna(open_date) else str(open_date or ""),
+            "" if pd.isna(expire_date) else str(expire_date or ""),
+        )
+    return lifecycle
+
+
+def _codes_alive_on(symbols, lifecycle, trade_date):
+    """筛出在指定交易日处于存续期的证券代码。
+
+    参数：
+        symbols: 当前证券池代码序列。
+        lifecycle: ``_lifecycle_windows`` 生成的生命周期映射；为空时不做筛选。
+        trade_date: 八位交易日。
+
+    返回：
+        该交易日应当有行情的代码列表；判定口径与 ``_filter_kline_issues`` 一致，
+        因此生成阶段跳过的证券日与兜底过滤会删除的完全相同。
+    """
+    if not lifecycle:
+        return list(symbols)
+    output = []
+    for code in symbols:
+        open_date, expire_date = lifecycle.get(str(code), ("", ""))
+        if open_date and trade_date < open_date:
+            continue
+        if expire_date and trade_date > expire_date:
+            continue
+        output.append(code)
+    return output
+
+
 def _iter_batches(values, batch_size):
     """按固定大小顺序切分证券池。
 
@@ -1456,6 +1558,22 @@ def _iter_batches(values, batch_size):
     """
     for start in range(0, len(values), int(batch_size)):
         yield values[start : start + int(batch_size)]
+
+
+def _format_elapsed(seconds):
+    """把耗时秒数格式化为便于阅读的 ``H:MM:SS`` 文本。
+
+    全市场长区间回溯常以小时计，因此不折算为天，小时位直接累加且不补零；秒数向下
+    取整，避免摘要里出现与日志时间戳对不上的进位。
+
+    参数：
+        seconds: 非负耗时秒数；负值按 0 处理，防止时钟回拨产生负号文本。
+
+    返回：
+        形如 ``0:03:21`` 或 ``17:05:44`` 的耗时文本。
+    """
+    total = int(max(0.0, seconds))
+    return "{0}:{1:02d}:{2:02d}".format(total // 3600, total % 3600 // 60, total % 60)
 
 
 def _make_job_key(config, symbols):
