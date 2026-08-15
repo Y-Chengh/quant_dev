@@ -112,8 +112,18 @@ class _RowValidationMixin(_CheckerState):
                 duplicate_index,
             )
         present: set[str] = set()
-        for index, row in frame.iterrows():
-            code = normalized_codes.loc[index]
+        # 逐行取值是整轮自检的绝对热点：一次全量审计要处理数千万行，而 iterrows 每行
+        # 都要新建一个 Series，行内十余次 row.get 又都走 Series 的索引查找。一次性转成
+        # 纯 dict 记录后按位置遍历，取值退化为字典查找，字段语义和遍历顺序保持不变。
+        labels = frame.index.tolist()
+        codes = normalized_codes.tolist()
+        records = frame.to_dict("records")
+        # 同一分区内 trade_date 几乎全部相同，而日期规范化每次都要走 strptime，
+        # 按原始值缓存可以把整日的解析次数压到不同取值的个数。
+        date_cache: dict[Any, str | None] = {}
+        for position, row in enumerate(records):
+            index = labels[position]
+            code = codes[position]
             source_path = row.get("_source_file")
             if isinstance(source_path, str) and source_path:
                 path = Path(source_path)
@@ -121,7 +131,15 @@ class _RowValidationMixin(_CheckerState):
                     index = int(row.get("_source_row")) - 2
                 except (TypeError, ValueError):
                     pass
-            row_date = _normalize_date_text(row.get("trade_date"))
+            raw_date = row.get("trade_date")
+            try:
+                row_date = date_cache[raw_date]
+            except (KeyError, TypeError):
+                row_date = _normalize_date_text(raw_date)
+                try:
+                    date_cache[raw_date] = row_date
+                except TypeError:
+                    pass
             if not code or code.lower() == "nan":
                 self._row_issue(
                     "KLINE_CODE_MISSING",
@@ -240,7 +258,7 @@ class _RowValidationMixin(_CheckerState):
         """验证一行 OHLC、成交量、成交额和停牌标志。
 
         参数：
-            row: 当前证券日线原始字段。
+            row: 当前证券日线原始字段，为该行的列名到原始值映射。
             code: 当前证券代码。
             date_value: 当前交易日期。
             path: 当前记录来源 CSV 路径。
@@ -420,7 +438,7 @@ class _RowValidationMixin(_CheckerState):
 
     def _validate_continuity(
         self,
-        row: pd.Series,
+        row: dict[str, Any],
         code: str,
         date_value: str,
         path: Path,
@@ -431,7 +449,7 @@ class _RowValidationMixin(_CheckerState):
         """检查跨日昨收连续性、极端涨跌和成交量数量级突变。
 
         参数：
-            row: 当前证券日线原始字段。
+            row: 当前证券日线原始字段，为该行的列名到原始值映射。
             code: 当前证券代码。
             date_value: 当前交易日期。
             path: 当前记录来源 CSV 路径。

@@ -368,12 +368,17 @@ class _ReferenceLoadingMixin(_CheckerState):
                 source_row=int(index) + 2,
             )
         first_rows = normalized.drop_duplicates("code", keep="first").set_index("code")
+        # 逐只证券扫一遍整列求首次出现的行号是 O(证券数 × 快照行数)，五千只证券要比较
+        # 两千五百万次；改为一次遍历建立代码到首个索引标签的映射，结果完全相同。
+        first_labels: dict[Any, Any] = {}
+        for label, value in zip(normalized.index, normalized["code"]):
+            first_labels.setdefault(value, label)
         for code in symbols:
             if code not in first_rows.index:
                 lifecycle[code] = (calendar[0], None)
                 continue
             row = first_rows.loc[code]
-            row_number = int(normalized.index[normalized["code"] == code][0]) + 2
+            row_number = int(first_labels[code]) + 2
             open_date, open_invalid = _parse_lifecycle_value(row.get("open_date"))
             expire_date, expire_invalid = _parse_lifecycle_value(row.get("expire_date"))
             if open_invalid:

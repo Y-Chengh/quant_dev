@@ -172,25 +172,33 @@ def _write_corporate_action(
     )
 
 
-def _write_staging_kline(root: Path, date_value: str, rows: list[dict[str, object]]) -> None:
+def _write_staging_kline(
+    root: Path,
+    date_value: str,
+    rows: list[dict[str, object]],
+    batch_id: int = 0,
+) -> None:
     """写入一个与 QMT runner 相同的 staging 日批次及行数元数据。
 
     参数：
         root: staging 作业目录。
         date_value: 八位交易日期。
         rows: 需要写入该日期的标准日线行。
+        batch_id: 批次编号，决定文件名 ``batch_%05d.csv``；同一日期写多个批次时
+            用它区分，缺省 0 表示单批次场景。
     返回：
         无返回值。
     """
 
     directory = root / ("kline_daily_" + date_value)
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "batch_00000.csv"
+    name = f"batch_{batch_id:05d}"
+    path = directory / (name + ".csv")
     pd.DataFrame(rows, columns=KLINE_COLUMNS).to_csv(
         path, index=False, encoding="utf-8-sig", lineterminator="\n"
     )
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    (directory / "batch_00000.meta.json").write_text(
+    (directory / (name + ".meta.json")).write_text(
         json.dumps({"rows": len(rows), "sha256": digest}), encoding="utf-8"
     )
 
@@ -411,22 +419,33 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             root = Path(directory)
             store = DailyPartitionStore(root)
             calendar = _write_calendar(root, ["1704153600000", "1704240000000"])
+            # 快照按 code 排序落盘，非法退市日期的证券位于 CSV 第 3 行，用来核对
+            # 生命周期问题的行号取自该证券首次出现的位置，而不是固定的第一行。
             _write_instruments(
                 store,
-                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": "bad-date"}],
-                ["000001.SZ"],
+                [
+                    {"code": "000001.SZ", "open_date": "20240102", "expire_date": ""},
+                    {"code": "600000.SH", "open_date": "20240102", "expire_date": "bad-date"},
+                ],
+                ["000001.SZ", "600000.SH"],
             )
             _write_kline(
                 store,
                 "20240102",
-                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
-                ["000001.SZ"],
+                [
+                    _bar("000001.SZ", "20240102", 10.0, 9.8),
+                    _bar("600000.SH", "20240102", 20.0, 19.8),
+                ],
+                ["000001.SZ", "600000.SH"],
             )
             _write_kline(
                 store,
                 "20240103",
-                [_bar("000001.SZ", "20240103", 10.1, 10.0)],
-                ["000001.SZ"],
+                [
+                    _bar("000001.SZ", "20240103", 10.1, 10.0),
+                    _bar("600000.SH", "20240103", 20.1, 20.0),
+                ],
+                ["000001.SZ", "600000.SH"],
             )
             marker = root / "instrument_info" / "snapshot=latest" / "_SUCCESS.json"
             marker.write_text("[]", encoding="utf-8")
@@ -441,6 +460,10 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             codes = set(result.issues["issue_code"])
             self.assertIn("AUXILIARY_MARKER_SCHEMA_INVALID", codes)
             self.assertIn("EXPIRE_DATE_INVALID", codes)
+            expire = result.issues.loc[result.issues["issue_code"] == "EXPIRE_DATE_INVALID"]
+            self.assertEqual(len(expire), 1)
+            self.assertEqual(expire.iloc[0]["code"], "600000.SH")
+            self.assertEqual(int(expire.iloc[0]["source_row"]), 3)
             self.assertEqual(result.coverage_by_date["trade_date"].tolist(), ["20240102", "20240103"])
 
             errors = result.issues.loc[result.issues["level"] == "ERROR"]
@@ -735,6 +758,121 @@ class QmtDataSelfCheckTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             SelfCheckConfig(output_root=Path("."), progress_every=-1)
+
+    def test_row_issues_keep_per_row_code_and_csv_line(self) -> None:
+        """多行分区中每条问题必须落到正确的证券和 CSV 行号，不能整体错位。"""
+
+        symbols = ["000001.SZ", "000002.SZ", "600000.SH"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102"])
+            _write_instruments(
+                store,
+                [
+                    {"code": code, "open_date": "20240102", "expire_date": ""}
+                    for code in symbols
+                ],
+                symbols,
+            )
+            # 分区按 code 排序落盘，第二只证券（CSV 第 3 行）的最高价低于收盘价。
+            bad = _bar("000002.SZ", "20240102", 20.0, 19.8)
+            bad["high"] = 19.0
+            bad["low"] = 18.5
+            # 第三只证券（CSV 第 4 行）的 trade_date 与分区日期不符：逐行日期规范化
+            # 带缓存，必须保证同一分区内不同日期各自解析，不会复用第一行的结果。
+            wrong_date = _bar("600000.SH", "20240103", 30.0, 29.8)
+            _write_kline(
+                store,
+                "20240102",
+                [
+                    _bar("000001.SZ", "20240102", 10.0, 9.8),
+                    bad,
+                    wrong_date,
+                ],
+                symbols,
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            ohlc = result.issues.loc[
+                result.issues["issue_code"] == "INVALID_OHLC_RELATION"
+            ]
+            self.assertEqual(len(ohlc), 1)
+            self.assertEqual(ohlc.iloc[0]["code"], "000002.SZ")
+            self.assertEqual(int(ohlc.iloc[0]["source_row"]), 3)
+            self.assertIn("high=19.0", ohlc.iloc[0]["actual"])
+            mismatch = result.issues.loc[
+                result.issues["issue_code"] == "KLINE_DATE_PARTITION_MISMATCH"
+            ]
+            self.assertEqual(len(mismatch), 1)
+            self.assertEqual(mismatch.iloc[0]["code"], "600000.SH")
+            self.assertEqual(int(mismatch.iloc[0]["source_row"]), 4)
+            self.assertEqual(mismatch.iloc[0]["actual"], "20240103")
+
+    def test_staging_row_issues_use_batch_file_and_row(self) -> None:
+        """staging 模式的问题必须指向批次文件及其内部行号，而非合并后的位置。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            staging = root / "staging" / "qmt_job"
+            calendar = _write_calendar(root, ["20240102"])
+            _write_instruments(
+                store,
+                [
+                    {"code": "000001.SZ", "open_date": "20240102", "expire_date": ""},
+                    {"code": "600000.SH", "open_date": "20240102", "expire_date": ""},
+                    {"code": "300001.SZ", "open_date": "20240102", "expire_date": ""},
+                ],
+                ["000001.SZ", "600000.SH", "300001.SZ"],
+            )
+            bad = _bar("600000.SH", "20240102", 20.0, 19.8, volume=0.0, amount=0.0)
+            # 分成两个批次：问题必须落到自己所在批次文件，而不是合并帧中的位置。
+            _write_staging_kline(
+                staging,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8), bad],
+                batch_id=0,
+            )
+            _write_staging_kline(
+                staging,
+                "20240102",
+                [_bar("300001.SZ", "20240102", 30.0, 29.8, volume=0.0, amount=0.0)],
+                batch_id=1,
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    staging_root=root / "staging",
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            zero_volume = result.issues.loc[
+                result.issues["issue_code"] == "ACTIVE_ZERO_VOLUME"
+            ].set_index("code")
+            self.assertEqual(len(zero_volume), 2)
+            self.assertEqual(int(zero_volume.loc["600000.SH", "source_row"]), 3)
+            self.assertTrue(
+                str(zero_volume.loc["600000.SH", "source_file"]).endswith(
+                    "batch_00000.csv"
+                )
+            )
+            self.assertEqual(int(zero_volume.loc["300001.SZ", "source_row"]), 2)
+            self.assertTrue(
+                str(zero_volume.loc["300001.SZ", "source_file"]).endswith(
+                    "batch_00001.csv"
+                )
+            )
 
     def test_partitions_outside_audit_range_are_not_read(self) -> None:
         """限定区间时不得读取区间外分区，其损坏也不应进入本次报告。"""
