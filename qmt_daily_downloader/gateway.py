@@ -179,6 +179,13 @@ class QmtGateway(object):
             return pd.DataFrame(columns=KLINE_COLUMNS), issues
 
         fields = list(KLINE_FIELD_MAP.keys())
+        market_started_at = time.perf_counter()
+        self.logger.info(
+            "日线批量读取开始 stage=get_market_data_ex symbols=%d start=%s end=%s fill_data=True",
+            len(available),
+            start_date,
+            end_date,
+        )
         try:
             result = self._retry(
                 lambda: self.context.get_market_data_ex(
@@ -194,12 +201,35 @@ class QmtGateway(object):
                 ),
                 "读取日线批次",
             )
+            result_rows = 0
+            unsized_results = 0
+            if isinstance(result, dict):
+                for value in result.values():
+                    if value is None:
+                        continue
+                    try:
+                        result_rows += len(value)
+                    except TypeError:
+                        # 非标准 QMT 返回值不应影响已成功的行情读取结果。
+                        unsized_results += 1
+            if unsized_results:
+                self.logger.warning(
+                    "日线批量读取存在 %d 个无法计数的非常规返回值，rows 统计不含这部分",
+                    unsized_results,
+                )
+            self.logger.info(
+                "日线批量读取完成 stage=get_market_data_ex symbols=%d rows=%d elapsed=%.2fs",
+                len(available),
+                result_rows,
+                time.perf_counter() - market_started_at,
+            )
         except Exception as error:
             self.logger.exception(
-                "日线读取异常 stage=get_market_data_ex symbols=%s period=1d start=%s end=%s fill_data=True subscribe=False error_type=%s error=%s",
+                "日线读取异常 stage=get_market_data_ex symbols=%s period=1d start=%s end=%s fill_data=True subscribe=False elapsed=%.2fs error_type=%s error=%s",
                 ",".join(available),
                 start_date,
                 end_date,
+                time.perf_counter() - market_started_at,
                 type(error).__name__,
                 error,
             )
@@ -217,7 +247,9 @@ class QmtGateway(object):
                 )
             return pd.DataFrame(columns=KLINE_COLUMNS), issues
 
-        rows = []
+        parse_started_at = time.perf_counter()
+        parts = []
+        date_cache = {}
         result = result or {}
         for code in available:
             raw = result.get(code)
@@ -226,18 +258,52 @@ class QmtGateway(object):
                 # 完全没有返回记录的代码留给全批次缺口检查，避免把停牌误报为缓存缺失。
                 continue
             frame = raw if isinstance(raw, pd.DataFrame) else pd.DataFrame(raw)
-            for index_value, values in frame.iterrows():
-                trade_date = normalize_date(index_value)
-                if trade_date is None:
-                    time_value = values.get("time") if "time" in values else None
-                    trade_date = normalize_date(time_value)
-                if trade_date is None or trade_date < start_date or trade_date > end_date:
-                    continue
-                row = {"code": code, "trade_date": trade_date}
-                for source, target in KLINE_FIELD_MAP.items():
-                    row[target] = finite_number(values.get(source))
-                rows.append(row)
-        return pd.DataFrame(rows, columns=KLINE_COLUMNS), issues
+            trade_dates = [_cached_normalize_date(value, date_cache) for value in frame.index]
+            if "time" in frame.columns and any(value is None for value in trade_dates):
+                fallback = list(frame["time"])
+                trade_dates = [
+                    value
+                    if value is not None
+                    else _cached_normalize_date(fallback[position], date_cache)
+                    for position, value in enumerate(trade_dates)
+                ]
+            keep = [
+                position
+                for position, value in enumerate(trade_dates)
+                if value is not None and start_date <= value <= end_date
+            ]
+            if not keep:
+                continue
+            selected = frame.iloc[keep]
+            columns = {
+                "code": [code] * len(keep),
+                "trade_date": [trade_dates[position] for position in keep],
+            }
+            for source, target in KLINE_FIELD_MAP.items():
+                if source in selected.columns:
+                    columns[target] = _finite_values(selected[source])
+                else:
+                    columns[target] = [float("nan")] * len(keep)
+            parts.append(pd.DataFrame(columns, columns=KLINE_COLUMNS))
+        if parts:
+            output = pd.concat(parts, ignore_index=True)
+        else:
+            output = pd.DataFrame(columns=KLINE_COLUMNS)
+        returned_start = output["trade_date"].min() if not output.empty else ""
+        returned_end = output["trade_date"].max() if not output.empty else ""
+        self.logger.info(
+            "日线数据解析完成 stage=parse_kline requested_start=%s requested_end=%s returned_start=%s returned_end=%s symbols=%d returned_symbols=%d rows=%d elapsed=%.2fs issues=%d",
+            start_date,
+            end_date,
+            returned_start,
+            returned_end,
+            len(available),
+            output["code"].nunique() if not output.empty else 0,
+            len(output),
+            time.perf_counter() - parse_started_at,
+            len(issues),
+        )
+        return output, issues
 
     def fetch_trading_dates(self, calendar_symbol, start_date, end_date):
         """从大 QMT 交易日接口读取请求区间的预期交易日。
@@ -623,6 +689,40 @@ def _finance_columns(fields):
     return ["code", "report_date", "announce_date"] + [
         field.split(".", 1)[1] for field in fields[2:]
     ]
+
+
+def _cached_normalize_date(value, cache):
+    """带缓存的 ``normalize_date``；一个批次内各证券的日期索引高度重复。
+
+    参数：
+        value: QMT 日期索引值。
+        cache: 调用方持有的缓存字典，生命周期应限定在单个批次内。
+
+    返回：
+        与 ``normalize_date`` 完全一致的结果；不可哈希的值直接绕过缓存。
+    """
+    try:
+        if value in cache:
+            return cache[value]
+    except TypeError:
+        return normalize_date(value)
+    normalized = normalize_date(value)
+    cache[value] = normalized
+    return normalized
+
+
+def _finite_values(values):
+    """按列向量化实现 ``finite_number``。
+
+    参数：
+        values: 单只证券某个行情字段的 ``Series``。
+
+    返回：
+        ``numpy`` 浮点数组；非数值、无穷和 QMT 哨兵值统一为 ``NaN``，与
+        ``finite_number`` 返回 ``None`` 在数据表中等价。
+    """
+    numbers = pd.to_numeric(values, errors="coerce").astype("float64")
+    return numbers.where(numbers.abs() <= 1e100).values
 
 
 def _normalize_lifecycle_date(value):

@@ -40,14 +40,14 @@ from factor_research.reporting import (
 
 DATABASE = Path(r"D:\量化\market.duckdb")
 REPORT_ROOT = Path("logs/_search")
-CODE_LIMIT = 10
-DATA_START = "2024-01-01"
-DATA_END = "2025-12-31"
-SELECTION_START = "2024-06-01"
-HOLDOUT_START = "2025-07-01"
-HOLDOUT_END = "2025-12-31"
-HOLDOUT_TOP_K = 3
-SEARCH_N_JOBS = 4
+CODE_LIMIT = 500
+DATA_START = "2018-01-01"
+DATA_END = "2021-12-31"
+SELECTION_START = "2018-01-01"
+HOLDOUT_START = "2020-01-01"
+HOLDOUT_END = "2021-12-31"
+HOLDOUT_TOP_K = 20
+SEARCH_N_JOBS = 8
 SEARCH_BATCH_SIZE = 8
 GENETIC_POPULATION_SIZE = 96
 GENETIC_MAX_GENERATIONS = 8
@@ -139,7 +139,7 @@ def build_search_space() -> PipelineGrid:
     """
 
     return PipelineGrid(
-        sources=["close", "volume", "return_1d"],
+        sources=["close", "volume", "return_1d", "high", "low", "open"],
         stages=[
             [identity(), op("delta", periods=[1, 5])],
             [
@@ -156,14 +156,14 @@ def build_genetic_search_config() -> GeneticSearchConfig:
     """构造支持一元与多输入表达式递归组合的遗传搜索配置。
 
     返回：
-        使用收盘价、成交量和一日收益率为终端，并允许相关性输入继续递归搜索的
-        确定性遗传编程配置。
+        使用收盘价、成交量、一日收益率及最高价、最低价、开盘价为终端，并允许
+        相关性输入继续递归搜索的确定性遗传编程配置；数据源与网格空间保持一致。
     """
 
     periods = (1, 5, 10, 20)
     windows = (5, 10, 20)
     return GeneticSearchConfig(
-        sources=("close", "volume", "return_1d"),
+        sources=("close", "volume", "return_1d", "high", "low", "open"),
         operator_parameters={
             # 逐元素算术与连续数值变换。
             "add": {},

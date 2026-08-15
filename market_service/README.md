@@ -7,7 +7,7 @@ cd C:\Users\win10\Documents\quant\market_service
 C:\Users\win10\AppData\Local\Programs\Python\Python311\python.exe run_server.py
 ```
 
-浏览器打开 <http://127.0.0.1:9000>，接口文档位于 <http://127.0.0.1:9000/docs>。
+浏览器打开 <http://127.0.0.1:8000>，接口文档位于 <http://127.0.0.1:8000/docs>。
 
 服务只监听 `127.0.0.1`，不会暴露到局域网或公网。
 

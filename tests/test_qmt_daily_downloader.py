@@ -4,6 +4,7 @@
 import json
 import io
 import logging
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,20 +12,36 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from qmt_daily_downloader.config import DownloaderConfig
+from qmt_daily_downloader.config import DownloaderConfig, _resolve_incremental_lag_days
 from qmt_daily_downloader.finance import materialize_finance_daily
 from qmt_daily_downloader.gateway import FINANCE_FIELDS, QmtGateway
 from qmt_daily_downloader.runner import QmtDailyDownloader, _make_job_key
 from qmt_daily_downloader.state import CheckpointStore
 from qmt_daily_downloader.storage import DailyPartitionStore
-from qmt_daily_downloader.validation import find_missing_kline
+from qmt_daily_downloader.validation import (
+    correct_kline_prices,
+    find_missing_kline,
+    validate_kline,
+)
 
 
 class FakeContext(object):
-    """模拟大 QMT 内置 ContextInfo 的最小测试接口。"""
+    """模拟大 QMT 内置 ContextInfo 的最小测试接口。
+
+    子类通过覆盖 ``trading_dates`` 或 ``_kline_dates`` 配置缺失场景，
+    共用同一份造帧逻辑、交易日 count 断言和请求参数记录。
+    """
+
+    trading_dates = ["20240102", "20240103"]
+
+    def _kline_dates(self, code, start_date, end_date):
+        """返回单只证券在请求区间内应返回的交易日；子类按场景覆盖。"""
+        return [
+            value for value in self.trading_dates if start_date <= value <= end_date
+        ]
 
     def get_market_data_ex(self, fields, symbols, **kwargs):
-        """返回两天未复权日线。
+        """按 ``_kline_dates`` 生成请求区间内的未复权日线。
 
         参数：
             fields: 请求的行情字段列表；测试替身不据此删列。
@@ -35,22 +52,30 @@ class FakeContext(object):
             以证券代码为键的日线 ``DataFrame`` 字典。
         """
         self.last_market_kwargs = dict(kwargs)
+        start_date = kwargs.get("start_time")
+        end_date = kwargs.get("end_time")
         output = {}
         for offset, code in enumerate(symbols):
+            dates = self._kline_dates(code, start_date, end_date)
+            steps = [self.trading_dates.index(value) for value in dates]
             output[code] = pd.DataFrame(
                 {
-                    "open": [10.0 + offset, 10.5 + offset],
-                    "high": [11.0 + offset, 11.5 + offset],
-                    "low": [9.5 + offset, 10.0 + offset],
-                    "close": [10.5 + offset, 11.0 + offset],
-                    "preClose": [9.8 + offset, 10.5 + offset],
-                    "volume": [1000.0, 1200.0],
-                    "amount": [10200.0, 13000.0],
-                    "suspendFlag": [0.0, 0.0],
+                    "open": [10.0 + offset + 0.5 * step for step in steps],
+                    "high": [11.0 + offset + 0.5 * step for step in steps],
+                    "low": [9.5 + offset + 0.5 * step for step in steps],
+                    "close": [10.5 + offset + 0.5 * step for step in steps],
+                    "preClose": [9.8 + offset + 0.7 * step for step in steps],
+                    "volume": [1000.0 + 200.0 * step for step in steps],
+                    "amount": [10200.0 + 2800.0 * step for step in steps],
+                    "suspendFlag": [0.0] * len(dates),
                 },
-                index=["20240102", "20240103"],
+                index=dates,
             )
         return output
+
+    def get_stock_list_in_sector(self, sector):
+        """返回测试用沪深 A 股证券池。"""
+        return ["000001.SZ", "600000.SH"]
 
     def get_instrument_detail(self, code):
         """返回测试股票的上市、退市和交易状态信息。"""
@@ -63,7 +88,7 @@ class FakeContext(object):
         }
 
     def get_trading_dates(self, stockcode, start_date, end_date, count, period="1d"):
-        """返回测试区间的两个预期交易日。
+        """返回请求区间内的预期交易日。
 
         参数：
             stockcode: 交易日历基准代码。
@@ -73,11 +98,13 @@ class FakeContext(object):
             period: 日历周期，测试要求为日线。
 
         返回：
-            两个八位交易日字符串。
+            ``trading_dates`` 中位于请求区间内的八位交易日字符串。
         """
         if count <= 0:
             raise AssertionError("大 QMT 交易日 count 必须大于 0")
-        return ["20240102", "20240103"]
+        return [
+            value for value in self.trading_dates if start_date <= value <= end_date
+        ]
 
     def get_raw_financial_data(
         self, fields, symbols, start_date, end_date, report_type="report_time"
@@ -117,6 +144,53 @@ class FakeContext(object):
             以毫秒时间戳为键的七元素除权记录字典。
         """
         return {1704240000000: [0.1, 0.2, 0.3, 0.0, 0.0, 0, 1.6]}
+
+
+class GapRepairContext(FakeContext):
+    """模拟一只股票中间交易日缺失且可选择是否补回的行情接口。
+
+    仅通过 ``_kline_dates`` 配置缺失场景并记录行情调用，造帧、交易日
+    count 断言和 ``last_market_kwargs`` 记录全部复用基类。
+    """
+
+    trading_dates = ["20240102", "20240103", "20240104"]
+
+    def __init__(self, persistent=False):
+        """初始化调用记录和永久缺失开关。
+
+        参数：
+            persistent: 为 ``True`` 时补下载仍不返回缺失日，用于验证重试耗尽路径。
+        """
+        self.persistent = bool(persistent)
+        self.market_calls = []
+
+    def get_market_data_ex(self, fields, symbols, **kwargs):
+        """记录每次行情请求后复用基类造帧逻辑。
+
+        参数：
+            fields: 请求的日线字段序列。
+            symbols: 当前请求的证券代码序列。
+            **kwargs: 大 QMT 的日期、周期、复权和填充参数。
+
+        返回：
+            按证券代码映射的日线 ``DataFrame`` 字典。
+        """
+        self.market_calls.append(
+            (tuple(symbols), kwargs.get("start_time"), kwargs.get("end_time"))
+        )
+        return super(GapRepairContext, self).get_market_data_ex(
+            fields, symbols, **kwargs
+        )
+
+    def _kline_dates(self, code, start_date, end_date):
+        """首轮漏掉 000001.SZ 的中间日，定向补下载按开关决定是否补回。"""
+        dates = super(GapRepairContext, self)._kline_dates(code, start_date, end_date)
+        if code == "000001.SZ":
+            if start_date == "20240102" and end_date == "20240104":
+                return [value for value in dates if value != "20240103"]
+            if self.persistent and start_date <= "20240103" <= end_date:
+                return [value for value in dates if value != "20240103"]
+        return dates
 
 
 class RaisingContext(object):
@@ -416,12 +490,46 @@ class DownloaderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             DownloaderConfig(values)
 
+    def test_incremental_auto_lag_uses_16_clock_boundary(self):
+        """增量自动滞后应在边界前后分别使用 1 天和 0 天，且边界可配置。"""
+        from datetime import datetime
+
+        self.assertEqual(
+            _resolve_incremental_lag_days("auto", datetime(2026, 8, 15, 15, 59)), 1
+        )
+        self.assertEqual(
+            _resolve_incremental_lag_days("auto", datetime(2026, 8, 15, 16, 0)), 0
+        )
+        self.assertEqual(
+            _resolve_incremental_lag_days(
+                "auto", datetime(2026, 8, 15, 16, 59), "17:30"
+            ),
+            1,
+        )
+        self.assertEqual(
+            _resolve_incremental_lag_days(
+                "auto", datetime(2026, 8, 15, 17, 30), "17:30"
+            ),
+            0,
+        )
+        self.assertEqual(_resolve_incremental_lag_days(1), 1)
+        with self.assertRaises(ValueError):
+            _resolve_incremental_lag_days("auto", datetime(2026, 8, 15, 16, 0), "25:00")
+
     def test_config_rejects_empty_datasets(self):
         """空数据集配置不得生成没有任何业务文件的虚假成功任务。"""
         values = _config_values("D:\\unused")
         values["datasets"] = []
         with self.assertRaises(ValueError):
             DownloaderConfig(values)
+
+    def test_config_rejects_invalid_kline_gap_retry_count(self):
+        """缺口补下载次数必须为有限正整数，避免静默关闭或无限循环。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["kline_gap_retry_count"] = 0
+            with self.assertRaises(ValueError):
+                DownloaderConfig(values)
 
     def test_checkpoint_key_changes_with_batch_and_finance_policy(self):
         """批大小或财务完整性策略变化后不得复用旧批次 staging。"""
@@ -508,6 +616,39 @@ class DownloaderTests(unittest.TestCase):
         runner._filter_kline_issues(info)
         self.assertEqual(len(runner.issues.items), 1)
         self.assertEqual(runner.issues.items[0]["date"], "20240102")
+
+    def test_instrument_info_symbols_include_previous_day_live_snapshot_codes(self):
+        """instrument_info 查询应合并当前证券池与前一日仍存续的历史代码。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["end_date"] = "20240103"
+            config = DownloaderConfig(values)
+            runner = _build_runner(config, FakeContext(), lambda *args: None)
+            runner.symbols = ["999999.SZ"]
+            store = runner.store
+            previous = pd.DataFrame(
+                [
+                    {"code": "000001.SZ", "expire_date": ""},
+                    {"code": "002000.SZ", "expire_date": ""},
+                    {"code": "600000.SH", "expire_date": "20240102"},
+                    {"code": "300000.SZ", "expire_date": "20240101"},
+                ]
+            )
+            store.write_partition(
+                "instrument_info",
+                "snapshot",
+                "latest",
+                previous,
+                ["code", "expire_date"],
+                ["code"],
+                ["code"],
+                {},
+                overwrite=True,
+            )
+            self.assertEqual(
+                runner._instrument_info_symbols(),
+                ["000001.SZ", "002000.SZ", "600000.SH", "999999.SZ"],
+            )
 
     def test_empty_finance_cache_keeps_batch_resumable(self):
         """财务缓存全空时批次不得标为完成，以便用户补数据后原配置续传。"""
@@ -654,6 +795,94 @@ class DownloaderTests(unittest.TestCase):
                     }
                 )
 
+    def test_same_scope_key_change_rewrites_completed_partition(self):
+        """范围一致但主键集合变化时应原地重写；范围不同时必须仍然报错。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = DailyPartitionStore(directory)
+            scope = {"symbols": ["000001.SZ", "600000.SH"]}
+            first = pd.DataFrame([{"code": "000001.SZ", "trade_date": "20240102"}])
+            store.write_partition(
+                "kline_1d", "date", "20240102", first, list(first.columns),
+                ["code", "trade_date"], ["code"], {"partition_scope": scope},
+            )
+            repaired = pd.DataFrame(
+                [
+                    {"code": "000001.SZ", "trade_date": "20240102"},
+                    {"code": "600000.SH", "trade_date": "20240102"},
+                ]
+            )
+            result = store.write_partition(
+                "kline_1d", "date", "20240102", repaired, list(repaired.columns),
+                ["code", "trade_date"], ["code"], {"partition_scope": scope},
+            )
+            self.assertEqual(result["status"], "written")
+            result = store.write_partition(
+                "kline_1d", "date", "20240102", repaired, list(repaired.columns),
+                ["code", "trade_date"], ["code"], {"partition_scope": scope},
+            )
+            self.assertEqual(result["status"], "skipped")
+            narrower = pd.DataFrame([{"code": "300001.SZ", "trade_date": "20240102"}])
+            with self.assertRaises(ValueError):
+                store.write_partition(
+                    "kline_1d", "date", "20240102", narrower, list(narrower.columns),
+                    ["code", "trade_date"], ["code"],
+                    {"partition_scope": {"symbols": ["300001.SZ"]}},
+                )
+
+    def test_legacy_partition_without_identity_digest_still_compares(self):
+        """旧版本写出的分区没有主键摘要时应回落到读取 CSV 比较，不误判为不一致。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = DailyPartitionStore(directory)
+            frame = pd.DataFrame(
+                [
+                    {"code": "000001.SZ", "trade_date": "20240102"},
+                    {"code": "600000.SH", "trade_date": "20240102"},
+                ]
+            )
+            store.write_partition(
+                "kline_1d", "date", "20240102", frame, list(frame.columns),
+                ["code", "trade_date"], ["code"], {},
+            )
+            success_path = (
+                Path(directory) / "kline_1d" / "date=20240102" / "_SUCCESS.json"
+            )
+            metadata = json.loads(success_path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(metadata.pop("identity_sha256"))
+            success_path.write_text(
+                json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+            )
+            self.assertTrue(
+                store.partition_identity_matches(
+                    "kline_1d", "date", "20240102", frame, ["code", "trade_date"]
+                )
+            )
+            changed = frame.replace({"600000.SH": "600001.SH"})
+            self.assertFalse(
+                store.partition_identity_matches(
+                    "kline_1d", "date", "20240102", changed, ["code", "trade_date"]
+                )
+            )
+
+    def test_failed_gap_repair_keeps_previous_final_partition_valid(self):
+        """补下载失败不得使先前完整的最终日线分区失去完成标记。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["end_date"] = "20240104"
+            values["batch_size"] = 2
+            values["datasets"] = ["kline_1d"]
+            config = DownloaderConfig(values)
+            first = _build_runner(config, GapRepairContext(), lambda *args: None)
+            self.assertEqual(first.run()["errors"], 0)
+            store = first.store
+            self.assertTrue(store.is_partition_complete("kline_1d", "date", "20240103"))
+            # 删除 staging 断点，迫使第二次运行重新下载并遭遇永久缺口。
+            shutil.rmtree(Path(directory) / "staging")
+            summary = _build_runner(
+                config, GapRepairContext(persistent=True), lambda *args: None
+            ).run()
+            self.assertGreater(summary["errors"], 0)
+            self.assertTrue(store.is_partition_complete("kline_1d", "date", "20240103"))
+
     def test_corrupt_staging_fragment_is_not_resumable(self):
         """staging CSV 被截断后必须使断点失效并触发重新下载。"""
         with tempfile.TemporaryDirectory() as directory:
@@ -704,8 +933,8 @@ class DownloaderTests(unittest.TestCase):
                 )
             self.assertEqual(result["code"].tolist(), ["000001.SZ", "600000.SH"])
 
-    def test_invalid_kline_quality_keeps_checkpoint_failed(self):
-        """价格关系错误必须在批次完成前发现，使下次运行重新下载。"""
+    def test_invalid_kline_high_corrected_and_recorded(self):
+        """价格关系错误应被行级修正、批次照常完成并写入 line_correct 报告。"""
         with tempfile.TemporaryDirectory() as directory:
             values = _config_values(directory)
             values["symbols"] = ["000001.SZ"]
@@ -714,8 +943,47 @@ class DownloaderTests(unittest.TestCase):
             runner = _build_runner(config, InvalidKlineContext(), lambda *args: None)
             summary = runner.run()
             state = CheckpointStore(Path(directory) / "state" / "downloader_state.sqlite")
-            self.assertGreater(summary["errors"], 0)
-            self.assertFalse(state.is_completed(summary["job_key"], "kline_1d", 0))
+            self.assertEqual(summary["errors"], 0)
+            self.assertEqual(summary["corrections"], 2)
+            self.assertTrue(state.is_completed(summary["job_key"], "kline_1d", 0))
+            partition = pd.read_csv(
+                Path(directory) / "kline_1d" / "date=20240102" / "data.csv"
+            )
+            self.assertAlmostEqual(float(partition["high"].iloc[0]), 10.5)
+            report = pd.read_csv(summary["line_correct_report"])
+            self.assertEqual(len(report), 2)
+            self.assertEqual(set(report["field"]), {"high"})
+            self.assertEqual(set(report["code"]), {"000001.SZ"})
+            self.assertTrue(
+                (Path(directory) / "run_complete" / "date=20240103" / "_SUCCESS.json").is_file()
+            )
+
+    def test_correct_kline_prices_fixes_rows_and_keeps_original(self):
+        """修正函数应抬高低于开收低的最高价、压低高于开收高的最低价且不改原表。"""
+        frame = pd.DataFrame(
+            {
+                "code": ["600690.SH", "600807.SH", "000001.SZ"],
+                "trade_date": ["19940404", "19940404", "19940404"],
+                "open": [10.0, 10.0, None],
+                "high": [9.0, 12.0, 11.0],
+                "low": [9.5, 11.5, 9.0],
+                "close": [10.5, 11.0, 10.0],
+            }
+        )
+        corrected, records, issues = correct_kline_prices(frame)
+        self.assertAlmostEqual(float(corrected["high"].iloc[0]), 10.5)
+        self.assertAlmostEqual(float(corrected["low"].iloc[1]), 10.0)
+        self.assertAlmostEqual(float(corrected["high"].iloc[2]), 11.0)
+        self.assertAlmostEqual(float(frame["high"].iloc[0]), 9.0)
+        self.assertEqual(
+            [(item["code"], item["field"]) for item in records],
+            [("600690.SH", "high"), ("600807.SH", "low")],
+        )
+        self.assertEqual({item["level"] for item in issues}, {"WARNING"})
+        remaining_errors = [
+            item for item in validate_kline(corrected) if item["level"] == "ERROR"
+        ]
+        self.assertEqual(remaining_errors, [])
 
     def test_all_none_finance_fields_keep_checkpoint_failed(self):
         """财务记录存在但业务字段全空时应提示并保持批次可重试。"""
@@ -788,7 +1056,11 @@ class DownloaderTests(unittest.TestCase):
             runner.logger = logger
             runner.batches = [["000001.SZ"], ["600000.SH"], ["300001.SZ"]]
             runner.symbols = ["000001.SZ", "600000.SH", "300001.SZ"]
-            runner.config = type("Config", (object,), {"batch_size": 1})()
+            runner.config = type(
+                "Config",
+                (object,),
+                {"batch_size": 1, "start_date": "20260810", "end_date": "20260812"},
+            )()
             runner._log_batch_progress("kline_1d", 1, runner.batches[1], "完成")
             runner._log_date_progress("finance_daily", 1, 3, "20260811", "完成")
             output = stream.getvalue()
@@ -881,6 +1153,196 @@ class DownloaderTests(unittest.TestCase):
         self.assertIn("label=20240103", output)
         self.assertIn("error_type=OSError", output)
         self.assertIn("磁盘写入失败", output)
+
+    def test_internal_kline_gap_is_redownloaded_and_merged(self):
+        """首尾行情之间的缺口应定向补下载并写回对应日分区。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["end_date"] = "20240104"
+            values["batch_size"] = 2
+            values["datasets"] = ["kline_1d"]
+            values["kline_gap_retry_count"] = 2
+            context = GapRepairContext()
+            summary = _build_runner(
+                DownloaderConfig(values), context, lambda *args: None
+            ).run()
+            self.assertEqual(summary["errors"], 0)
+            self.assertIn(
+                (("000001.SZ",), "20240103", "20240103"),
+                context.market_calls,
+            )
+            repaired = pd.read_csv(
+                str(
+                    Path(directory)
+                    / "kline_1d"
+                    / "date=20240103"
+                    / "data.csv"
+                ),
+                encoding="utf-8-sig",
+                dtype={"code": str},
+            )
+            self.assertEqual(
+                repaired["code"].tolist(), ["000001.SZ", "600000.SH"]
+            )
+            self.assertFalse(repaired.duplicated(["code", "trade_date"]).any())
+
+    def test_internal_gap_ranges_are_grouped_without_edge_dates(self):
+        """连续缺口应合并、分离缺口应拆分，首尾观测之外日期不得进入请求。"""
+        dates = [
+            "20240101",
+            "20240102",
+            "20240103",
+            "20240104",
+            "20240105",
+            "20240106",
+            "20240107",
+            "20240108",
+        ]
+        frame = pd.DataFrame(
+            {
+                "code": ["000001.SZ"] * 4,
+                "trade_date": ["20240102", "20240105", "20240107", "20240108"],
+            }
+        )
+        gaps = QmtDailyDownloader._find_internal_kline_gaps(
+            frame, ["000001.SZ"], dates
+        )
+        self.assertEqual(
+            gaps["000001.SZ"],
+            [
+                ("20240103", "20240104", ("20240103", "20240104")),
+                ("20240106", "20240106", ("20240106",)),
+            ],
+        )
+
+    def test_completed_checkpoint_replaces_stale_final_kline_partition(self):
+        """补齐 staging 后若旧最终分区仍完整标记，重启也必须按主键差异覆盖。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["end_date"] = "20240104"
+            values["batch_size"] = 2
+            values["datasets"] = ["kline_1d"]
+            config = DownloaderConfig(values)
+            first_runner = _build_runner(
+                config, GapRepairContext(), lambda *args: None
+            )
+            first_summary = first_runner.run()
+            self.assertEqual(first_summary["errors"], 0)
+            data_path = (
+                Path(directory) / "kline_1d" / "date=20240103" / "data.csv"
+            )
+            complete = pd.read_csv(
+                str(data_path), encoding="utf-8-sig", dtype={"code": str}
+            )
+            stale = complete[complete["code"] == "600000.SH"]
+            first_runner.store.write_partition(
+                "kline_1d",
+                "date",
+                "20240103",
+                stale,
+                list(complete.columns),
+                ["code", "trade_date"],
+                ["code"],
+                {
+                    "job_key": first_runner.job_key,
+                    "mode": config.mode,
+                    "partition_scope": first_runner.partition_scope,
+                },
+                overwrite=True,
+            )
+            second_context = GapRepairContext()
+            second_summary = _build_runner(
+                config, second_context, lambda *args: None
+            ).run()
+            self.assertEqual(second_summary["errors"], 0)
+            self.assertEqual(second_context.market_calls, [])
+            restored = pd.read_csv(
+                str(data_path), encoding="utf-8-sig", dtype={"code": str}
+            )
+            self.assertEqual(
+                restored["code"].tolist(), ["000001.SZ", "600000.SH"]
+            )
+
+    def test_resolved_gap_keeps_transient_download_error_as_warning(self):
+        """补下载首次报错后恢复时应成功完成，并在问题报告保留降级警告。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["end_date"] = "20240104"
+            values["batch_size"] = 2
+            values["datasets"] = ["kline_1d"]
+            attempts = []
+
+            def flaky_history_downloader(code, period, start_date, end_date):
+                """仅让缺口日期的第一次历史缓存下载失败。
+
+                参数：
+                    code: 当前下载的证券代码。
+                    period: 行情周期，测试中固定为日线。
+                    start_date: 当前下载区间起始日。
+                    end_date: 当前下载区间结束日。
+
+                返回：
+                    成功时无返回值；第一次定向请求抛出 ``RuntimeError``。
+                """
+                if code == "000001.SZ" and start_date == end_date == "20240103":
+                    attempts.append((code, start_date))
+                    if len(attempts) == 1:
+                        raise RuntimeError("模拟缺口缓存下载失败")
+
+            summary = _build_runner(
+                DownloaderConfig(values),
+                GapRepairContext(),
+                flaky_history_downloader,
+            ).run()
+            self.assertEqual(summary["errors"], 0)
+            self.assertGreater(summary["warnings"], 0)
+            issues = pd.read_csv(summary["issue_report"], encoding="utf-8-sig")
+            warnings = issues[
+                issues["message"]
+                .astype(str)
+                .str.contains("接口曾报错但缺口最终已补齐")
+            ]
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(warnings.iloc[0]["level"], "WARNING")
+
+    def test_unresolved_internal_kline_gap_keeps_batch_failed(self):
+        """补下载达到上限仍缺失时不得生成最终 K 线分区或推进完成状态。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["end_date"] = "20240104"
+            values["batch_size"] = 2
+            values["datasets"] = ["kline_1d"]
+            values["kline_gap_retry_count"] = 2
+            context = GapRepairContext(persistent=True)
+            summary = _build_runner(
+                DownloaderConfig(values), context, lambda *args: None
+            ).run()
+            self.assertGreater(summary["errors"], 0)
+            targeted = [
+                call
+                for call in context.market_calls
+                if call == (("000001.SZ",), "20240103", "20240103")
+            ]
+            self.assertEqual(len(targeted), 2)
+            self.assertFalse(
+                (
+                    Path(directory)
+                    / "kline_1d"
+                    / "date=20240103"
+                    / "data.csv"
+                ).exists()
+            )
+            issues = pd.read_csv(
+                summary["issue_report"],
+                encoding="utf-8-sig",
+                dtype={"code": str, "date": str},
+            )
+            unresolved = issues[
+                issues["message"].astype(str).str.contains("补下载 2 次后仍缺失")
+            ]
+            self.assertEqual(len(unresolved), 1)
+            self.assertEqual(str(unresolved.iloc[0]["code"]), "000001.SZ")
+            self.assertEqual(str(unresolved.iloc[0]["date"]), "20240103")
 
 
 def _config(directory):

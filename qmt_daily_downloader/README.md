@@ -37,12 +37,15 @@ D:\qmt_data\
 ├─ staging\qmt_xxx\...\batch_00000.csv
 ├─ state\downloader_state.sqlite
 ├─ logs\downloader.log
-└─ reports\issues_20260812_xxx.csv
+├─ reports\issues_20260812_xxx.csv
+└─ reports\line_correct\corrections_20260812_xxx.csv
 ```
 
 每个业务分区都有 `_SUCCESS.json`，其中包含行数、证券池范围和 CSV 的 SHA-256。写入顺序为 `data.csv.tmp` → 原子替换 `data.csv` → `_SUCCESS.json.tmp` → 原子替换 `_SUCCESS.json`。增量模式默认跳过同一证券池的已有完成分区，因此不会重写历史文件；若同一输出目录和日期改用了不同证券池，任务会明确报错，需使用 `repair` 或新输出目录，避免静默丢股票。
 
 选择 `kline_1d` 时，日线分区完成后会逐只保存 `instrument_info/snapshot=latest`，包含上市日期、退市日期、当前交易状态和停牌状态。随后用上市/退市日期过滤未上市或已退市期间的日线缺失提示；上市期间填充后仍无日线的记录才保留在问题报告中。
+
+日线源数据偶见最高价低于开收低、最低价高于开收高的脏行（多为九十年代历史缓存，重新下载结果不变）。这类行不再判为 `ERROR` 阻断整跑，而是行级修正：最高价抬到开、收、低三者最大值，最低价压到开、收、高三者最小值。每次修正都会写一条 `WARNING` 进问题报告，并把原值与修正值逐行落入 `reports/line_correct/corrections_<run_id>.csv`（每次运行都会生成该报告，无修正时只有表头）；运行摘要中的 `corrections` 为修正行数。主键重复、成交量或金额为负等其他质量错误仍按 `ERROR` 阻断批次。
 
 跳过分区前会重新核验数据文件、行数和 SHA-256。一次任务的全部所选数据集成功后，才会在 `run_complete/date=YYYYMMDD/_SUCCESS.json` 写整日水位；自动增量只根据这个全局水位前进，因此日 K 成功但财务或除权失败时不会越过失败日期。
 
@@ -64,9 +67,11 @@ D:\qmt_data\
 
 日增量复制 `config.incremental.example.json`，保持 `start_date` 和 `end_date` 为 `auto`。程序会从最近一个带 `_SUCCESS.json` 的日线分区下一自然日开始，一直下载到自动目标日；周末会自然落空，不会创建伪交易日。首次运行尚无日线分区时，从 `incremental_initial_start_date` 开始。
 
-`incremental_lag_days` 默认为 `1`，适合每天早晨定时运行并保存截至昨日的完整收盘数据；如果确定任务在当日收盘后运行，可以设为 `0`。已是最新时任务返回 `status=up_to_date`，不会再次请求数据。运行结束后每个新交易日形成独立目录，不修改历史分区。若需主动替换一个已完成分区，将 `mode` 改为 `repair` 并明确设置 `overwrite_completed_partition: true`。
+`incremental_lag_days` 默认为 `1`，适合每天早晨定时运行并保存截至昨日的完整收盘数据；如果确定任务在当日收盘后运行，可以设为 `0`。设为 `"auto"` 时以上海时间 `incremental_lag_auto_cutoff`（默认 `16:00`，格式 `HH:MM`）为界：边界前按滞后 1 天、边界及以后按 0 天。该判定发生在读取配置的时刻，请确保定时任务在大 QMT 完成当日数据同步之后再启动；若 16:00 时本地缓存尚未就绪，应把边界调晚，否则全市场缺少当日日线会被记为错误并要求重跑。已是最新时任务返回 `status=up_to_date`，不会再次请求数据。运行结束后每个新交易日形成独立目录，不修改历史分区。若需主动替换一个已完成分区，将 `mode` 改为 `repair` 并明确设置 `overwrite_completed_partition: true`。
 
 程序使用 `calendar_symbol` 的大 QMT 交易日历（默认 `000001.SH`）检查预期交易日。整个市场某个预期交易日都没有返回日线时，批次不会标为完成，也不会推进水位。
+
+每只证券首个和最后一个已有交易日之间如果存在日线缺口，程序会按证券合并连续缺失日期区间，再调用大 QMT 执行定向补下载。`kline_gap_retry_count` 控制补下载轮数，默认 `2`，允许范围为 `1`～`10`。达到上限后仍缺失会升级为 `ERROR`，批次保持可重试且不会生成最终日线分区；停牌补齐行不会被误判为缺口，上市前和退市后的日期也不属于“中间缺口”。定向补下载始终会先调用大 QMT 历史下载刷新对应区间的本地缓存；`download_kline` 只控制每批首轮批量读取前是否全量下载。补齐后的数据在写最终分区时按业务主键差异原地重写同范围旧分区，不再需要预先删除完成标记。
 
 任务键由日期范围、模式、数据集和证券池等关键配置生成。异常退出后，以完全相同配置再次运行会跳过已完成批次，从未完成批次继续。每个 staging CSV 也有独立的行数和 SHA-256 元数据，损坏后会自动使断点失效并重新下载。不要手动删除 `staging` 或 `state/downloader_state.sqlite`，否则相应断点会失效。
 

@@ -1,0 +1,26 @@
+# 命令行参数会覆盖本文件中的同名配置。
+# python run_factor_demo.py --config factor_config.test_search.example.yaml
+# 表达式搜索冒烟配置：只评估 factor_expressions，不启用内置因子。
+# 完整的内置因子清单见 factor_config.example.yaml，勿在两份文件间手工同步。
+
+# 数据集设置
+start: 2024-01-01
+end: 2025-12-31
+validation_start: 2025-06-01
+symbol_limit: 500
+
+training_mode: single  # rolling: 逐日扩展训练；single: 固定训练集只训练一次
+
+# 模型设置
+task: regression
+
+model: factor_passthrough
+
+no_factor_cache: false
+log_level: INFO
+
+# 因子设置
+factors: []
+
+factor_expressions:
+  - "cs_rank(column(return_1d))"

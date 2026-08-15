@@ -3,8 +3,14 @@
 
 import hashlib
 import json
-from datetime import datetime, timedelta
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # 大 QMT 内置 Python 可能未提供 zoneinfo
+    ZoneInfo = None
 
 
 SUPPORTED_MODES = ("backfill", "incremental", "repair")
@@ -14,6 +20,14 @@ SUPPORTED_DATASETS = (
     "finance_daily",
     "corporate_actions",
 )
+try:
+    _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo is not None else None
+except (OSError, ValueError, KeyError):
+    # Python 有 zoneinfo 但未安装时区数据库；ZoneInfoNotFoundError 继承 KeyError，
+    # Windows/大 QMT 内置 Python 通常没有 tzdata 包，会走到这里。
+    _SHANGHAI_TZ = None
+if _SHANGHAI_TZ is None:
+    _SHANGHAI_TZ = timezone(timedelta(hours=8), name="CST")
 
 
 class DownloaderConfig(object):
@@ -34,13 +48,23 @@ class DownloaderConfig(object):
         self.incremental_initial_start_date = str(
             values.get("incremental_initial_start_date", "")
         )
-        self.incremental_lag_days = int(values.get("incremental_lag_days", 1))
+        lag_value = values.get("incremental_lag_days", 1)
+        self.incremental_lag_days_auto = str(lag_value).strip().lower() == "auto"
+        self.incremental_lag_auto_cutoff = str(
+            values.get("incremental_lag_auto_cutoff", "16:00")
+        ).strip()
+        # 配置读取时刻同时用于自动滞后判定和 auto 结束日解析，始终记录。
+        self.incremental_lag_decision_time = datetime.now(_SHANGHAI_TZ)
+        self.incremental_lag_days = _resolve_incremental_lag_days(
+            lag_value, self.incremental_lag_decision_time, self.incremental_lag_auto_cutoff
+        )
         self.no_work = False
         self.symbols = tuple(str(item).strip() for item in values.get("symbols", []) if str(item).strip())
         self.sector = str(values.get("sector", "")).strip()
         self.batch_size = int(values.get("batch_size", 100))
         self.save_workers = int(values.get("save_workers", 1))
         self.retry_count = int(values.get("retry_count", 3))
+        self.kline_gap_retry_count = int(values.get("kline_gap_retry_count", 2))
         self.download_kline = bool(values.get("download_kline", True))
         self.overwrite_completed_partition = bool(
             values.get("overwrite_completed_partition", self.mode == "repair")
@@ -99,8 +123,11 @@ class DownloaderConfig(object):
             raise ValueError("save_workers 必须在 1 到 16 之间")
         if self.retry_count <= 0:
             raise ValueError("retry_count 必须大于 0")
+        if self.kline_gap_retry_count <= 0 or self.kline_gap_retry_count > 10:
+            raise ValueError("kline_gap_retry_count 必须在 1 到 10 之间")
         if self.incremental_lag_days < 0:
             raise ValueError("incremental_lag_days 不能小于 0")
+        _parse_lag_cutoff(self.incremental_lag_auto_cutoff)
         invalid = sorted(set(self.datasets) - set(SUPPORTED_DATASETS))
         if invalid:
             raise ValueError("不支持的数据集: {0}".format(", ".join(invalid)))
@@ -122,7 +149,8 @@ class DownloaderConfig(object):
         if self.mode != "incremental":
             return
         if self.end_date.lower() == "auto":
-            target = datetime.now().date() - timedelta(days=self.incremental_lag_days)
+            current_time = self.incremental_lag_decision_time
+            target = current_time.date() - timedelta(days=self.incremental_lag_days)
             self.end_date = target.strftime("%Y%m%d")
         if self.start_date.lower() == "auto":
             latest = _latest_completed_run_date(
@@ -140,6 +168,42 @@ class DownloaderConfig(object):
         start = _parse_date(self.start_date, "start_date")
         end = _parse_date(self.end_date, "end_date")
         self.no_work = start > end
+
+
+def _resolve_incremental_lag_days(value, now=None, cutoff="16:00"):
+    """解析增量滞后天数；自动模式以上海时间 ``cutoff`` 为当日数据就绪边界。
+
+    判定发生在读取配置时；请确保定时任务在大 QMT 完成当日数据同步之后启动，
+    否则应通过 ``incremental_lag_auto_cutoff`` 推迟边界。
+
+    参数：
+        value: 配置中的滞后天数，非负整数表示固定滞后；``"auto"`` 表示自动判断。
+        now: 用于自动判断的时间；缺省取当前上海时间，测试时可传入固定时间。
+        cutoff: ``HH:MM`` 边界文本，来自 ``incremental_lag_auto_cutoff``。
+
+    返回：
+        自动模式在边界前返回 ``1``、边界及以后返回 ``0``；固定模式返回其整数值。
+    """
+    if str(value).strip().lower() != "auto":
+        return int(value)
+    hour, minute = _parse_lag_cutoff(cutoff)
+    current = now or datetime.now(_SHANGHAI_TZ)
+    return 0 if (current.hour, current.minute) >= (hour, minute) else 1
+
+
+def _parse_lag_cutoff(value):
+    """解析自动滞后判定的 ``HH:MM`` 边界文本。
+
+    参数：
+        value: 24 小时制 ``HH:MM`` 字符串，例如 ``16:00`` 或 ``17:30``。
+
+    返回：
+        ``(hour, minute)`` 整数二元组；格式非法时抛出 ``ValueError``。
+    """
+    match = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", str(value).strip())
+    if match is None:
+        raise ValueError("incremental_lag_auto_cutoff 必须是 24 小时制 HH:MM")
+    return int(match.group(1)), int(match.group(2))
 
 
 def _parse_date(value, field_name):

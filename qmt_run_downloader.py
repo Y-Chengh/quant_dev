@@ -6,7 +6,7 @@ import traceback
 
 
 PROJECT_ROOT = r"C:\Users\win10\Documents\quant"
-CONFIG_PATH = r"C:\Users\win10\Documents\quant\qmt_daily_downloader\config.test.json"
+CONFIG_PATH = r"C:\Users\win10\Documents\quant\qmt_daily_downloader\config.incremental.example.json"
 _STARTED = False
 
 if PROJECT_ROOT not in sys.path:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -18,6 +19,8 @@ from .context import SearchContext
 from .evaluators import CandidateEvaluator, HoldoutIcEvaluator, IcEvaluator
 from .result import FactorSearchResult
 from .space import FactorCandidate, SearchSpace
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,7 @@ class FactorGridSearch:
         if model_top_k < 0:
             raise ValueError("model_top_k 不能为负数")
         estimated = space.estimate_size()
+        logger.info("候选数量上界 estimated=%d max_candidates=%d", estimated, self.max_candidates)
         if estimated > self.max_candidates:
             raise ValueError(
                 f"候选数量上界 {estimated} 超过上限 {self.max_candidates}，"

@@ -8,6 +8,7 @@
   "batch_size": 100,
   "save_workers": 4,
   "retry_count": 3,
+  "kline_gap_retry_count": 2,
   "calendar_symbol": "000001.SH",
   "download_kline": true,
   "allow_partial_finance": false,

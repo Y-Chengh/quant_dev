@@ -2,18 +2,28 @@
 # python run_factor_demo.py --config factor_config.example.yaml
 
 # 数据集设置
-start: 2020-01-01
-end: 2026-01-01
-validation_start: 2025-01-01
+start: 2018-01-01
+end: 2023-01-01
+validation_start: 2022-01-01
 symbol_limit: 500
 
 training_mode: single  # rolling: 逐日扩展训练；single: 固定训练集只训练一次
 
+# 回测费用
+backtest_top_n: 10
+slippage_bps: 3
+commission_bps: 1
+
 # 模型设置
+task: regression
+
+# model: logistic_regression
+# regression_alpha: 1.0
+
 model: lightgbm
 objective: huber
 objective_alpha: 0.02  # Huber 截断阈值；收益率以小数表示，0.02 即 2%
-n_estimators: 300
+n_estimators: 1000
 learning_rate:  0.03
 num_leaves: 31
 max_depth: 5
@@ -37,7 +47,7 @@ factors:
   # - last_30m_return
   - last_30m_volume_ratio
   # - ma_5d_slope
-  # - ma_distance_change_5d
+  # - ma_distance_change_5d 
   # - ma_spread_5d_20d
   # - ma_spread_change_5d_20d
   # - momentum_acceleration_5d_20d
@@ -52,3 +62,12 @@ factors:
   - volume_ratio_5d
   - candle_body_ratio
   - alpha_002
+  - alpha_001
+
+factor_expressions:
+  - ts_rank(column(close),min_periods=20,window=20)
+  - ts_rank(cs_zscore(column(close)),min_periods=20,window=20)
+  - ts_rank(add(column(low),ts_rank(column(close),min_periods=5,window=5)),min_periods=20,window=20)
+  - multiply(subtract(column(low),column(close)),ts_stddev(subtract(column(low),column(close)),ddof=0,min_periods=10,window=10))
+  # - multiply(subtract(column(low),column(close)),ts_stddev(column(high),ddof=0,min_periods=20,window=20))
+  # - subtract(column(low),column(close))

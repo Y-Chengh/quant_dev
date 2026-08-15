@@ -3,8 +3,9 @@
 
 import hashlib
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -16,7 +17,7 @@ from .gateway import (
     KLINE_COLUMNS,
 )
 from .storage import IssueCollector
-from .validation import find_missing_kline, validate_kline
+from .validation import correct_kline_prices, find_missing_kline, validate_kline
 
 
 class QmtDailyDownloader(object):
@@ -38,6 +39,7 @@ class QmtDailyDownloader(object):
         self.checkpoints = checkpoints
         self.logger = logger
         self.issues = IssueCollector()
+        self.line_corrections = []
         self.symbols = []
         self.batches = []
         self.job_key = ""
@@ -73,6 +75,14 @@ class QmtDailyDownloader(object):
             len(self.batches),
             self.job_key,
         )
+        if self.config.mode == "incremental" and self.config.incremental_lag_days_auto:
+            self.logger.info(
+                "增量滞后天数自动判定 now=%s cutoff=%s lag_days=%d target_date=%s",
+                self.config.incremental_lag_decision_time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                self.config.incremental_lag_auto_cutoff,
+                self.config.incremental_lag_days,
+                self.config.end_date,
+            )
         if self.config.no_work:
             report_path = self.store.write_issue_report([], run_id)
             summary = {
@@ -144,6 +154,9 @@ class QmtDailyDownloader(object):
                 self._write_action_partitions(actions, trade_dates)
 
         report_path = self.store.write_issue_report(self.issues.items, run_id)
+        correction_report_path = self.store.write_line_correction_report(
+            self.line_corrections, run_id
+        )
         error_count = sum(1 for item in self.issues.items if item["level"] == "ERROR")
         warning_count = sum(1 for item in self.issues.items if item["level"] == "WARNING")
         if all_datasets_succeeded and error_count == 0:
@@ -154,20 +167,27 @@ class QmtDailyDownloader(object):
             "trade_dates": len(trade_dates),
             "errors": error_count,
             "warnings": warning_count,
+            "corrections": len(self.line_corrections),
             "issue_report": str(report_path),
+            "line_correct_report": str(correction_report_path),
         }
         self.logger.info("任务结束 summary=%s", json.dumps(summary, ensure_ascii=False))
         return summary
 
     def _collect_instrument_info(self):
-        """读取全部证券的上市退市信息并保存当前快照表。
+        """读取证券池及历史存续证券的上市退市信息并保存当前快照表。
 
         返回：
-            ``(DataFrame, failed)``；快照写入 ``instrument_info/snapshot=latest``，失败时
-            返回已读取的数据和 ``True``。
+            ``(DataFrame, failed)``；快照写入 ``instrument_info/snapshot=latest``。当前
+            证券池任一代码详情缺失时失败；仅历史快照代码缺失时降级为警告并从新快照
+            移除，避免已被大 QMT 清除的退市代码永久阻塞任务。
         """
-        self.logger.info("[instrument_info] 开始获取上市退市信息 证券 1/%d", len(self.symbols))
-        frame, issues = self.gateway.fetch_instrument_info(self.symbols)
+        info_symbols = self._instrument_info_symbols()
+        pool = set(self.symbols)
+        carried = {code for code in info_symbols if code not in pool}
+        self.logger.info("[instrument_info] 开始获取上市退市信息 证券 1/%d", len(info_symbols))
+        frame, issues = self.gateway.fetch_instrument_info(info_symbols)
+        issues = [self._downgrade_carried_issue(issue, carried) for issue in issues]
         self.issues.extend(issues)
         for issue in issues:
             log_method = self.logger.error if issue.get("level") == "ERROR" else self.logger.warning
@@ -179,13 +199,14 @@ class QmtDailyDownloader(object):
                 issue.get("date", ""),
                 issue.get("message", ""),
             )
-        failed = bool(issues) or len(frame) != len(self.symbols)
-        if len(self.symbols):
+        returned = set(frame["code"].astype(str)) if not frame.empty else set()
+        failed = _contains_error(issues) or not pool <= returned
+        if len(info_symbols):
             self.logger.info(
                 "[instrument_info] 完成获取上市退市信息 证券 %d/%d (%.1f%%)",
                 len(frame),
-                len(self.symbols),
-                len(frame) * 100.0 / len(self.symbols),
+                len(info_symbols),
+                len(frame) * 100.0 / len(info_symbols),
             )
         if not failed:
             self._write_partition(
@@ -199,6 +220,83 @@ class QmtDailyDownloader(object):
                 overwrite=True,
             )
         return frame, failed
+
+    def _instrument_info_symbols(self):
+        """合并当前证券池与上一快照中前一日尚未退市的证券代码。
+
+        返回：
+            去重并按代码排序的证券代码列表；历史快照不可读时仅返回当前证券池。
+        """
+        current = {str(code).strip().upper() for code in self.symbols if str(code).strip()}
+        if not self.store.is_partition_complete("instrument_info", "snapshot", "latest"):
+            return sorted(current)
+        previous = self.store.read_partition(
+            "instrument_info",
+            "snapshot",
+            "latest",
+            dtype={"code": str, "expire_date": str},
+        )
+        if previous is None or not {"code", "expire_date"}.issubset(previous.columns):
+            return sorted(current)
+
+        reference_date = datetime.strptime(self.config.end_date, "%Y%m%d") - timedelta(days=1)
+        reference_text = reference_date.strftime("%Y%m%d")
+        for row in previous.to_dict("records"):
+            code = str(row.get("code") or "").strip().upper()
+            if not code or "." not in code:
+                continue
+            raw_expire_date = row.get("expire_date")
+            expire_date = "" if pd.isna(raw_expire_date) else str(raw_expire_date).strip()
+            # 空值表示尚未退市；退市日等于前一日时仍属于前一日的证券池。
+            if not expire_date:
+                current.add(code)
+                continue
+            try:
+                datetime.strptime(expire_date, "%Y%m%d")
+            except ValueError:
+                # 单行退市日期损坏不应静默丢弃其余行；保留该代码继续跟踪生命周期。
+                self.logger.warning(
+                    "上市退市快照存在无法解析的退市日期 code=%s expire_date=%s，仍保留该代码",
+                    code,
+                    expire_date,
+                )
+                current.add(code)
+                continue
+            if expire_date >= reference_text:
+                current.add(code)
+        return sorted(current)
+
+    @classmethod
+    def _downgrade_carried_issue(cls, issue, carried_codes):
+        """把仅涉及历史快照代码的详情错误降级为警告。
+
+        参数：
+            issue: 网关返回的结构化问题字典。
+            carried_codes: 来自上一快照、不在当前证券池中的代码集合。
+
+        返回：
+            当前证券池代码的问题原样返回；历史快照代码的 ``ERROR`` 返回降级
+            副本，使已被大 QMT 清除的代码在下一次快照重写后自动消失。
+        """
+        if issue.get("level") != "ERROR" or issue.get("code") not in carried_codes:
+            return issue
+        return cls._downgrade_issue(issue, "历史快照代码详情读取失败，本次从快照移除")
+
+    @staticmethod
+    def _downgrade_issue(issue, prefix):
+        """把一条问题降级为保留原始定位信息的审计警告。
+
+        参数：
+            issue: 结构化问题字典。
+            prefix: 说明降级原因的中文前缀。
+
+        返回：
+            级别改为 ``WARNING``、消息加上前缀的新字典；原字典不被修改。
+        """
+        downgraded = dict(issue)
+        downgraded["level"] = "WARNING"
+        downgraded["message"] = "{0}: {1}".format(prefix, issue.get("message", ""))
+        return downgraded
 
     def _filter_kline_issues(self, instrument_info):
         """按上市和退市日期过滤日线缺失警告。
@@ -272,7 +370,7 @@ class QmtDailyDownloader(object):
         first_index = batch_id * self.config.batch_size + 1
         last_index = first_index + len(symbols) - 1
         self.logger.info(
-            "[%s] %s 批次 %d/%d (%.1f%%)，证券序号 %d-%d/%d",
+            "[%s] %s 批次 %d/%d (%.1f%%)，证券序号 %d-%d/%d，requested_date_range=%s..%s",
             dataset,
             status,
             current,
@@ -281,6 +379,8 @@ class QmtDailyDownloader(object):
             first_index,
             last_index,
             len(self.symbols),
+            self.config.start_date,
+            self.config.end_date,
         )
 
     def _log_date_progress(self, dataset, index, total, date_value, status):
@@ -434,6 +534,237 @@ class QmtDailyDownloader(object):
                 issue.get("message", ""),
             )
 
+    @staticmethod
+    def _find_internal_kline_gaps(frame, symbols, expected_trade_dates):
+        """查找每只证券首尾已有行情之间缺失的交易日区间。
+
+        参数：
+            frame: 当前证券批次已经取得的标准日线表。
+            symbols: 当前批次证券代码序列。
+            expected_trade_dates: 大 QMT 交易日历返回的有序交易日序列。
+
+        返回：
+            ``code -> [(start_date, end_date, missing_dates)]`` 映射；缺失判定复用
+            ``validation.find_missing_kline``（停牌补齐行不算缺失），再裁剪到证券
+            已有首日和末日之间并合并连续区间，因此不包含上市前或退市后的日期。
+        """
+        dates = list(expected_trade_dates)
+        positions = {date_value: index for index, date_value in enumerate(dates)}
+        output = {}
+        if frame is None or frame.empty or not dates:
+            return output
+        missing_by_code = {}
+        for issue in find_missing_kline(frame, symbols, dates):
+            missing_by_code.setdefault(str(issue["code"]), set()).add(str(issue["date"]))
+        span_by_code = {}
+        for code_value, date_value in zip(
+            frame["code"].astype(str), frame["trade_date"].astype(str)
+        ):
+            position = positions.get(date_value)
+            if position is None:
+                continue
+            span = span_by_code.get(code_value)
+            if span is None:
+                span_by_code[code_value] = [position, position]
+            else:
+                span[0] = min(span[0], position)
+                span[1] = max(span[1], position)
+        for code in symbols:
+            code_key = str(code)
+            span = span_by_code.get(code_key)
+            code_missing = missing_by_code.get(code_key, ())
+            if span is None or span[0] == span[1] or not code_missing:
+                continue
+            missing = [
+                dates[index]
+                for index in range(span[0] + 1, span[1])
+                if dates[index] in code_missing
+            ]
+            if not missing:
+                continue
+            ranges = []
+            current = [missing[0]]
+            for date_value in missing[1:]:
+                if positions[date_value] == positions[current[-1]] + 1:
+                    current.append(date_value)
+                else:
+                    ranges.append((current[0], current[-1], tuple(current)))
+                    current = [date_value]
+            ranges.append((current[0], current[-1], tuple(current)))
+            output[code_key] = ranges
+        return output
+
+    @classmethod
+    def _resolved_gap_issue_warnings(cls, issues):
+        """把补下载过程中已恢复的接口错误转换为审计警告。
+
+        参数：
+            issues: 大 QMT 补下载接口返回、但对应缺口最终已经补齐的问题序列。
+
+        返回：
+            保留原始数据集、代码、日期和消息，并把级别改为 ``WARNING`` 的新字典列表。
+        """
+        return [
+            cls._downgrade_issue(issue, "补下载过程中接口曾报错但缺口最终已补齐")
+            for issue in issues
+        ]
+
+    def _repair_kline_gaps(self, frame, symbols, expected_trade_dates, batch_id):
+        """按连续日期区间合并证券后对中间日线缺口执行有限次数补下载。
+
+        本方法只读写内存中的批次数据，不触碰最终分区目录；缺口补齐后由分区
+        写入层按业务主键差异决定是否重写旧分区。
+
+        参数：
+            frame: 首轮下载得到的标准日线表。
+            symbols: 当前证券批次的代码序列。
+            expected_trade_dates: 大 QMT 交易日历返回的有序交易日序列。
+            batch_id: 当前证券批次的零基编号，用于详细日志定位。
+
+        返回：
+            ``(merged_frame, issues)``；前者合并补下载结果并按业务主键去重，后者
+            在缺口全部补齐时只含降级 ``WARNING``，否则包含最终仍缺失的 ``ERROR``
+            和未补齐证券最后一轮的接口问题。
+        """
+        merged = _ensure_columns(frame, KLINE_COLUMNS)
+        # round_issues 只保留最近一轮的接口问题，循环结束后即最后一轮视图。
+        round_issues = {}
+        issue_history_by_code = {}
+        gaps = self._find_internal_kline_gaps(merged, symbols, expected_trade_dates)
+        attempt = 0
+        while gaps and attempt < self.config.kline_gap_retry_count:
+            attempt += 1
+            round_issues = {}
+            gap_count = sum(
+                len(missing_dates)
+                for ranges in gaps.values()
+                for _, _, missing_dates in ranges
+            )
+            self.logger.warning(
+                "日线缺口补下载 batch=%d/%d attempt=%d/%d symbols=%d gaps=%d",
+                batch_id + 1,
+                len(self.batches),
+                attempt,
+                self.config.kline_gap_retry_count,
+                len(gaps),
+                gap_count,
+            )
+            codes_by_range = {}
+            for code, ranges in sorted(gaps.items()):
+                for start_date, end_date, missing_dates in ranges:
+                    codes_by_range.setdefault((start_date, end_date), []).append(
+                        (code, missing_dates)
+                    )
+            additions = []
+            for (start_date, end_date), entries in sorted(codes_by_range.items()):
+                codes = [code for code, _ in entries]
+                self.logger.info(
+                    "日线缺口请求 stage=gap_redownload batch=%d/%d codes=%s start=%s end=%s missing_dates=%s attempt=%d/%d",
+                    batch_id + 1,
+                    len(self.batches),
+                    ",".join(codes),
+                    start_date,
+                    end_date,
+                    ",".join(sorted(set(
+                        trade_date for _, missing in entries for trade_date in missing
+                    ))),
+                    attempt,
+                    self.config.kline_gap_retry_count,
+                )
+                # 补缺口的目的就是刷新本地缓存，因此始终先执行定向历史下载；
+                # download_kline 只控制首轮批量读取，不影响这里。
+                repaired, repair_issues = self.gateway.fetch_kline(
+                    codes, start_date, end_date, True
+                )
+                self._log_issue_details(
+                    "kline_1d/gap_redownload", batch_id, codes, repair_issues
+                )
+                for issue in repair_issues:
+                    issue_codes = [str(issue.get("code") or "")]
+                    if not issue_codes[0]:
+                        issue_codes = codes
+                    for code in issue_codes:
+                        round_issues.setdefault(code, []).append(issue)
+                        issue_history_by_code.setdefault(code, []).append(issue)
+                if not repaired.empty:
+                    additions.append(repaired)
+            if additions:
+                merged = pd.concat([merged] + additions, ignore_index=True)
+                merged = _ensure_columns(merged, KLINE_COLUMNS)
+                merged = merged.drop_duplicates(
+                    ["code", "trade_date"], keep="last"
+                ).sort_values(["code", "trade_date"], kind="mergesort")
+                merged = merged.reset_index(drop=True)
+            # 只有本轮补下载的证券会新增行，其余证券的缺口状态不可能改变，
+            # 因此复查范围收敛到本轮缺口证券，避免整批全量重扫。
+            gaps = self._find_internal_kline_gaps(
+                merged, sorted(gaps), expected_trade_dates
+            )
+
+        issues = []
+        for code, code_issues in issue_history_by_code.items():
+            if code not in gaps:
+                issues.extend(self._resolved_gap_issue_warnings(code_issues))
+        for code, ranges in sorted(gaps.items()):
+            issues.extend(round_issues.get(code, []))
+            for _, _, missing_dates in ranges:
+                for trade_date in missing_dates:
+                    issues.append(
+                        {
+                            "level": "ERROR",
+                            "dataset": "kline_1d",
+                            "code": code,
+                            "date": trade_date,
+                            "message": "中间日线缺口补下载 {0} 次后仍缺失".format(
+                                self.config.kline_gap_retry_count
+                            ),
+                        }
+                    )
+        return merged, issues
+
+    def _fail_kline_batch(self, batch_id, symbols, frame, batch_issues, reason):
+        """统一记录一个日线批次失败的问题、staging、断点状态和日志。
+
+        参数：
+            batch_id: 当前证券批次的零基编号。
+            symbols: 当前批次证券代码序列。
+            frame: 本次实际取得的日线表，允许为空。
+            batch_issues: 本批次收集到的全部问题字典。
+            reason: 写入断点状态和错误日志的失败原因。
+
+        返回：
+            无返回值。
+        """
+        dataset = "kline_1d"
+        self.issues.extend(batch_issues)
+        self._log_issue_details(dataset, batch_id, symbols, batch_issues)
+        if not frame.empty or not self.store.fragment_exists(
+            self.job_key, dataset, batch_id
+        ):
+            self.store.write_fragment(self.job_key, dataset, batch_id, frame)
+        else:
+            # 上次运行留下的完好批次片段比本次空帧更有恢复价值，保留供续跑使用。
+            self.logger.warning(
+                "批次返回空帧，保留上次运行的 staging 片段 dataset=%s batch=%d/%d",
+                dataset,
+                batch_id + 1,
+                len(self.batches),
+            )
+        self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
+        self._log_batch_progress(dataset, batch_id, symbols, "失败")
+        self.logger.error(
+            "批次未完成 dataset=%s batch=%d/%d symbols=%s date_range=%s..%s rows=%d issue_count=%d reason=%s",
+            dataset,
+            batch_id + 1,
+            len(self.batches),
+            ",".join(symbols),
+            self.config.start_date,
+            self.config.end_date,
+            len(frame),
+            len(batch_issues),
+            reason,
+        )
+
     def _collect_kline(self, expected_trade_dates):
         """按证券批次下载日线并写入可恢复 staging。
 
@@ -446,13 +777,15 @@ class QmtDailyDownloader(object):
         dataset = "kline_1d"
         failed = False
         for batch_id, symbols in enumerate(self.batches):
-            daily_fragments_exist = all(
+            batch_started_at = time.perf_counter()
+            # 完成状态只在缺口检查通过后写入，因此完成断点可直接信任，无需重读 staging。
+            # 断点未命中时短路，避免为必然要重下的批次逐日校验 staging 片段。
+            if self._can_resume(dataset, batch_id) and all(
                 self.store.fragment_exists(
                     self.job_key, "kline_daily_{0}".format(trade_date), batch_id
                 )
                 for trade_date in expected_trade_dates
-            )
-            if self._can_resume(dataset, batch_id) and daily_fragments_exist:
+            ):
                 self._log_batch_progress(dataset, batch_id, symbols, "断点跳过")
                 self.logger.info("断点命中 dataset=%s batch=%d", dataset, batch_id)
                 continue
@@ -465,35 +798,55 @@ class QmtDailyDownloader(object):
                     self.config.end_date,
                     self.config.download_kline,
                 )
-                self.issues.extend(issues)
-                quality_issues = validate_kline(frame)
-                self.issues.extend(quality_issues)
-                self._log_issue_details(dataset, batch_id, symbols, issues + quality_issues)
-                self.store.write_fragment(self.job_key, dataset, batch_id, frame)
-                if frame.empty or _contains_error(issues) or _contains_error(quality_issues):
+                if frame.empty or _contains_error(issues):
                     failed = True
-                    reason = "批次日线为空、包含接口错误或未通过质量检查"
-                    self.checkpoints.mark_failed(self.job_key, dataset, batch_id, reason)
-                    self._log_batch_progress(dataset, batch_id, symbols, "失败")
-                    self.logger.error(
-                        "批次未完成 dataset=%s batch=%d/%d symbols=%s date_range=%s..%s rows=%d issue_count=%d reason=%s",
-                        dataset,
-                        batch_id + 1,
-                        len(self.batches),
-                        ",".join(symbols),
-                        self.config.start_date,
-                        self.config.end_date,
-                        len(frame),
-                        len(issues) + len(quality_issues),
-                        reason,
+                    self._fail_kline_batch(
+                        batch_id,
+                        symbols,
+                        frame,
+                        issues + validate_kline(frame),
+                        "批次日线为空或包含接口错误",
                     )
                     continue
+                frame, gap_issues = self._repair_kline_gaps(
+                    frame, symbols, expected_trade_dates, batch_id
+                )
+                frame, correction_records, correction_issues = correct_kline_prices(frame)
+                if correction_records:
+                    self.line_corrections.extend(correction_records)
+                    self.logger.warning(
+                        "日线价格修正 dataset=%s batch=%d rows=%d，明细将写入 reports/line_correct",
+                        dataset,
+                        batch_id + 1,
+                        len(correction_records),
+                    )
+                batch_issues = issues + gap_issues + correction_issues + validate_kline(frame)
+                if _contains_error(batch_issues):
+                    failed = True
+                    self._fail_kline_batch(
+                        batch_id,
+                        symbols,
+                        frame,
+                        batch_issues,
+                        "批次包含补下载后仍未恢复的日线缺口或质量错误",
+                    )
+                    continue
+                self.issues.extend(batch_issues)
+                self._log_issue_details(dataset, batch_id, symbols, batch_issues)
+                self.store.write_fragment(self.job_key, dataset, batch_id, frame)
+                staging_started_at = time.perf_counter()
+                # 按日分组一次完成，避免在交易日循环里对全批次做逐日全表扫描。
+                daily_groups = {
+                    key: group
+                    for key, group in frame.groupby(frame["trade_date"].astype(str))
+                }
+                empty_daily = frame.iloc[0:0]
                 chunk_size = max(self.config.save_workers * 4, 1)
                 for chunk_start in range(0, len(expected_trade_dates), chunk_size):
                     save_tasks = []
                     save_labels = []
                     for trade_date in expected_trade_dates[chunk_start : chunk_start + chunk_size]:
-                        daily = frame[frame["trade_date"].astype(str) == trade_date]
+                        daily = daily_groups.get(trade_date, empty_daily)
                         save_tasks.append(
                             lambda current_date=trade_date, current_daily=_ensure_columns(daily, KLINE_COLUMNS): self.store.write_fragment(
                                 self.job_key,
@@ -508,9 +861,23 @@ class QmtDailyDownloader(object):
                         "kline_daily_staging batch={0}".format(batch_id + 1),
                         save_labels,
                     )
+                self.logger.info(
+                    "日线staging写入完成 dataset=%s batch=%d dates=%d rows=%d elapsed=%.2fs",
+                    dataset,
+                    batch_id + 1,
+                    len(expected_trade_dates),
+                    len(frame),
+                    time.perf_counter() - staging_started_at,
+                )
                 self.checkpoints.mark_completed(self.job_key, dataset, batch_id, len(frame))
                 self._log_batch_progress(dataset, batch_id, symbols, "完成")
-                self.logger.info("批次完成 dataset=%s batch=%d rows=%d", dataset, batch_id, len(frame))
+                self.logger.info(
+                    "批次完成 dataset=%s batch=%d rows=%d elapsed=%.2fs",
+                    dataset,
+                    batch_id,
+                    len(frame),
+                    time.perf_counter() - batch_started_at,
+                )
             except Exception as error:
                 failed = True
                 self.checkpoints.mark_failed(self.job_key, dataset, batch_id, error)
@@ -525,6 +892,12 @@ class QmtDailyDownloader(object):
                     self.config.end_date,
                     type(error).__name__,
                     error,
+                )
+                self.logger.error(
+                    "批次失败耗时 dataset=%s batch=%d elapsed=%.2fs",
+                    dataset,
+                    batch_id + 1,
+                    time.perf_counter() - batch_started_at,
                 )
         if failed:
             return True
@@ -597,11 +970,13 @@ class QmtDailyDownloader(object):
             "kline_daily_{0}".format(trade_date),
             range(len(self.batches)),
         )
+        daily = _ensure_columns(daily, KLINE_COLUMNS)
+        # 已完成分区由存储层先校验证券池范围，再按业务主键集合决定跳过或重写。
         result = self._write_partition(
             "kline_1d",
             "date",
             trade_date,
-            _ensure_columns(daily, KLINE_COLUMNS),
+            daily,
             KLINE_COLUMNS,
             ["code", "trade_date"],
             ["code"],
