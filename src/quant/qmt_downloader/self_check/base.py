@@ -36,6 +36,12 @@ class _CheckerState:
     reference_scope: dict[str, Any] | None
     #: 已登记过生命周期问题的 ``(证券代码, 问题码)``，用于抑制重复告警。
     _lifecycle_issue_keys: set[tuple[str, str]]
+    #: 人工核实的源数据勘误覆盖表，键为 ``(证券代码, 交易日)``，值为
+    #: ``{字段名: 覆盖值}``；由 ``config.errata_csv`` 装载，读入分区后、
+    #: 校验前应用到内存中的日线 DataFrame。
+    _errata_overrides: dict[tuple[str, str], dict[str, object]]
+    #: 本次自检累计实际生效的勘误字段覆盖次数，用于运行结束时的日志提示。
+    _errata_applied_count: int
     #: staging 模式下按日期记录的缺口证券列表。
     staging_daily_gap_dates: list[tuple[str, list[str]]]
     #: 进度日志器，名称固定为 ``quant.qmt_downloader.self_check``；库层不加处理器，

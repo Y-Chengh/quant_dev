@@ -1,5 +1,14 @@
 """QMT 全样本日线数据内部质量自检命令行入口。"""
 
+# python src\quant\cli\qmt_self_check.py --config configs\qmt_downloader\kline_only.backfill.json
+# 增量自检
+# python -m quant.cli.qmt_self_check `
+#   --config configs\qmt_downloader\incremental.example.json `
+#   --start-date 20260801 --end-date 20260815
+
+# 全量自检
+# python -m quant.cli.qmt_self_check --config configs\qmt_downloader\incremental.example.json
+
 from __future__ import annotations
 
 import argparse
@@ -8,7 +17,7 @@ import logging
 import sys
 from pathlib import Path
 
-from quant.config import default_qmt_config_path
+from quant.config import default_qmt_config_path, default_qmt_errata_path
 from quant.qmt_downloader.config import strip_jsonc
 from quant.qmt_downloader.self_check import (
     LOGGER_NAME,
@@ -72,6 +81,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=100.0,
         help="成交量相对近期中位数达到该倍数时报告统计告警，缺省 100",
+    )
+    parser.add_argument(
+        "--errata-csv",
+        type=Path,
+        default=default_qmt_errata_path(),
+        help="人工核实的源数据勘误表 CSV，格式见 docs/qmt_source_data_errata.md；"
+        "文件不存在时视为没有勘误记录",
     )
     parser.add_argument(
         "--verify-staging-hash",
@@ -195,6 +211,7 @@ def main(argv: list[str] | None = None) -> int:
                 start_date=start_date,
                 end_date=end_date,
                 calendar_csv=args.calendar_csv,
+                errata_csv=args.errata_csv,
                 report_dir=args.report_dir,
                 coverage_error_threshold=args.coverage_error_threshold,
                 price_jump_warning_ratio=args.price_jump_warning_ratio,

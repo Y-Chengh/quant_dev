@@ -279,6 +279,38 @@ class DailySyncTest(unittest.TestCase):
             self.assertEqual(len(without), 2)
             self.assertEqual(len(with_susp), 3)
 
+    def test_errata_overrides_suspend_flag_in_dumped_data(self) -> None:
+        """勘误表覆盖的字段应在落盘（dump）到日线库的数据中生效，其余字段不变。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            _build_source(source)
+            errata_csv = base / "errata.csv"
+            errata_csv.write_text(
+                "symbol,trade_date,field,value,issue_type,description,found_date,source_report\n"
+                "000001.SZ,20240102,suspend_flag,1,missing_suspension,test,20240102,test\n",
+                encoding="utf-8",
+            )
+            config = self._config(base)
+            config = DailySyncConfig(
+                database=config.database,
+                source_root=config.source_root,
+                mode=config.mode,
+                errata_csv=errata_csv,
+            )
+            sync_daily_store(config)
+            client = DailyMarketClient(base / "daily" / "qmt_daily.duckdb")
+            without = client.get_klines_1d(["000001.SZ"], date(2024, 1, 1), date(2024, 1, 31))
+            with_susp = client.get_klines_1d(
+                ["000001.SZ"], date(2024, 1, 1), date(2024, 1, 31), include_suspended=True
+            )
+            # 0102 被勘误覆盖为停牌，缺省查询应剔除它，只剩 0103、0104。
+            self.assertEqual(len(without), 2)
+            self.assertEqual(len(with_susp), 3)
+            corrected = with_susp[with_susp["trade_date"] == pd.Timestamp("2024-01-02")].iloc[0]
+            # 只覆盖了 suspend_flag，价格字段应保持源数据原值不变。
+            self.assertAlmostEqual(corrected["close"], 10.0)
+            self.assertAlmostEqual(corrected["pre_close"], 9.5)
 
     def test_qfq_price_is_independent_of_query_window_end(self) -> None:
         """前复权取值必须只由基准日决定，不随查询窗口终点变化。

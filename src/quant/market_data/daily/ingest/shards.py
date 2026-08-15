@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from quant.qmt_downloader import errata as qmt_errata
+
 from ..schema import sql_path
 
 #: 一次 ``COPY`` 写出的 Parquet 行组大小。
@@ -63,6 +65,7 @@ def rewrite_month_shard(
     year: int,
     month: int,
     lifecycle: pd.DataFrame,
+    errata: pd.DataFrame | None = None,
 ) -> ShardResult:
     """从源 CSV 重建一个月的 ``bars_1d`` 分片。
 
@@ -75,6 +78,11 @@ def rewrite_month_shard(
         month: 待重建的月份，1 到 12。
         lifecycle: ``load_lifecycle_frame`` 产出的生命周期表，用于过滤未上市与
             已退市的填充行；必须含 ``code``、``open_date``、``expire_date`` 三列。
+        errata: ``quant.qmt_downloader.errata.errata_pivot_frame`` 产出的勘误宽表，
+            含 ``code``、``trade_date`` 及日线数值字段，未覆盖的字段为
+            ``NULL``；``None`` 或空表都表示没有任何勘误记录，此时行为与勘误
+            功能加入之前完全一致。落盘（dump）到 Parquet 里的数据已经是应用
+            勘误之后的结果。
 
     返回：
         描述本次重建结果的 ``ShardResult``。该月没有任何源分区、或过滤后为空时，
@@ -87,7 +95,10 @@ def rewrite_month_shard(
     if not _has_source_files(source_root, year, month):
         return _drop_shard(directory, target, year, month)
 
+    if errata is None:
+        errata = qmt_errata.errata_pivot_frame({})
     connection.register("lifecycle_filter", lifecycle[["code", "open_date", "expire_date"]])
+    connection.register("errata_overrides", errata)
     directory.mkdir(parents=True, exist_ok=True)
     temporary = directory / "bars.parquet.part"
     try:
@@ -96,18 +107,23 @@ def rewrite_month_shard(
             COPY (
                 SELECT CAST(upper(trim(k.code)) AS VARCHAR)                    AS code,
                        CAST(strptime(k.trade_date, '%Y%m%d') AS DATE)          AS trade_date,
-                       CAST(k.open AS DOUBLE)                                  AS open,
-                       CAST(k.high AS DOUBLE)                                  AS high,
-                       CAST(k.low AS DOUBLE)                                   AS low,
-                       CAST(k.close AS DOUBLE)                                 AS close,
-                       CAST(k.pre_close AS DOUBLE)                             AS pre_close,
-                       CAST(round(CAST(k.volume AS DOUBLE)) AS BIGINT)         AS volume,
-                       CAST(k.amount AS DOUBLE)                                AS amount,
-                       CAST(COALESCE(round(CAST(k.suspend_flag AS DOUBLE)), 0) AS TINYINT)
+                       CAST(COALESCE(e.open, CAST(k.open AS DOUBLE)) AS DOUBLE)         AS open,
+                       CAST(COALESCE(e.high, CAST(k.high AS DOUBLE)) AS DOUBLE)         AS high,
+                       CAST(COALESCE(e.low, CAST(k.low AS DOUBLE)) AS DOUBLE)           AS low,
+                       CAST(COALESCE(e.close, CAST(k.close AS DOUBLE)) AS DOUBLE)       AS close,
+                       CAST(COALESCE(e.pre_close, CAST(k.pre_close AS DOUBLE)) AS DOUBLE)
+                                                                               AS pre_close,
+                       CAST(round(COALESCE(e.volume, CAST(k.volume AS DOUBLE))) AS BIGINT)
+                                                                               AS volume,
+                       CAST(COALESCE(e.amount, CAST(k.amount AS DOUBLE)) AS DOUBLE)     AS amount,
+                       CAST(COALESCE(e.suspend_flag,
+                                     COALESCE(round(CAST(k.suspend_flag AS DOUBLE)), 0)) AS TINYINT)
                                                                                AS suspend_flag
                 FROM read_csv('{sql_path(pattern)}', header=true, all_varchar=true,
                               hive_partitioning=false, union_by_name=true) k
                 JOIN lifecycle_filter l ON upper(trim(k.code)) = l.code
+                LEFT JOIN errata_overrides e
+                    ON upper(trim(k.code)) = e.code AND trim(k.trade_date) = e.trade_date
                 WHERE k.trade_date IS NOT NULL
                   AND length(trim(k.trade_date)) = 8
                   AND l.open_date IS NOT NULL
@@ -126,6 +142,7 @@ def rewrite_month_shard(
         )
     finally:
         connection.unregister("lifecycle_filter")
+        connection.unregister("errata_overrides")
 
     if rows == 0:
         temporary.unlink(missing_ok=True)

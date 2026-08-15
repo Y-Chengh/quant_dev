@@ -101,9 +101,10 @@
 - 命令行层可以依赖库层，库层不得反向依赖 `quant.cli`。
 - `quant.market_data` 可以单向依赖 `quant.qmt_downloader` 的公开列常量、分区校验
   函数与报告写入工具（`gateway.*_COLUMNS`、`storage.validate_partition_directory`、
-  `self_check.writers.write_*_atomic`、`self_check.AuditIssue`、以及 `config.strip_jsonc` 这个纯文本工具）。这样 CSV 列契约
-  与报告格式只有一份定义。反向依赖仍然禁止：`quant.qmt_downloader` 必须能在大 QMT
-  内置 Python 中独立导入。
+  `self_check.writers.write_*_atomic`、`self_check.AuditIssue`、`config.strip_jsonc`
+  这个纯文本工具，以及 `errata.load_errata_overrides`/`errata.errata_pivot_frame`
+  这两个源数据勘误函数）。这样 CSV 列契约与报告格式只有一份定义。反向依赖仍然
+  禁止：`quant.qmt_downloader` 必须能在大 QMT 内置 Python 中独立导入。
 
 ## 模块规模与拆分约定
 

@@ -10,9 +10,13 @@
 - `runner/`：批量回溯、日增量、分批和断点续传编排。按职责拆为 mixin：
   `instruments`（证券池）、`issues`（问题降级）、`progress`（进度与并行落盘）、
   `kline`（日线与缺口修复）、`finance_steps`（财务）、
-  `corporate_actions`（除权）、`partitions`（分区写入与水位），
+  `corporate_actions`（除权）、`trading_calendar`（交易日历落表）、
+  `partitions`（分区写入与水位），
   `downloader` 只做编排，共享状态声明在 `base`。
 - `storage.py`：按日分区、临时文件原子替换和完成标记。
+- `errata.py`：人工核实的源数据勘误表装载与应用，供 `self_check` 与
+  `quant.market_data.daily` 增量入库共用，详见
+  [qmt_source_data_errata.md](qmt_source_data_errata.md)。
 - `finance.py`：根据公告日生成日级财务快照。
 - `validation.py`：缺失、重复和行情价格关系检查。
 - `state.py`：SQLite 批次状态；不保存业务数据。
@@ -24,7 +28,7 @@
 2. 在大 QMT 的“数据管理”中先下载财务数据。内置 Python 的财务读取接口只读取客户端已有财务缓存，不能在本工具内自动补齐财务缓存。
 3. 打开 `scripts/qmt_run_downloader.py`，使用大 QMT 内置 Python 运行，**不要勾选“启动本地 Python”**。
 4. 测试配置放在 `configs/qmt_downloader/` 下：两只股票、`20260810` 至 `20260812`、每批一只，结果写入 `D:\qmt_data_test`。
-5. 查看 QMT 输出窗口，同时检查 `D:\qmt_data_test\logs\downloader.log` 和 `D:\qmt_data_test\reports\issues_*.csv`。
+5. 查看 QMT 输出窗口，同时检查 `D:\qmt_data_test\logs\downloader.*.log`（每次运行一个文件）和 `D:\qmt_data_test\reports\issues_*.csv`。
 
 测试日期位于未来或服务器尚无该交易日数据时，日线会为空并在问题报告中明确提示。此时应把配置日期改为客户端已有的最近三个交易日。
 
@@ -72,18 +76,39 @@ VS Code 会把带注释的 `.json` 标红，`.vscode/settings.json` 已把 `conf
 D:\qmt_data\
 ├─ kline_1d\date=20260812\data.csv
 ├─ instrument_info\snapshot=latest\data.csv
+├─ trading_calendar\snapshot=latest\data.csv
 ├─ finance_raw\table=income\announce_date=20260812\data.csv
 ├─ finance_daily\date=20260812\data.csv
 ├─ corporate_actions\ex_date=20260812\data.csv
 ├─ run_complete\date=20260812\_SUCCESS.json
 ├─ staging\qmt_xxx\...\batch_00000.csv
 ├─ state\downloader_state.sqlite
-├─ logs\downloader.log
+├─ logs\downloader.20260812.09.inc.log
 ├─ reports\issues_20260812_xxx.csv
 └─ reports\line_correct\corrections_20260812_xxx.csv
 ```
 
-每个业务分区都有 `_SUCCESS.json`，其中包含行数、证券池范围和 CSV 的 SHA-256。写入顺序为 `data.csv.tmp` → 原子替换 `data.csv` → `_SUCCESS.json.tmp` → 原子替换 `_SUCCESS.json`。增量模式默认跳过同一证券池的已有完成分区，因此不会重写历史文件；若同一输出目录和日期改用了不同证券池，任务会明确报错，需使用 `repair` 或新输出目录，避免静默丢股票。
+根目录即配置中的 `output.root`，其下分两类：`kline_1d` 至 `corporate_actions` 为业务数据，`run_complete` 及之后为运行时资产。各目录含义如下。
+
+| 目录 | 分区键 | 含义 |
+| --- | --- | --- |
+| `kline_1d\` | `date=YYYYMMDD` | 日 K 线，一个交易日一个分区，列为 `code,trade_date,open,high,low,close,pre_close,volume,amount,suspend_flag`。非交易日不建目录，因此日期序列本身带有节假日跳跃。 |
+| `instrument_info\` | `snapshot=latest` | 标的基础信息，不按日期分区而是整体覆盖为最新状态，列为 `code,instrument_name,open_date,expire_date,is_trading,instrument_status`。 |
+| `trading_calendar\` | `snapshot=latest` | 大 QMT 交易日历，同样整体覆盖为最新状态，列为 `trade_date,calendar_symbol`。仅当 `datasets` 含 `trading_calendar` 时生成。 |
+| `finance_raw\` | `table=<来源表>\announce_date=YYYYMMDD` | 原始财务，先按来源表再按实际公告日两级分区；公告日缺失的记录落到 `announce_date=unknown`。 |
+| `finance_daily\` | `date=YYYYMMDD` | 日级财务快照，每天每只股票一行。 |
+| `corporate_actions\` | `ex_date=YYYYMMDD` | 除权送转事件，按除权日分区；当日无事件时保留只有表头的空 CSV。 |
+| `run_complete\` | `date=YYYYMMDD` | 整日水位标记，目录内只有 `_SUCCESS.json`，没有数据文件。 |
+| `staging\` | `<任务键>\<staging 数据集>` | 断点续跑的中间批次，见下文。 |
+| `state\` | 无 | `downloader_state.sqlite` 批次状态库，不保存业务数据。 |
+| `logs\` | 无 | 每次运行一个 `downloader.<日期>.<小时>.<模式>.log`，见“运行日志”。 |
+| `reports\` | 无 | `issues_<run_id>.csv` 问题报告，以及 `line_correct\corrections_<run_id>.csv` 行级修正明细。 |
+
+业务分区目录固定包含 `data.csv` 和 `_SUCCESS.json` 两个文件，缺任何一个都视为未完成。`staging` 下第一层是任务键 `qmt_<哈希>`，第二层是 staging 数据集名：日线为 `kline_1d`（批量读取阶段）和 `kline_daily_<日期>`（按日切分），原始财务为 `finance_raw_<表名>_<公告日>`；第三层是 `batch_00000.csv` 与配套的 `batch_00000.meta.json`（只存 `rows` 和 `sha256`）。staging 不会在任务成功后自动删除，它同时是下次同配置运行的断点来源。
+
+据此可以判断一份输出目录的完成状态：`run_complete` 缺失或日期数少于 `kline_1d`，说明所选数据集未全部成功，自动增量不会从这些日期前进；`staging` 子目录数明显多于最终分区数，说明上一次运行中断在合并落盘之前。两者都不需要手工清理，以相同配置重跑即可续上。
+
+每个业务分区的 `_SUCCESS.json` 包含完成时间、行数、`job_key`、`mode`、CSV 的 SHA-256，以及记录当次证券池、数据集列表和财务字段的 `partition_scope`。写入顺序为 `data.csv.tmp` → 原子替换 `data.csv` → `_SUCCESS.json.tmp` → 原子替换 `_SUCCESS.json`。增量模式默认跳过同一证券池的已有完成分区，因此不会重写历史文件；若同一输出目录和日期改用了不同证券池，任务会明确报错，需使用 `repair` 或新输出目录，避免静默丢股票。
 
 选择 `kline_1d` 时，会先逐只保存 `instrument_info/snapshot=latest`，包含上市日期、退市日期、当前交易状态和停牌状态，然后才开始收集日线。逐日缺口检查直接用上市/退市日期跳过未上市或已退市的证券日，只有上市期间填充后仍无日线的记录才进入问题报告。生命周期信息必须先取得：全区间回溯下未上市和已退市的证券日占三成以上，若等日线收集结束后再过滤，中间会堆积上千万条随即被丢弃的提示。也正因如此，上市退市信息获取失败时会直接跳过本次日线收集并报 `ERROR`，避免耗时数小时后才发现问题报告不可用；修复后重新运行会从断点继续。
 
@@ -94,6 +119,27 @@ D:\qmt_data\
 跳过分区前会重新核验数据文件、行数和 SHA-256。一次任务的全部所选数据集成功后，才会在 `run_complete/date=YYYYMMDD/_SUCCESS.json` 写整日水位；自动增量只根据这个全局水位前进，因此日 K 成功但财务或除权失败时不会越过失败日期。
 
 `corporate_actions` 的现金、送股、转增和配股数量均保留大 QMT 的“每股”口径。没有事件的实际交易日也会生成只有表头的空 CSV，表示已检查但当日无事件，而不是下载失败。
+
+## 运行日志
+
+每次运行单独写一个日志文件，命名为 `logs\downloader.<YYYYMMDD>.<HH>.<模式>.log`。模式片段为 `back_fill`、`inc` 或 `repair`，分别对应配置中的 `backfill`、`incremental` 和 `repair`；例如 2026-08-12 上午九点启动的日增量写入 `downloader.20260812.09.inc.log`。文件名只精确到小时，同一小时内重复运行会追加从 `2` 起的序号（`downloader.20260812.09.inc.2.log`），因此两次运行不会混进同一份日志。历史日志一律保留，不再被后续运行覆盖或续写，何时清理由使用者决定。
+
+`log_max_bytes` 和 `log_backup_count` 仍然生效，但只在单次运行内部轮转：一次全市场回溯写满 `log_max_bytes` 后生成 `....log.1`，最多保留 `log_backup_count` 个，不会波及其它运行的日志。
+
+日志起始固定记录本次运行的完整配置，事后复现不必再回头比对配置文件：
+
+```text
+2026-08-12 09:00:01 INFO 本次运行日志文件=D:\qmt_data\logs\downloader.20260812.09.inc.log
+2026-08-12 09:00:01 INFO 生效配置开始
+2026-08-12 09:00:01 INFO 配置 config_path=C:\Users\win10\Documents\quant\configs\qmt_downloader\incremental.example.json
+2026-08-12 09:00:01 INFO 配置 mode=incremental
+2026-08-12 09:00:01 INFO 配置 start_date=20260810
+2026-08-12 09:00:01 INFO 配置 end_date=20260811
+...
+2026-08-12 09:00:01 INFO 生效配置结束
+```
+
+记录的是生效值而不是配置文件原文：`start_date` 与 `end_date` 的 `auto` 已解析为实际日期，`incremental_lag_days` 的 `auto` 已解析为 `0` 或 `1` 并附带判定时刻 `incremental_lag_decision_time`，`datasets` 也已派生出 `business_datasets` 和 `save_trading_calendar`。每项单独一行，`配置 batch_size=` 这类前缀可直接检索，也避免超长单行在 QMT 输出窗口被截断。新增配置项必须同步写入 `DownloaderConfig.describe()`，该约束由 `test_describe_covers_every_configuration_key` 守护。
 
 ## 自检进度日志
 
@@ -126,6 +172,20 @@ D:\qmt_data\
 
 代价是区间外分区的哈希、行数和口径一致性在本次运行中不再被检查。要覆盖全部历史分区就不要传日期范围：两端都缺省时不做任何裁剪，行为与以前完全相同。目录名不是合法八位日期的分区无法判断归属，一律保留并照常报 `INVALID_PARTITION_DATE`，不会因为设了区间被静默跳过。
 
+## 交易日历落表
+
+`trading_calendar` 是与 `kline_1d` 平级的数据集开关，写进 `datasets` 即落表，去掉即不落表；`datasets` 整个缺省时（配置未写该键）默认全选，因此也包含它。程序本来每次运行都要按 `calendar_symbol` 请求一次交易日历用于校验预期交易日，落表只是把这份已经拿到的结果保存下来，不产生任何额外接口调用。
+
+保存位置是 `trading_calendar/snapshot=latest/`，与 `instrument_info` 一样按快照整体覆盖，同样带 `data.csv` 和 `_SUCCESS.json`，因此哈希和行数可被校验。列为 `trade_date` 和取得该日历所用的 `calendar_symbol`。
+
+落表是**累积**的：每次运行读回已有快照，与本次区间求并集后重写，本次区间内的日期以本次结果为准，区间外的历史日期原样保留。日增量每天只请求一两天，若直接覆盖，历史日历会被截成一天。代价是合并只增不删——某个日期一旦写入就不会因为后续运行不再返回它而消失；需要彻底重建时删除该快照目录，再以覆盖完整区间的配置跑一次。
+
+该开关不参与任务键、分区范围和整日水位范围的计算：它不产生 staging 批次，也不改变任何业务分区的内容。因此在已有输出目录上随时开关它都不会让断点失效、不会触发已完成分区的范围冲突，也不会让自动增量的水位重新对不上。只把 `datasets` 设为 `["trading_calendar"]` 是合法配置，表示只导日历、不下载业务数据，此时不写整日水位。
+
+落表失败按所选数据集失败处理：记 `ERROR`、不推进整日水位，重跑时已完成的业务分区会因范围一致而快速跳过。
+
+`quant-qmt-self-check` 会自动读取这份快照作为权威交易日历，无需再传 `--calendar-csv`；没有权威日历时自检只能用已有分区日期推导，会直接报 `CALENDAR_INFERRED_FROM_PARTITIONS` 错误，因为那种退化模式发现不了整个交易日分区完全缺失。手工导出到 `trading_calendar/data.csv` 的扁平单列文件仍然被识别。
+
 ## 财务日期口径
 
 - `finance_raw` 保存报告期 `report_date` 和实际公告日 `announce_date`，按公告日分区。
@@ -150,6 +210,8 @@ D:\qmt_data\
 
 每只证券首个和最后一个已有交易日之间如果存在日线缺口，程序会按证券合并连续缺失日期区间，再调用大 QMT 执行定向补下载。`kline_gap_retry_count` 控制补下载轮数，默认 `2`，允许范围为 `1`～`10`。达到上限后仍缺失会升级为 `ERROR`，批次保持可重试且不会生成最终日线分区；停牌补齐行不会被误判为缺口，上市前和退市后的日期也不属于“中间缺口”。定向补下载始终会先调用大 QMT 历史下载刷新对应区间的本地缓存；`download_kline` 只控制每批首轮批量读取前是否全量下载。补齐后的数据在写最终分区时按业务主键差异原地重写同范围旧分区，不再需要预先删除完成标记。
 
+补充本地缓存时优先使用大 QMT 的批量历史下载接口 `download_history_data2`，一次请求整批证券。逐只下载的开销几乎全在接口往返上：实测 600 只证券的一批耗时约 30 秒、占单批总耗时的一半以上，批量化后这部分基本消失。入口脚本会依次尝试大 QMT 注入的全局 `download_history_data2` 和 `xtquant.xtdata.download_history_data2`，都取不到时自动改为逐只下载并在日志中说明。批量调用整体失败也会立即回退逐只下载，保留把失败归因到具体证券的能力；批量成功但个别证券实际未补齐时，后续的缺口检查和定向补下载仍会兜住。若批量接口在你的大 QMT 版本上行为异常，把配置项 `download_kline_batch` 设为 `false` 即可一键关闭。下载阶段的开始和完成都会写日志，可用 `stage=download_history` 检索并核对 `mode=batch` 还是 `mode=per_symbol`。
+
 任务键由日期范围、模式、数据集和证券池等关键配置生成。异常退出后，以完全相同配置再次运行会跳过已完成批次，从未完成批次继续。每个 staging CSV 也有独立的行数和 SHA-256 元数据，损坏后会自动使断点失效并重新下载。不要手动删除 `staging` 或 `state/downloader_state.sqlite`，否则相应断点会失效。
 
 ## 常见提示
@@ -158,6 +220,6 @@ D:\qmt_data\
 - 财务记录存在但业务字段全空：默认视为未完成；个别字段缺失会写入问题报告并保留原始空值，不会用其他数值静默填充。
 - 日线全空：确认目标日期已经收盘、行情权限可用，或改成最近已有的交易日。
 - 某只股票某日缺失：报告会提示；常见原因包括停牌、未上市或本地缓存不完整。
-- 批次失败定位：终端和 `downloader.log` 会输出 `dataset`、批次序号、证券列表、日期区间、接口阶段、异常类型和原始错误；问题 CSV 同时保留逐条 `code/date/message`。
+- 批次失败定位：终端和当次运行日志会输出 `dataset`、批次序号、证券列表、日期区间、接口阶段、异常类型和原始错误；问题 CSV 同时保留逐条 `code/date/message`。
 - 已完成分区被跳过：这是默认安全行为；确需覆盖时使用 `repair`。
 - 勾选“启动本地 Python”后没有输出：该模式不会为本入口注入大 QMT 的 `ContextInfo` 和内置全局下载函数。

@@ -17,6 +17,7 @@ from .paths import (
     default_qmt_config_path,
     default_qmt_daily_database,
     default_qmt_daily_root,
+    default_qmt_errata_path,
     default_qmt_output_root,
     project_root,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "default_qmt_config_path",
     "default_qmt_daily_database",
     "default_qmt_daily_root",
+    "default_qmt_errata_path",
     "default_qmt_output_root",
     "project_root",
 ]

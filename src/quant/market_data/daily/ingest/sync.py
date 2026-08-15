@@ -19,7 +19,8 @@ from pathlib import Path
 
 import duckdb
 
-from quant.config import default_qmt_daily_database
+from quant.config import default_qmt_daily_database, default_qmt_errata_path
+from quant.qmt_downloader import errata as qmt_errata
 
 from ..schema import SCHEMA_VERSION, apply_schema
 from . import aux_tables, catalog, state
@@ -64,6 +65,8 @@ class DailySyncConfig:
         verify_hash: 是否对内容变化的分区重算 ``data.csv`` 的 SHA-256。
         dry_run: 只做检查并打印结论，不做任何写入。
         lock_timeout_seconds: 残留同步锁的判定秒数。
+        errata_csv: 人工核实的源数据勘误表路径；``None`` 表示用
+            ``default_qmt_errata_path()``，文件不存在时视为没有勘误记录。
     """
 
     database: Path | None = None
@@ -73,6 +76,7 @@ class DailySyncConfig:
     verify_hash: bool = False
     dry_run: bool = False
     lock_timeout_seconds: float = 3600.0
+    errata_csv: Path | None = None
 
     def __post_init__(self) -> None:
         """校验同步模式取值。
@@ -106,6 +110,14 @@ class DailySyncConfig:
             按「显式传参 > 环境变量 > 下载器配置 > 内置回退」解析出的路径。
         """
         return resolve_source_root(self.source_root, self.config_path)
+
+    def resolved_errata_csv(self) -> Path:
+        """返回最终使用的源数据勘误表路径。
+
+        返回：
+            显式传入的路径，或 ``default_qmt_errata_path()`` 的默认路径。
+        """
+        return Path(self.errata_csv) if self.errata_csv is not None else default_qmt_errata_path()
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,13 +261,23 @@ def _apply_delta(
         本次同步的结果摘要。
     """
     lifecycle = aux_tables.load_lifecycle_frame(source_root)
+    errata_overrides = qmt_errata.load_errata_overrides(config.resolved_errata_csv())
+    if errata_overrides:
+        logger.info(
+            "[daily-sync] 已装载源数据勘误表 %d 条 (证券,交易日) 记录，来自 %s",
+            len(errata_overrides),
+            config.resolved_errata_csv(),
+        )
+    errata_frame = qmt_errata.errata_pivot_frame(errata_overrides)
     months = sorted(delta.touched_months())
     memory = duckdb.connect()
     try:
         memory.execute(f"SET threads = {_worker_threads()}")
         rewritten = 0
         for index, (year, month) in enumerate(months, start=1):
-            result = rewrite_month_shard(memory, source_root, daily_root, year, month, lifecycle)
+            result = rewrite_month_shard(
+                memory, source_root, daily_root, year, month, lifecycle, errata_frame
+            )
             rewritten += 1
             logger.info(
                 "[daily-sync] 重写月度分片 %d/%d %04d-%02d rows=%d%s",

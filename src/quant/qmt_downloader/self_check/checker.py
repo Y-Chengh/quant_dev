@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from .. import errata
 from .discovery import _PartitionDiscoveryMixin
 from .loading import _ReferenceLoadingMixin
 from .models import ISSUE_COLUMNS, AuditIssue, AuditResult, SelfCheckConfig
@@ -49,6 +50,8 @@ class QmtDataSelfChecker(
         self.reference_scope: dict[str, Any] | None = None
         self._lifecycle_issue_keys: set[tuple[str, str]] = set()
         self.staging_daily_gap_dates: list[tuple[str, list[str]]] = []
+        self._errata_overrides = errata.load_errata_overrides(config.errata_csv)
+        self._errata_applied_count = 0
         self.logger = logging.getLogger(LOGGER_NAME)
         self._run_started_at = time.monotonic()
         self._phase_name = "初始化"
@@ -72,6 +75,12 @@ class QmtDataSelfChecker(
             self.config.start_date or "全部",
             self.config.end_date or "全部",
         )
+        if self._errata_overrides:
+            self.logger.info(
+                "[自检] 已装载源数据勘误表 %d 条 (证券,交易日) 记录，来自 %s",
+                len(self._errata_overrides),
+                self.config.errata_csv,
+            )
         self._begin_phase("发现日线分区")
         self._discover_partitions()
         self._end_phase(
@@ -219,12 +228,13 @@ class QmtDataSelfChecker(
         """
 
         self.logger.info(
-            "[自检] 结束 状态=%s 总耗时 %.1fs errors=%s warnings=%s report=%s",
+            "[自检] 结束 状态=%s 总耗时 %.1fs errors=%s warnings=%s report=%s 勘误覆盖=%d",
             summary.get("status", ""),
             time.monotonic() - self._run_started_at,
             summary.get("errors", 0),
             summary.get("warnings", 0),
             report_dir,
+            self._errata_applied_count,
         )
 
 

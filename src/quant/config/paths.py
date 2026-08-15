@@ -124,6 +124,16 @@ def default_factor_config_path(name: str) -> Path:
     return configs_dir() / "factor_research" / name
 
 
+def default_qmt_errata_path() -> Path:
+    """返回默认的 QMT 源数据勘误表路径。
+
+    返回：
+        ``<项目根>/docs/qmt_source_data_errata.csv``；本函数不校验文件是否
+        存在，勘误表装载函数会把文件不存在视为没有任何勘误记录。
+    """
+    return project_root() / "docs" / "qmt_source_data_errata.csv"
+
+
 def default_qmt_config_path(name: str) -> Path:
     """拼接大 QMT 下载器配置样例的完整路径。
 

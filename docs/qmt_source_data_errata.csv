@@ -1,0 +1,2 @@
+symbol,trade_date,field,value,issue_type,description,found_date,source_report
+002062.SZ,20210524,suspend_flag,1,missing_suspension,QMT 原始日线数据未把该日标记为停牌（实际停牌），自检据此误判为缺失/异常;只覆盖 suspend_flag 一个字段，其余字段保持源数据原值不变,20260815,d:\qmt_kline_test1\reports\self_check\20260815_225429_156458\issues.csv

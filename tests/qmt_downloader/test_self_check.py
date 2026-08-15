@@ -259,6 +259,71 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertTrue((result.report_dir / "info.csv").is_file())
             self.assertTrue((result.report_dir / "coverage_by_symbol.csv").is_file())
 
+    def test_errata_csv_suppresses_known_source_data_issue(self) -> None:
+        """勘误表覆盖 suspend_flag 后，源数据本身的已知问题不应再报错。
+
+        复现 002062.SZ 20210524 的真实场景：QMT 源数据把该日错误标记为
+        suspend_flag=0，但成交量与成交额都是 0，因此在校验里会同时触发
+        ACTIVE_ZERO_VOLUME 与 ACTIVE_ZERO_AMOUNT 两条 ERROR。应用勘误表把
+        suspend_flag 覆盖为 1 后，这两条问题应当消失，且不产生新问题。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [
+                    {"code": "000001.SZ", "open_date": "19910403", "expire_date": ""},
+                    {"code": "600000.SH", "open_date": "19991110", "expire_date": ""},
+                ],
+                SYMBOLS,
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8), _bar("600000.SH", "20240102", 20.0, 19.8)],
+                SYMBOLS,
+            )
+            _write_kline(
+                store,
+                "20240103",
+                [
+                    _bar("000001.SZ", "20240103", 10.1, 10.0),
+                    # 源数据错误：实际停牌但 suspend_flag 仍是 0，volume/amount 已是 0。
+                    _bar("600000.SH", "20240103", 20.0, 20.0, volume=0, amount=0, suspend_flag=0),
+                ],
+                SYMBOLS,
+            )
+
+            errata_csv = root / "errata.csv"
+            errata_csv.write_text(
+                "symbol,trade_date,field,value,issue_type,description,found_date,source_report\n"
+                "600000.SH,20240103,suspend_flag,1,missing_suspension,test,20240103,test\n",
+                encoding="utf-8",
+            )
+
+            without_errata = run_full_sample_self_check(
+                SelfCheckConfig(output_root=root, calendar_csv=calendar, report_dir=root / "audit1")
+            )
+            codes_without = set(without_errata.issues["issue_code"])
+            self.assertIn("ACTIVE_ZERO_VOLUME", codes_without)
+            self.assertIn("ACTIVE_ZERO_AMOUNT", codes_without)
+
+            with_errata = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit2",
+                    errata_csv=errata_csv,
+                )
+            )
+            codes_with = set(with_errata.issues["issue_code"])
+            self.assertNotIn("ACTIVE_ZERO_VOLUME", codes_with)
+            self.assertNotIn("ACTIVE_ZERO_AMOUNT", codes_with)
+            self.assertNotIn("SUSPENDED_WITH_TURNOVER", codes_with)
+
     def test_expire_date_lifecycle_sentinels_are_not_treated_as_delisting(self) -> None:
         """expire_date 落在已知无期限哨兵集合内时不应误报退市。
 

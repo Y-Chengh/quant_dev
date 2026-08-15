@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from .. import errata
 from .base import _CheckerState
 from .models import _ScanState, _SymbolStats
 from .utils import (
@@ -324,6 +325,9 @@ class _ReferenceLoadingMixin(_CheckerState):
                 ),
             )
             frame = self._read_kline_partition(directory, date_value)
+            if self._errata_overrides:
+                frame, applied = errata.apply_errata_overrides(frame, self._errata_overrides)
+                self._errata_applied_count += applied
             stats = {code: _SymbolStats() for code in symbols}
             self._validate_rows(
                 frame,

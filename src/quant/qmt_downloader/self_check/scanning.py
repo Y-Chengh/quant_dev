@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from .. import errata
 from .base import _CheckerState
 from .models import _ScanState, _SymbolStats
 from .utils import _file_sha256, _sample
@@ -77,11 +78,14 @@ class _CalendarScanMixin(_CheckerState):
                     actual="日期目录不存在",
                     evidence="理论应有证券 {0} 只，实际记录 0 条".format(len(active)),
                     possible_causes="当日任务未运行、下载失败、水位错误推进或目录被删除",
-                    suggested_action="检查 downloader.log 与 run_complete 水位，并使用 repair 补齐该日期",
+                    suggested_action="检查 logs 目录下当次运行日志与 run_complete 水位，并使用 repair 补齐该日期",
                     source_file=str(self._expected_partition_path(date_value)),
                 )
             else:
                 frame = self._read_kline_partition(directory, date_value)
+            if self._errata_overrides:
+                frame, applied = errata.apply_errata_overrides(frame, self._errata_overrides)
+                self._errata_applied_count += applied
             present = self._validate_rows(
                 frame,
                 date_value,

@@ -90,6 +90,9 @@ class SelfCheckConfig:
     staging_root: Path | None = None
     #: 长循环每前进多少个元素输出一条 INFO 进度；0 表示按总量的 5% 自动选择。
     progress_every: int = 0
+    #: 人工核实的源数据勘误表路径；``None`` 或文件不存在时视为没有勘误记录。
+    #: 格式见 docs/qmt_source_data_errata.md，读入某交易日分区后、校验前应用。
+    errata_csv: Path | None = None
 
     def __post_init__(self) -> None:
         """校验日期、覆盖率和统计异常阈值。
