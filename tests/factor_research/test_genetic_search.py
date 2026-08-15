@@ -18,7 +18,8 @@ from quant.factor_research.factor_search import (
     SearchContext,
     op,
 )
-from quant.factor_research.factor_search.genetic import _ExpressionGenerator, _tree_operators
+from quant.factor_research.factor_search.genetic.generator import _ExpressionGenerator
+from quant.factor_research.factor_search.genetic.trees import _tree_operators
 
 
 def _genetic_context() -> SearchContext:
