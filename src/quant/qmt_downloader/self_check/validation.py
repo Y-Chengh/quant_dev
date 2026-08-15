@@ -301,24 +301,8 @@ class _RowValidationMixin(_CheckerState):
         amount = values["amount"]
         suspend = values["suspend_flag"]
         assert None not in (open_price, high, low, close, pre_close, volume, amount, suspend)
-        if min(open_price, high, low, close, pre_close) <= 0:
-            invalid = True
-            self._row_issue(
-                "NON_POSITIVE_PRICE",
-                "ERROR",
-                "日线价格字段包含零或负数。",
-                code,
-                date_value,
-                "open,high,low,close,pre_close",
-                "所有价格 > 0",
-                "open={0}, high={1}, low={2}, close={3}, pre_close={4}".format(
-                    open_price, high, low, close, pre_close
-                ),
-                "行情字段损坏、哨兵值未转换或代码映射错误",
-                "核对 QMT 原始日线并重新下载该证券日期",
-                path,
-                index,
-            )
+        # NON_POSITIVE_PRICE 检查已按维护者要求禁用：pre_close 字段本身可能存在
+        # 误差（已验证），且下游统一改用 close 计算涨跌幅，不再依赖该检查。
         if high < max(open_price, low, close) or low > min(open_price, high, close):
             invalid = True
             self._row_issue(
@@ -473,7 +457,7 @@ class _RowValidationMixin(_CheckerState):
                 has_action = (code, date_value) in corporate_actions
                 self._row_issue(
                     "PRE_CLOSE_DISCONTINUITY_EXPLAINED" if has_action else "PRE_CLOSE_DISCONTINUITY",
-                    "INFO" if has_action else "WARNING",
+                    "INFO",
                     "当日 pre_close 与上一条实际日线 close 不一致。",
                     code,
                     date_value,

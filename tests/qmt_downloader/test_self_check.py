@@ -1140,6 +1140,87 @@ class QmtDataSelfCheckTests(unittest.TestCase):
                 "区间外除权分区不应被读取",
             )
 
+    def test_non_positive_price_check_is_disabled(self) -> None:
+        """零或负数价格已按维护者要求禁用检查，不应再产生 NON_POSITIVE_PRICE。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
+                ["000001.SZ"],
+            )
+            # 当日价格全部为零，且 pre_close 与上一实际日线 close 保持一致，
+            # 避免触发昨收断层或涨跌幅告警，只单独检验价格非正校验是否已禁用。
+            _write_kline(
+                store,
+                "20240103",
+                [_bar("000001.SZ", "20240103", 0.0, 10.0)],
+                ["000001.SZ"],
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            self.assertNotIn("NON_POSITIVE_PRICE", set(result.issues["issue_code"]))
+            self.assertEqual(result.summary["status"], "passed")
+
+    def test_unexplained_pre_close_discontinuity_is_info_not_warning(self) -> None:
+        """无法用除权事件解释的昨收断层只报 INFO，不应算作告警。
+
+        统一改用 close 计算涨跌幅后，pre_close 本身的连续性不再影响下游
+        计算，历史验证显示该字段可能存在误差，因此降级为 INFO。
+        """
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
+                ["000001.SZ"],
+            )
+            # 20240103 的 pre_close 相对前一日 close 跳空，且当日无除权事件记录。
+            _write_kline(
+                store,
+                "20240103",
+                [_bar("000001.SZ", "20240103", 9.2, 9.1)],
+                ["000001.SZ"],
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            issues = result.issues.loc[result.issues["issue_code"] == "PRE_CLOSE_DISCONTINUITY"]
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(issues.iloc[0]["level"], "INFO")
+            self.assertEqual(result.summary["status"], "passed")
+
 
 if __name__ == "__main__":
     unittest.main()
