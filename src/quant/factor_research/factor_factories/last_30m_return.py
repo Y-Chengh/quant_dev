@@ -17,6 +17,11 @@ class Last30mReturnFactory(FactorFactory):
 
     name = "last_30m_return"
 
+    #: 本因子调用 ``intraday_values``，必须有分钟行情才能计算；
+    #: 日频数据源会据此自动排除它。属性只声明在具体因子模块里，
+    #: 不能上提到 ``FactorFactory`` 基类，否则会作废全部因子缓存。
+    requires_intraday = True
+
     def compute(self, bars: pd.DataFrame, daily: pd.DataFrame) -> pd.Series:
         def calculate(group: pd.DataFrame) -> float:
             close = group["close"].to_numpy(dtype=float)

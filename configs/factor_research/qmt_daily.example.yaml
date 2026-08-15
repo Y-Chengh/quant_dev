@@ -1,0 +1,75 @@
+# QMT 日线数据源的对照配置。
+# python -m quant.cli.factor_demo --config configs/factor_research/qmt_daily.example.yaml
+#
+# 与 example.yaml 的区别只在数据源：那份配置显式选了 last_30m_volume_ratio 和
+# positive_bar_ratio 两个分钟因子，日线源下会直接报错。这里只用日频可算的因子。
+
+# 数据源设置
+data_source: qmt_daily
+adjust: hfq          # 后复权：历史取值不随新的分红送转改变，也不会让因子缓存整体失效
+# adjust_anchor:     # 只在 adjust: qfq 时需要；不填则用库中记录的基准日
+# daily_database:    # 缺省按 QMT_DAILY_DB_PATH 环境变量解析
+# no_auto_sync: true # 关掉启动时的自动增量检查
+
+# 数据集设置
+start: 2020-01-01
+end: 2026-01-01
+validation_start: 2025-01-01
+symbol_limit: 500
+
+training_mode: single
+
+# 回测费用
+backtest_top_n: 10
+slippage_bps: 3
+commission_bps: 1
+
+# 模型设置
+task: regression
+model: lightgbm
+objective: huber
+objective_alpha: 0.02
+n_estimators: 1000
+learning_rate: 0.03
+num_leaves: 31
+max_depth: 5
+min_child_samples: 50
+subsample: 0.8
+colsample_bytree: 0.8
+reg_alpha: 0.1
+reg_lambda: 1.0
+
+no_factor_cache: false
+log_level: INFO
+
+# 因子设置：不写 factors 时自动使用全部日频可算因子（当前 22 个）。
+# 下面显式列出便于复现；注意不能出现 close_to_vwap、downside_semivol、
+# intraday_path_efficiency、last_30m_return、last_30m_volume_ratio、
+# positive_bar_ratio、realized_vol、signed_volume_imbalance 这八个分钟因子。
+factors:
+  - alpha_001
+  - alpha_002
+  - amplitude
+  - breakout_strength_20d
+  - candle_body_ratio
+  - channel_position_20d
+  - close_position
+  - close_to_ma_5d
+  - intraday_return
+  - ma_5d_slope
+  - ma_distance_change_5d
+  - ma_spread_5d_20d
+  - ma_spread_change_5d_20d
+  - momentum_acceleration_5d_20d
+  - overnight_gap
+  - return_1d
+  - return_5d
+  - return_10d
+  - return_20d
+  - up_days_ratio_5d
+  - volatility_5d
+  - volume_ratio_5d
+
+factor_expressions:
+  - ts_rank(column(close),min_periods=20,window=20)
+  - ts_rank(cs_zscore(column(close)),min_periods=20,window=20)

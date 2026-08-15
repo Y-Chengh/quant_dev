@@ -225,7 +225,17 @@ class YamlConfigReportingTest(unittest.TestCase):
                 model="simple_decision_tree",
             )
             experiment = SimpleNamespace(run=lambda dataset: _result())
-            client = SimpleNamespace(get_metadata=lambda: {})
+            # 主流程现在只依赖数据源抽象，因此这里替换的是数据源而不是行情客户端。
+            source = SimpleNamespace(
+                name="market_service",
+                describe=lambda: "数据源 market_service（5m）",
+                metadata=lambda: {},
+                list_symbols=lambda limit: ["000001.SZ"],
+                load_bars=lambda codes, start, end: pd.DataFrame({"close": [1.0]}),
+                build_features=lambda bars, feature_columns, cache_dir, factor_expressions: (
+                    pd.DataFrame({"return_1d": [0.1]})
+                ),
+            )
 
             with ExitStack() as stack:
                 stack.enter_context(patch.object(factor_demo, "parse_args", return_value=args))
@@ -237,21 +247,7 @@ class YamlConfigReportingTest(unittest.TestCase):
                     )
                 )
                 stack.enter_context(
-                    patch("quant.market_data.client.MarketDataClient", return_value=client)
-                )
-                stack.enter_context(
-                    patch.object(
-                        factor_demo,
-                        "load_market_service",
-                        return_value=pd.DataFrame({"close": [1.0]}),
-                    )
-                )
-                stack.enter_context(
-                    patch.object(
-                        factor_demo,
-                        "build_daily_features",
-                        return_value=pd.DataFrame({"return_1d": [0.1]}),
-                    )
+                    patch.object(factor_demo, "data_source_from_args", return_value=source)
                 )
                 stack.enter_context(
                     patch.object(

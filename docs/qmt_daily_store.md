@@ -1,0 +1,149 @@
+# QMT 日线库
+
+把大 QMT 落盘的日线 CSV 增量转换成 market service 自己的存储格式，供因子研究与
+合法性审计使用。日线库与现有 5 分钟库**完全独立**，互不影响。
+
+## 存储布局
+
+```
+<daily_root>/                                默认 D:\量化\qmt_daily
+├─ qmt_daily.duckdb                          目录库：视图 + 小表，只有几 MB
+├─ bars_1d/year=YYYY/month=MM/bars.parquet   唯一的大数据集，月粒度原子重写
+├─ reports/market_check/<时间戳>/            quant-market-check 报告
+└─ .sync.lock                                进程间同步锁
+```
+
+`qmt_daily.duckdb` 中：
+
+| 对象 | 内容 |
+| --- | --- |
+| `VIEW bars_1d` | `code, trade_date, open, high, low, close, pre_close, volume, amount, suspend_flag`，外加 hive 分区列 `year`、`month` |
+| `TABLE instruments` | 代码、简称、上市日、退市日、交易状态、板块、风险警示标记 |
+| `TABLE trading_calendar` | 交易日与日历基准证券 |
+| `TABLE corporate_actions` | 除权送转原始记录，含 `adjustment_factor` |
+| `TABLE ingest_state` | 每个源分区的文件指纹与入库结果，增量检查的全部依据 |
+| `TABLE sync_runs` | 每次同步的执行记录 |
+| `TABLE monthly_inventory` / `symbols` | 月度与逐证券库存统计 |
+| `TABLE dataset_metadata` | 结构版本、源目录、复权策略、前复权基准日等 |
+
+**库里一律保存原始不复权价**，复权在读取层按需计算，原始值始终可审计、可对账。
+
+## 命令
+
+```powershell
+# 首次全量入库
+quant-build-daily-store --qmt-output-root D:\qmt_kline_test1 --rebuild-all
+# 日常增量（无增量时约 0.2 秒返回）
+quant-build-daily-store
+# 只检查不写入
+quant-build-daily-store --dry-run
+# 强制完整扫描，并重算源文件摘要
+quant-build-daily-store --sync-mode full --sync-verify-hash
+```
+
+路径解析优先级统一为「显式传参 > 环境变量 > 下载器配置 > 内置回退」：
+
+- 日线库：`--database` > `QMT_DAILY_DB_PATH` > `D:\量化\qmt_daily\qmt_daily.duckdb`
+- 源目录：`--qmt-output-root` > `QMT_OUTPUT_ROOT` > `--qmt-config` 指定的 JSONC 里的
+  `output_root` > `D:\qmt_kline_test1`
+
+退出码：0 正常，2 配置或执行失败，3 日线库被其它进程占用而跳过。
+
+## 增量检查为什么这么设计
+
+源目录实测有 6450 个日线分区、6450 个除权分区，**每个 `_SUCCESS.json` 约 106 KB**
+（`partition_scope` 内嵌了整个约 5000 只的证券池）。全部解析一遍等于读 1.3 GB JSON，
+放在每次启动的路径上不可接受。因此检查分四级，只有字节真的变了才会读文件：
+
+| 级别 | 做什么 | 实测耗时 |
+| --- | --- | --- |
+| Tier −1 | 比 `run_complete` 最新日期 + 四个数据集目录的 mtime | 0.2 秒 |
+| Tier 0 | 每数据集一次 `scandir`，与 `ingest_state` 的键做差 | — |
+| Tier 1 | 每分区两次 `stat`，比 mtime 与 size | 全量 12902 个分区共 2.7 秒 |
+| Tier 2 | 只对指纹变化的分区解析 `_SUCCESS.json`，比 `sha256` | 按需 |
+| Tier 3 | `--sync-verify-hash` 时重算 `data.csv` 摘要 | 按需 |
+
+Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条目时变化，**孙文件被原地
+重写不会冒泡**。因此它只用于缺省的 `auto` 模式；`--sync-mode full` 与
+`quant-market-check` 一律从 Tier 0 开始。
+
+全量重建实测 83 秒（12902 个分区 → 320 个月度分片 → 1633 万行）。
+
+## 生命周期过滤：必须做，否则数据废掉一半
+
+大 QMT 的 `fill_data=True` 会给**还没上市**的证券也返回一行，`suspend_flag=1`、
+`volume=0`、开高低收全等。实测每个交易日源文件都恰好 5209 行：
+
+| 交易日 | 源行数 | 其中已上市 | 已上市里真正停牌 |
+| --- | ---: | ---: | ---: |
+| 2000-01-04 | 5209 | 750 | 7 |
+| 2015-01-05 | 5209 | 2365 | 214 |
+| 2024-01-02 | 5209 | 4996 | 4 |
+
+约 40% 是填充行。入库时按 `instruments.list_date` 过滤掉它们，否则：库体积膨胀到
+三倍；`symbols.first_date` 完全失真；**上市前那段平价零量数据会让波动率、收益率类
+因子在 IPO 当天炸出一个假跳变**。过滤之后 `suspend_flag=1` 才真正等价于「停牌」。
+
+因此 `instruments` 必须先于 `bars_1d` 入库；`instrument_info` 快照缺失时入库直接
+失败退出，不会退化成不过滤地全量写入。
+
+另注：`expire_date` 的 QMT 哨兵不止 `99999999`，实测快照里还有 `19700427` 与
+`19700428`（共 725 行），入库时一律归一化为空。
+
+## 并发与锁
+
+DuckDB 是**单写多读**，一个活跃的写连接会同时挡住其它进程的读。为此：
+
+- 重活（读 CSV、写 Parquet、统计库存）全部跑在**内存连接**上，目录库不上锁；
+- 只有最后更新辅助表与指纹的那个短事务才持有写锁，实测约 5 秒；
+- 另有 `.sync.lock` 文件锁，给同一套工具链的其它进程一个明确的中文提示；
+- **自动增量同步拿不到锁时降级为警告并跳过**，继续用现有数据跑，绝不让实验挂掉。
+
+## 复权
+
+系数口径已在真实数据上标定（2024 年全年 4524 个除权事件）：
+
+```
+adjustment_factor(t) == close(t-1) / pre_close(t)      # t 为除权日
+```
+
+比值中位数 1.0，10%~90% 分位落在 `[1.0, 1.000001]`。于是：
+
+- **后复权**（`hfq`，研究推荐）：`adj(t) = price(t) × Π{ f(s) : ex_date s ≤ t }`。
+  历史取值不随之后新增的分红送转改变，既不引入未来信息，也不会让因子缓存整体失效。
+- **前复权**（`qfq`）：`adj(t) = hfq(t) / hfq(anchor)`。每次出现新的除权事件都会
+  重算全部历史价格，因此**必须显式固定基准日**，否则同样的查询会随每次同步给出
+  不同的特征值。基准日会进入因子缓存命名空间，不同基准的缓存不可能互相命中。
+- 成交额永不调整；成交量只在 `--adjust-volume` 时反向调整。
+
+系数一律由 `corporate_actions` 全历史累乘得到，**不**依赖查询窗口内的 `pre_close`，
+否则窗口起点不同就会算出不同的复权价。
+
+`quant-market-check` 会把 `adjustment_factor` 与行情反推的比例逐条对账，实测 2024 年
+有约 3.4% 的事件两者对不上（多数只差两三分钱，约 30 条是大额分歧），报告里可以逐条查。
+
+## Python 接口
+
+```python
+from datetime import date
+from quant.market_data.daily import AdjustMode, DailyMarketClient
+
+client = DailyMarketClient()          # 按 QMT_DAILY_DB_PATH 解析
+
+client.get_metadata()
+client.get_klines_1d(["000001.SZ"], date(2024, 1, 1), date(2024, 12, 31),
+                     adjust=AdjustMode.HFQ)
+client.list_universe(date(2024, 6, 30))          # 无幸存者偏差的证券池
+client.list_universe_over_window(date(2020, 1, 1), date(2024, 12, 31))
+client.get_trading_calendar(date(2024, 1, 1), date(2024, 12, 31))
+client.get_instruments(["000001.SZ"])
+client.get_corporate_actions(["000001.SZ"])
+```
+
+`list_universe` 读 `instruments` 而不是 `bars_1d`，因此包含在该日之后才退市的证券，
+这是消除幸存者偏差的关键。`search_symbols` 保留了与 5 分钟库一致的行为，
+只反映「库里有没有行情」，**不是**无偏池。
+
+**当前数据源的局限**：实测 `instrument_info` 快照里一只退市股都没有，
+`quant-market-check` 会以 `DAILY_NO_DELISTED_SYMBOLS` 如实报告。做长周期回测时
+需要知道结果被幸存者偏差抬高了。

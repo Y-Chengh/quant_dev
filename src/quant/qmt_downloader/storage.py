@@ -585,8 +585,11 @@ def _digest_and_row_count(path):
     return hashlib.sha256(payload).hexdigest(), max(len(payload.splitlines()) - 1, 0)
 
 
-def _validate_partition_directory(directory):
+def validate_partition_directory(directory):
     """核验业务分区的数据文件和完成元数据。
+
+    这是本模块对外公开的分区完整性校验入口；``quant.market_data`` 的入库流程
+    直接复用它，避免在两处各写一份 SHA-256 与行数比对逻辑。
 
     参数：
         directory: 同时应包含 ``data.csv`` 和 ``_SUCCESS.json`` 的分区目录。
@@ -608,6 +611,10 @@ def _validate_partition_directory(directory):
         return int(metadata.get("rows", -1)) == row_count
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
         return False
+
+
+# 历史内部调用方仍使用下划线名字；保留别名以免改动散落的调用点。
+_validate_partition_directory = validate_partition_directory
 
 
 def _validate_fragment(path):

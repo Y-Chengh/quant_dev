@@ -80,3 +80,33 @@ K线、批量5分钟行情、快照和原始行情查询均支持省略沪深交
 读取。
 
 REST层不提供任意SQL执行能力。
+
+## QMT日线库
+
+日线数据来自大 QMT，落在**独立**的 `qmt_daily.duckdb` 与 `bars_1d` 月度 Parquet 上，
+与上面的 5 分钟库互不影响。构建、增量同步、复权口径与并发约束见
+[qmt_daily_store.md](qmt_daily_store.md)，合法性审计见 [market_check.md](market_check.md)。
+
+```python
+from datetime import date
+from quant.market_data.daily import AdjustMode, DailyMarketClient
+
+client = DailyMarketClient()
+client.get_klines_1d(["000001.SZ"], date(2024, 1, 1), date(2024, 12, 31),
+                     adjust=AdjustMode.HFQ)
+client.list_universe(date(2024, 6, 30))
+```
+
+公共接口仅包括：
+
+- `get_metadata()`
+- `get_daily_bars(query)` / `get_klines_1d(codes, start, end, ...)`
+- `get_corporate_actions(codes, end)`
+- `get_trading_calendar(start, end)`
+- `get_instruments(codes)`
+- `list_universe(as_of, ...)` / `list_universe_over_window(start, end, ...)`
+- `search_symbols(text, limit)`
+
+注意 `search_symbols` 与 5 分钟库同义，只反映「库里有没有行情」；做研究选股请用
+`list_universe`，它按上市退市日筛选，包含当时还在、如今已退市的证券，不引入
+幸存者偏差。

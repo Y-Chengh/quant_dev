@@ -43,8 +43,10 @@ dev = [
 ]
 
 [project.scripts]
+quant-build-daily-store = "quant.cli.build_daily_store:main"
 quant-factor-demo = "quant.cli.factor_demo:main"
 quant-grid-search = "quant.cli.grid_search:main"
+quant-market-check = "quant.cli.market_check:main"
 quant-market-server = "quant.cli.market_server:main"
 quant-qmt-self-check = "quant.cli.qmt_self_check:main"
 quant-single-factor-test = "quant.cli.single_factor_test:main"
@@ -98,11 +100,11 @@ ignore = [
 # 仍需遵守全部现代化规则，因此不在此列。
 "src/quant/qmt_downloader/*.py" = ["UP"]
 "src/quant/qmt_downloader/runner/*.py" = ["UP"]
-# 大 QMT 策略入口的特殊约束：
+# 大 QMT 策略入口的特殊约束（下载器入口与交易日历导出入口都在大 QMT 中运行）：
 # E402 必须先注入 sys.path 再导入 quant，导入不能提到文件顶部；
 # F821 download_history_data 由大 QMT 运行时注入，静态分析看不到；
 # I001 导入顺序受上述两点约束，不能重排。
-"scripts/qmt_run_downloader.py" = ["UP", "E402", "F821", "I001"]
+"scripts/qmt_*.py" = ["UP", "E402", "F821", "I001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["quant"]

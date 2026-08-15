@@ -14,9 +14,14 @@ from uuid import uuid4
 import pandas as pd
 import yaml
 
-from quant.config import default_market_database
 from quant.factor_research.backtesting import run_top_n_intraday_backtest
-from quant.factor_research.data import load_market_service
+from quant.factor_research.data_sources import (
+    add_data_source_selection_argument,
+    add_selected_data_source_arguments,
+    available_data_sources,
+    data_source_argument_names,
+    data_source_from_args,
+)
 from quant.factor_research.dataset import build_direction_dataset
 from quant.factor_research.experiment import (
     PREDICTION_TASKS,
@@ -24,9 +29,7 @@ from quant.factor_research.experiment import (
     DirectionExperiment,
 )
 from quant.factor_research.factors import (
-    DEFAULT_FEATURES,
     available_factors,
-    build_daily_features,
     parse_factor_expressions,
 )
 from quant.factor_research.models.registry import (
@@ -38,7 +41,6 @@ from quant.factor_research.models.registry import (
 from quant.factor_research.reporting import write_evaluation_report
 from quant.factor_research.timing import log_elapsed
 
-DEFAULT_DATABASE = default_market_database()
 DEFAULT_LOOKBACK_YEARS = 3
 DEFAULT_VALIDATION_YEARS = 1
 DEFAULT_SYMBOL_LIMIT = 80
@@ -277,10 +279,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         完成类型、取值范围及模型兼容性初步校验的参数命名空间。
     """
 
-    # 第一阶段读取配置文件和模型名称；第二阶段只加载该模型自己的参数定义。
+    # 第一阶段读取配置文件、模型名和数据源名；第二阶段只加载这两者自己的参数定义。
     model_parser = argparse.ArgumentParser(add_help=False)
     model_parser.add_argument("--config", type=Path)
     add_model_selection_argument(model_parser)
+    add_data_source_selection_argument(model_parser)
     preliminary, _ = model_parser.parse_known_args(argv)
     config = (
         _load_yaml_config(preliminary.config, model_parser)
@@ -297,11 +300,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 f"{available_models()} 内"
             )
         model_parser.set_defaults(model=configured_model)
+    configured_source = config.get("data_source")
+    if configured_source is not None:
+        if not isinstance(configured_source, str):
+            model_parser.error("YAML 参数 data_source 必须是字符串")
+        if configured_source not in available_data_sources():
+            model_parser.error(
+                f"YAML 参数 data_source 的值 {configured_source!r} 不在可选范围 "
+                f"{available_data_sources()} 内"
+            )
+        model_parser.set_defaults(data_source=configured_source)
     selected, _ = model_parser.parse_known_args(argv)
 
     parser = argparse.ArgumentParser(description="通过market service预测下一交易日开盘至收盘涨跌")
     parser.add_argument("--config", type=Path, help="YAML 配置文件；命令行参数优先")
-    parser.add_argument("--database", type=Path, default=DEFAULT_DATABASE, help="market.duckdb路径")
+    add_data_source_selection_argument(parser)
+    add_selected_data_source_arguments(parser, selected.data_source)
     parser.add_argument("--start", default='2024-01-01', help="研究开始时间，默认数据末端向前3年")
     parser.add_argument("--end", default='2026-01-01', help="研究结束时间，默认数据库最后时间")
     parser.add_argument(
@@ -353,8 +367,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--factors",
         nargs="*",
         choices=available_factors(),
-        default=DEFAULT_FEATURES,
-        help="运行时选择使用的因子；默认使用全部已注册因子",
+        default=None,
+        help=(
+            "运行时选择使用的因子；不指定时使用该数据源支持的全部已注册因子。"
+            "日频数据源下显式点名分钟因子会报错，不指定则自动跳过并告警"
+        ),
     )
     parser.add_argument(
         "--factor-expressions",
@@ -386,18 +403,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_LOG_DIR,
         help="日志目录，默认 logs；文件名由时间戳和随机ID自动生成",
     )
-    ignored_model_arguments: set[str] = set()
+    ignored_arguments: set[str] = set()
     if configured_model is not None and configured_model != selected.model:
-        ignored_model_arguments = _model_argument_names(configured_model)
+        ignored_arguments |= _model_argument_names(configured_model)
+    # YAML 里可能写着另一个数据源的专属参数（例如切到 qmt_daily 后仍留着
+    # database:）；把它们列为已知但忽略，避免报「未知参数」。
+    for name in available_data_sources():
+        if name != selected.data_source:
+            ignored_arguments |= data_source_argument_names(name)
     parser.set_defaults(
         **_config_defaults(
             parser,
             config,
-            ignored_unknown=ignored_model_arguments,
+            ignored_unknown=ignored_arguments,
         )
     )
     args = parser.parse_args(argv)
-    if not args.factors and not args.factor_expressions:
+    if args.factors is not None and not args.factors and not args.factor_expressions:
         parser.error("factors 与 factor-expressions 不能同时为空")
     return args
 
@@ -411,7 +433,7 @@ def main() -> None:
     """
 
     try:
-        from quant.market_data.client import MarketDataClient
+        import duckdb  # noqa: F401  # 提前暴露缺失依赖，让报错指向 duckdb 而非下游调用
     except ModuleNotFoundError as exc:
         if exc.name == "duckdb":
             raise SystemExit(
@@ -454,8 +476,9 @@ def main() -> None:
     # if args.symbol_limit < 1 or args.symbol_limit > 100:
     #     raise ValueError("symbol-limit必须在1至100之间")
 
-    client = MarketDataClient(args.database)
-    metadata = client.get_metadata()
+    source = data_source_from_args(args)
+    logger.info("数据源: %s", source.describe())
+    metadata = source.metadata()
     start, end = resolve_window(metadata, args.start, args.end)
     validation_start = (
         pd.Timestamp(args.validation_start)
@@ -467,31 +490,39 @@ def main() -> None:
             f"validation-start 必须晚于研究开始日期且不晚于结束日期: "
             f"{start:%Y-%m-%d} < validation-start <= {end:%Y-%m-%d}"
         )
-    codes = args.codes or client.search_symbols("", limit=args.symbol_limit)
+    codes = args.codes or source.list_symbols(args.symbol_limit)
     if not codes:
-        raise RuntimeError("market service未返回可研究的股票代码")
+        raise RuntimeError("数据源未返回可研究的股票代码")
 
     logger.info("数据窗口: %s 至 %s", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
     logger.info("验证集开始: %s", validation_start.strftime("%Y-%m-%d"))
     logger.info("训练方式: %s", args.training_mode)
     logger.info("预测任务: %s", args.task)
     logger.info("股票数量: %d", len(codes))
-    bars = load_market_service(client, codes, start, end)
-    logger.info("分钟行情行数: %d", len(bars))
+    bars = source.load_bars(codes, start, end)
+    logger.info("行情行数: %d", len(bars))
     if bars.empty:
-        raise RuntimeError("指定窗口内没有5分钟行情")
+        raise RuntimeError(f"指定窗口内数据源 {source.name!r} 没有行情")
 
     cache_dir = None if args.no_factor_cache else args.factor_cache_dir
     expression_nodes = parse_factor_expressions(
         getattr(args, "factor_expressions", ())
     )
-    model_features = [*args.factors, *(node.factor_id for node in expression_nodes)]
-    daily = build_daily_features(
+    daily = source.build_features(
         bars,
         feature_columns=args.factors,
         cache_dir=cache_dir,
         factor_expressions=expression_nodes,
     )
+    # 因子集合可能被数据源收窄（日频源会跳过分钟因子），以实际算出的列为准。
+    registered = set(available_factors())
+    computed_factors = [name for name in daily.columns if name in registered]
+    selected_factors = (
+        [name for name in args.factors if name in computed_factors]
+        if args.factors is not None
+        else computed_factors
+    )
+    model_features = [*selected_factors, *(node.factor_id for node in expression_nodes)]
     logger.info("开始构建方向预测数据集")
     dataset = build_direction_dataset(daily, feature_columns=model_features, args=args)
     logger.info("方向预测数据集行数: %d，开始模型训练验证", len(dataset))

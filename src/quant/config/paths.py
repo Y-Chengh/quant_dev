@@ -16,8 +16,20 @@ MARKET_DATABASE_ENV = "MARKET_DB_PATH"
 #: 覆盖项目根目录的环境变量名；非可编辑安装或部署到别处时使用。
 PROJECT_ROOT_ENV = "QUANT_PROJECT_ROOT"
 
+#: 覆盖 QMT 日线库路径的环境变量名。
+QMT_DAILY_DATABASE_ENV = "QMT_DAILY_DB_PATH"
+
+#: 覆盖大 QMT 下载器落盘根目录的环境变量名。
+QMT_OUTPUT_ROOT_ENV = "QMT_OUTPUT_ROOT"
+
 #: 未设置 ``MARKET_DB_PATH`` 时使用的行情库回退路径。
 FALLBACK_MARKET_DATABASE = Path(r"D:\量化\market.duckdb")
+
+#: 未设置 ``QMT_DAILY_DB_PATH`` 时使用的日线库回退路径。
+FALLBACK_QMT_DAILY_DATABASE = Path(r"D:\量化\qmt_daily\qmt_daily.duckdb")
+
+#: 未设置 ``QMT_OUTPUT_ROOT`` 时使用的下载器落盘根目录回退路径。
+FALLBACK_QMT_OUTPUT_ROOT = Path(r"D:\qmt_kline_test1")
 
 # 本文件位于 <项目根>/src/quant/config/paths.py，向上四级即项目根目录。
 _REPO_ROOT_FROM_SOURCE = Path(__file__).resolve().parents[3]
@@ -56,6 +68,47 @@ def default_market_database() -> Path:
     if value:
         return Path(value)
     return FALLBACK_MARKET_DATABASE
+
+
+def default_qmt_daily_database() -> Path:
+    """返回默认 QMT 日线库文件路径。
+
+    返回：
+        环境变量 ``QMT_DAILY_DB_PATH`` 指向的路径；未设置或为空字符串时返回
+        ``D:\\量化\\qmt_daily\\qmt_daily.duckdb``。本函数不校验文件是否存在。
+    """
+    value = os.getenv(QMT_DAILY_DATABASE_ENV)
+    if value:
+        return Path(value)
+    return FALLBACK_QMT_DAILY_DATABASE
+
+
+def default_qmt_daily_root() -> Path:
+    """返回默认 QMT 日线库的数据根目录。
+
+    该目录同时存放 ``qmt_daily.duckdb``、``bars_1d`` 月度 Parquet 分片、
+    ``reports`` 审计报告和 ``.sync.lock`` 同步锁。
+
+    返回：
+        ``default_qmt_daily_database()`` 所在目录；本函数不创建也不校验该目录。
+    """
+    return default_qmt_daily_database().parent
+
+
+def default_qmt_output_root() -> Path:
+    """返回默认的大 QMT 下载器落盘根目录。
+
+    该目录下是下载器写出的 ``kline_1d``、``instrument_info``、
+    ``trading_calendar``、``corporate_actions`` 等按日 CSV 分区。
+
+    返回：
+        环境变量 ``QMT_OUTPUT_ROOT`` 指向的路径；未设置或为空字符串时返回
+        ``D:\\qmt_kline_test1``。本函数不校验目录是否存在。
+    """
+    value = os.getenv(QMT_OUTPUT_ROOT_ENV)
+    if value:
+        return Path(value)
+    return FALLBACK_QMT_OUTPUT_ROOT
 
 
 def default_factor_config_path(name: str) -> Path:

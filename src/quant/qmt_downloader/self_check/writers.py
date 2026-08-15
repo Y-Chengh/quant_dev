@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""报告文件的原子写入与摘要 Markdown 渲染。"""
+"""报告文件的原子写入与摘要 Markdown 渲染。
+
+三个原子写入函数不含任何 QMT 语义，``quant.market_data.daily_check`` 直接复用它们，
+以保证两侧审计报告的编码、缩进和落盘方式完全一致。它们的下划线别名保留给包内
+既有调用方，行为与公开名完全相同。
+"""
 
 from __future__ import annotations
 
@@ -10,7 +15,7 @@ from typing import Any
 import pandas as pd
 
 
-def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+def write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     """先写临时文件再原子替换 JSON 报告。
 
     参数：
@@ -27,7 +32,7 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _write_text_atomic(path: Path, value: str) -> None:
+def write_text_atomic(path: Path, value: str) -> None:
     """先写临时文件再原子替换 UTF-8 文本报告。
 
     参数：
@@ -43,7 +48,7 @@ def _write_text_atomic(path: Path, value: str) -> None:
     temporary.replace(path)
 
 
-def _write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
+def write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
     """先写临时文件再原子替换 UTF-8 BOM CSV 报告。
 
     参数：
@@ -57,6 +62,12 @@ def _write_csv_atomic(path: Path, frame: pd.DataFrame) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     frame.to_csv(str(temporary), index=False, encoding="utf-8-sig")
     temporary.replace(path)
+
+
+# 包内既有调用方仍使用下划线名字；保留别名，公开名与私有名指向同一实现。
+_write_json_atomic = write_json_atomic
+_write_text_atomic = write_text_atomic
+_write_csv_atomic = write_csv_atomic
 
 
 def _summary_markdown(summary: dict[str, Any]) -> str:

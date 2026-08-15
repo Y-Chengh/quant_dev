@@ -11,7 +11,12 @@ import os
 
 import pytest
 
-from quant.config import MARKET_DATABASE_ENV, PROJECT_ROOT_ENV
+from quant.config import (
+    MARKET_DATABASE_ENV,
+    PROJECT_ROOT_ENV,
+    QMT_DAILY_DATABASE_ENV,
+    QMT_OUTPUT_ROOT_ENV,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +29,11 @@ def isolated_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     返回：
         无返回值；仅产生环境隔离副作用。
     """
-    for name in (MARKET_DATABASE_ENV, PROJECT_ROOT_ENV):
+    for name in (
+        MARKET_DATABASE_ENV,
+        PROJECT_ROOT_ENV,
+        QMT_DAILY_DATABASE_ENV,
+        QMT_OUTPUT_ROOT_ENV,
+    ):
         if name in os.environ:
             monkeypatch.delenv(name, raising=False)

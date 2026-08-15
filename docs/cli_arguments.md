@@ -343,3 +343,80 @@ quant-ifind-download `
   --output .\data\600000_SH_202603 `
   --retry 3
 ```
+
+## 7. 数据源选择
+
+`quant-factor-demo` 通过 `--data-source` 选择行情来源，缺省 `market_service`
+（本地 5 分钟库，与改动前行为完全一致）。数据源参数与模型参数一样采用两阶段解析：
+程序先读取 `--data-source`，再只注册所选数据源的专属参数，因此不同数据源可以有同名
+参数，某个数据源的专属参数不能用于另一个。
+
+```powershell
+quant-factor-demo --help
+quant-factor-demo --data-source qmt_daily --help
+```
+
+### 7.1 `market_service`（默认，5 分钟）
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--database` | `MARKET_DB_PATH` 或 `D:\量化\market.duckdb` | 5 分钟库路径 |
+
+### 7.2 `qmt_daily`（QMT 日线）
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--daily-database` | `QMT_DAILY_DB_PATH` 或 `D:\量化\qmt_daily\qmt_daily.duckdb` | 日线库路径 |
+| `--adjust` | `hfq` | 复权口径：`hfq` 后复权、`qfq` 前复权、`none` 不复权 |
+| `--adjust-anchor` | 库中记录的基准日 | 前复权基准日，格式 `YYYY-MM-DD` |
+| `--include-suspended` | 关闭 | 保留停牌日行情 |
+| `--adjust-volume` | 关闭 | 复权时同步反向调整成交量 |
+| `--qmt-output-root` | `QMT_OUTPUT_ROOT` 或下载器配置 | QMT 落盘根目录 |
+| `--sync-mode` | `auto` | 增量检查力度：`auto`/`full`/`rebuild` |
+| `--sync-verify-hash` | 关闭 | 对变化的分区重算 SHA-256 |
+| `--no-auto-sync` | 关闭 | 跳过启动时的自动增量检查 |
+
+日线源只有日频行情，因此八个分钟因子（`close_to_vwap`、`downside_semivol`、
+`intraday_path_efficiency`、`last_30m_return`、`last_30m_volume_ratio`、
+`positive_bar_ratio`、`realized_vol`、`signed_volume_imbalance`）不可用：
+不指定 `--factors` 时自动跳过并告警，显式点名则直接报错。
+
+**`--factors` 的默认值变化**：不写该参数表示「使用该数据源支持的全部因子」，
+写了但不给值仍表示显式空集合。行为与之前一致，只是默认集合现在随数据源而定。
+
+样例配置见 `configs/factor_research/qmt_daily.example.yaml`。
+
+## 8. 日线库相关命令
+
+### 8.1 `quant-build-daily-store`
+
+把大 QMT 落盘的日线 CSV 增量转成日线库。详见
+[qmt_daily_store.md](qmt_daily_store.md)。
+
+| 参数 | 含义 |
+| --- | --- |
+| `--database` | 日线库路径 |
+| `--qmt-output-root` / `--qmt-config` | QMT 落盘根目录，或从下载器 JSONC 里读 `output_root` |
+| `--rebuild-all` | 整库重建 |
+| `--dry-run` | 只检查不写入 |
+| `--sync-mode` / `--sync-verify-hash` | 增量检查力度 |
+
+退出码：0 正常，2 失败，3 日线库被占用而跳过。
+
+### 8.2 `quant-market-check`
+
+审计入库后的日线库，详见 [market_check.md](market_check.md)。
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--database` | `QMT_DAILY_DB_PATH` | 日线库路径 |
+| `--start-date` / `--end-date` | 全库 | 审计区间，格式 `YYYYMMDD` |
+| `--codes` | 全市场 | 只审计指定证券 |
+| `--report-dir` | `<库目录>/reports/market_check/<时间戳>` | 报告目录 |
+| `--coverage-error-threshold` | 0.95 | 单日覆盖率下限 |
+| `--pre-close-tolerance` / `--adjust-factor-tolerance` | 1e-4 | 价格比较的相对容差 |
+| `--price-limit-level` | `warning` | 涨跌停越界的级别 |
+| `--apply-st-limit` | 关闭 | 按当前 ST 状态收紧到 5%，会大量误报 |
+| `--cross-check-5m` / `--market-database` | 关闭 | 与 5 分钟库交叉对账 |
+
+退出码：0 通过，1 存在 ERROR，2 失败。
