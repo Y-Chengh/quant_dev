@@ -22,6 +22,9 @@
 - `docs/`：详细文档。
 - `tests/`：测试，目录结构与 `src/quant/` 一一对应。
 - `pyproject.toml`：打包、依赖分组、命令行入口与 ruff/mypy/pytest 配置。
+- `.claude/`：Claude Code 项目级配置。`settings.json` 注册 `UserPromptSubmit`
+  hook，`hooks/review-reminder.md` 是该 hook 每轮注入的正文，用途见下文验证要求；
+  二者入库共享。`settings.local.json` 是本机权限授予，已在 `.gitignore` 中排除。
 
 因子研究 `src/quant/factor_research/`：
 
@@ -34,6 +37,8 @@
   `labels`/`formatting`/`markdown`/`charts`/`report` 分层。
 - `search_report/`：因子搜索结果的可审计报告生成，按
   `constants`/`formatting`/`reproduction`/`summaries`/`charts`/`report` 分层。
+- `data_sources/`：可切换的行情数据源注册表（5 分钟库与 QMT 日线库），
+  结构与 `models/` 的工厂注册表一致。
 - `factors.py`：日频聚合、因子计算和缓存流程。
 - `dataset.py`：特征、标签及训练数据集构建。
 - `experiment.py`：滚动训练、预测和实验结果汇总。
@@ -46,6 +51,11 @@
 - `src/quant/config/`：项目根目录、配置目录和行情库路径的唯一解析入口；
   优先级为显式传参 > 环境变量 > 内置回退值。任何模块都不得再内联书写绝对路径。
 - `src/quant/market_data/`：本地 DuckDB 行情库、查询客户端与 FastAPI 网页服务。
+  - `daily/`：与 5 分钟库相互独立的 QMT 日线库，按 `models`/`schema`/`database`/
+    `adjust`/`universe`/`client` 分层；库中只存**原始不复权**价，复权在读取层计算。
+    其中 `daily/ingest/` 负责把大 QMT 落盘的日线 CSV 增量转成月度 Parquet 与目录表。
+  - `daily_check/`：`quant-market-check` 的实现，对入库后的日线库做全样本业务校验，
+    按 `config`/`loading`/`rules_*`/`limits`/`cross_5m`/`summary`/`checker` 分层。
 - `src/quant/qmt_downloader/`：仅使用大 QMT 内置 Python 的日线、财务和除权数据
   按日分区保存工具；`scripts/qmt_run_downloader.py` 是大 QMT 策略入口。
   其中 `runner/` 与 `self_check/` 都按职责拆为 mixin 包：各 mixin 只承担一类
@@ -56,7 +66,9 @@
 
   | 命令 | 模块 |
   | --- | --- |
+  | `quant-build-daily-store` | `quant.cli.build_daily_store` |
   | `quant-factor-demo` | `quant.cli.factor_demo` |
+  | `quant-market-check` | `quant.cli.market_check` |
   | `quant-grid-search` | `quant.cli.grid_search` |
   | `quant-market-server` | `quant.cli.market_server` |
   | `quant-qmt-self-check` | `quant.cli.qmt_self_check` |
@@ -66,6 +78,8 @@
 
   其中 `quant-qmt-self-check` 在外部 Python 中全量审计 QMT 日线分区、证券生命
   周期、缺失区间、停牌成交量和统计异常，输出不修改原始数据的详细报告。
+  `quant-market-check` 与它分工互补：前者查 CSV 源本身是否完整，后者查**入库之后**
+  的日线库在业务上是否合法，并可与 5 分钟库交叉对账。
 
 ## 分层约束
 
@@ -85,6 +99,11 @@
 - `src/quant/__init__.py` 与 `src/quant/cli/__init__.py` 不得导入任何子模块，
   避免轻量场景被迫加载全部三方依赖。
 - 命令行层可以依赖库层，库层不得反向依赖 `quant.cli`。
+- `quant.market_data` 可以单向依赖 `quant.qmt_downloader` 的公开列常量、分区校验
+  函数与报告写入工具（`gateway.*_COLUMNS`、`storage.validate_partition_directory`、
+  `self_check.writers.write_*_atomic`、`self_check.AuditIssue` 等）。这样 CSV 列契约
+  与报告格式只有一份定义。反向依赖仍然禁止：`quant.qmt_downloader` 必须能在大 QMT
+  内置 Python 中独立导入。
 
 ## 模块规模与拆分约定
 
@@ -116,6 +135,12 @@
   是否进行了年化或归一化。
 - 优先使用连续因子表达方向和强度，避免同时创建互为正反且信息重复的二元
   因子。
+- 使用 `intraday_values` 的因子必须在**自身模块**声明 `requires_intraday = True`，
+  由 `factor_factories/capabilities.py` 统一读取，日频数据源据此自动排除它们。
+  **不得**把该属性上提到 `FactorFactory` 基类：`_implementation_fingerprint` 会哈希
+  `factor_factories/base.py` 的文件字节，改动基类会作废全部已有因子缓存。
+  同理，`_build_daily_bars`、`_input_fingerprint` 和 `factor_dsl/` 下的文件也不得
+  为了无关目的改动。
 - 新增或修改因子后，更新自动注册集合测试，并增加具体数值和边界条件测试。
 - 正式因子可以调用 `factor_dsl` 的基础算子，但搜索产生的临时候选不得注册到
   `FACTOR_FACTORIES`，避免改变 `DEFAULT_FEATURES`。
@@ -143,9 +168,27 @@
   `factor_expressions` 配置作为临时候选复用；解析必须走 DSL 白名单，不得使用
   `eval`，且不得把临时候选注册到 `FACTOR_FACTORIES`。
 
+## 数据源开发规范
+
+- 行情数据源相关代码统一放在 `src/quant/factor_research/data_sources/`。
+- 通用抽象定义在 `data_sources/base.py`；一个具体数据源放在独立模块中。
+- 具体数据源继承 `MarketDataSource`，使用 `@register_data_source` 注册，定义唯一
+  的 `name`、`frequency` 和 `provides_intraday`，并实现 `metadata()`、
+  `list_symbols()`、`load_bars()` 与 `build_features()`。
+- 数据源负责通过 `add_arguments()` 声明自身 CLI 参数、通过 `from_args()` 构建实例。
+  主程序不得为具体数据源增加选择分支。
+- CLI 必须先解析 `--data-source`，再只注册所选数据源的专属参数；不同数据源允许有
+  同名参数。切换数据源时，其它数据源的 YAML 键应通过 `data_source_argument_names()`
+  列入忽略集合，而不是报未知参数。
+- 数据源必须实现 `cache_namespace()`，把数据源名与一切影响取值的口径（如复权方式、
+  前复权基准日）放进因子缓存路径。缺省返回空串，以保证既有 5 分钟缓存路径不变。
+
 ## 防止未来数据泄漏
 
 - 特征只能使用特征日期收盘时已经可见的数据。
+- 前复权会在每次出现新的分红送转时重算全部历史价格，等于把未来信息带进历史序列。
+  研究默认使用后复权；确需前复权时必须显式固定基准日，并让基准日进入因子缓存
+  命名空间，避免同一份缓存混入两个基准。
 - 预测目标日期为 `T` 时，训练样本必须满足 `target_date < T`。
 - 表示“突破前高”等概念时，历史基准窗口必须先 `shift(1)`，不能把当日价格
   放入突破基准。
@@ -245,6 +288,11 @@ code review。review 范围只包含当前任务的改动，并重点检查正�
   代码、测试或项目约束自行判定的外部业务决策时，才请求人工介入。
 - code review 结论、已执行的验证、提交摘要和 commit hash 必须在最终交付说明
   中列出。
+
+上述要求还由 `.claude/settings.json` 注册的 `UserPromptSubmit` hook 在每一轮对话
+开头注入一次，正文见 `.claude/hooks/review-reminder.md`。原因是 Claude Code 的内置
+提示默认不主动调用 sub-agent，仅靠本文件的书面约定容易被忽略。修改本节时必须同步
+更新该正文，避免两处口径不一致。
 
 测试至少应覆盖：
 

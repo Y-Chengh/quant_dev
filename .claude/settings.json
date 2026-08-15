@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "cat \"${CLAUDE_PROJECT_DIR}/.claude/hooks/review-reminder.md\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
