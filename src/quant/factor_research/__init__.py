@@ -4,11 +4,11 @@ from .dataset import build_direction_dataset, build_forward_targets, split_by_da
 from .experiment import DirectionExperiment, ExperimentResult
 from .factors import aggregate_daily_bars, available_factors, build_daily_features
 from .models.base import DirectionModel, DirectionModelFactory
+from .models.registry import available_models, model_factory_from_args
 from .models.simple_decision_tree import (
     SimpleDecisionTreeClassifier,
     SimpleDecisionTreeModelFactory,
 )
-from .models.registry import available_models, model_factory_from_args
 
 __all__ = [
     "DirectionExperiment",

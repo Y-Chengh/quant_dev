@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
 import hashlib
 import json
 import keyword
 import math
 import unicodedata
-from typing import TYPE_CHECKING, Callable, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from .registry import get_operator
 
@@ -39,11 +40,11 @@ class ExpressionNode:
     """一个不携带实际数据的不可变表达式节点。"""
 
     operator: str
-    inputs: tuple["ExpressionNode", ...] = ()
+    inputs: tuple[ExpressionNode, ...] = ()
     parameters: tuple[tuple[str, ScalarParameter], ...] = ()
 
     @classmethod
-    def column(cls, name: str) -> "ExpressionNode":
+    def column(cls, name: str) -> ExpressionNode:
         """创建引用日频表指定列的数据源节点。
 
         参数：
@@ -55,7 +56,7 @@ class ExpressionNode:
         return cls(operator="column", parameters=(("name", name),))
 
     @classmethod
-    def constant(cls, value: float) -> "ExpressionNode":
+    def constant(cls, value: float) -> ExpressionNode:
         """创建在全部行上取同一有限数值的常量节点。
 
         参数：
@@ -152,7 +153,7 @@ class ExpressionNode:
         }
 
     @classmethod
-    def from_dict(cls, payload: Mapping[str, object]) -> "ExpressionNode":
+    def from_dict(cls, payload: Mapping[str, object]) -> ExpressionNode:
         """从安全配置恢复表达式，同时重新执行全部算子参数校验。
 
         参数：
@@ -199,7 +200,7 @@ class ExpressionNode:
         return self.canonical
 
     @classmethod
-    def from_string(cls, expression: str) -> "ExpressionNode":
+    def from_string(cls, expression: str) -> ExpressionNode:
         """从搜索输出的规范字符串安全恢复表达式节点。
 
         解析器只接受 DSL 算子调用、标量命名参数以及 ``column(close)`` 形式的
@@ -325,9 +326,9 @@ class FactorExpression:
     """链式表达式包装器；数据绑定只影响执行，不参与表达式身份。"""
 
     node: ExpressionNode
-    frame: "DailyFactorFrame | None" = field(default=None, repr=False)
+    frame: DailyFactorFrame | None = field(default=None, repr=False)
 
-    def _coerce(self, value: "FactorExpression | float") -> "FactorExpression":
+    def _coerce(self, value: FactorExpression | float) -> FactorExpression:
         """把数值转换为同上下文常量表达式，并拒绝跨 Frame 组合。
 
         参数：
@@ -343,9 +344,9 @@ class FactorExpression:
     def apply(
         self,
         operator: str,
-        *others: "FactorExpression | float",
+        *others: FactorExpression | float,
         **parameters: object,
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """把当前表达式、其他输入和参数组合成一个已校验的新算子节点。
 
         参数：
@@ -366,7 +367,7 @@ class FactorExpression:
         )
         return FactorExpression(node, frame)
 
-    def compute(self, name: str | None = None) -> "pd.Series":
+    def compute(self, name: str | None = None) -> pd.Series:
         """在已绑定的日频执行上下文中计算表达式并返回对齐序列。
 
         参数：
@@ -382,7 +383,7 @@ class FactorExpression:
 
         return self.node.to_dict()
 
-    def __add__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __add__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式加另一表达式或常数的节点。
 
         参数：
@@ -391,7 +392,7 @@ class FactorExpression:
 
         return self.apply("add", other)
 
-    def __radd__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __radd__(self, other: FactorExpression | float) -> FactorExpression:
         """构建另一表达式或常数加当前表达式的节点。
 
         参数：
@@ -400,7 +401,7 @@ class FactorExpression:
 
         return self._coerce(other).apply("add", self)
 
-    def __sub__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __sub__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式减另一表达式或常数的节点。
 
         参数：
@@ -409,7 +410,7 @@ class FactorExpression:
 
         return self.apply("subtract", other)
 
-    def __rsub__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __rsub__(self, other: FactorExpression | float) -> FactorExpression:
         """构建另一表达式或常数减当前表达式的节点。
 
         参数：
@@ -418,7 +419,7 @@ class FactorExpression:
 
         return self._coerce(other).apply("subtract", self)
 
-    def __mul__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __mul__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式乘另一表达式或常数的节点。
 
         参数：
@@ -427,7 +428,7 @@ class FactorExpression:
 
         return self.apply("multiply", other)
 
-    def __rmul__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __rmul__(self, other: FactorExpression | float) -> FactorExpression:
         """构建另一表达式或常数乘当前表达式的节点。
 
         参数：
@@ -436,7 +437,7 @@ class FactorExpression:
 
         return self._coerce(other).apply("multiply", self)
 
-    def __truediv__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __truediv__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式除以另一表达式或常数的节点。
 
         参数：
@@ -445,7 +446,7 @@ class FactorExpression:
 
         return self.apply("divide", other)
 
-    def __rtruediv__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __rtruediv__(self, other: FactorExpression | float) -> FactorExpression:
         """构建另一表达式或常数除以当前表达式的节点。
 
         参数：
@@ -454,17 +455,17 @@ class FactorExpression:
 
         return self._coerce(other).apply("divide", self)
 
-    def __neg__(self) -> "FactorExpression":
+    def __neg__(self) -> FactorExpression:
         """构建当前表达式逐元素取负的节点。"""
 
         return self.apply("negative")
 
-    def __abs__(self) -> "FactorExpression":
+    def __abs__(self) -> FactorExpression:
         """构建当前表达式逐元素取绝对值的节点。"""
 
         return self.apply("absolute")
 
-    def __lt__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __lt__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式小于另一输入的布尔条件节点。
 
         参数：
@@ -473,7 +474,7 @@ class FactorExpression:
 
         return self.apply("less_than", other)
 
-    def __le__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __le__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式小于等于另一输入的布尔条件节点。
 
         参数：
@@ -482,7 +483,7 @@ class FactorExpression:
 
         return self.apply("less_equal", other)
 
-    def __gt__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __gt__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式大于另一输入的布尔条件节点。
 
         参数：
@@ -491,7 +492,7 @@ class FactorExpression:
 
         return self.apply("greater_than", other)
 
-    def __ge__(self, other: "FactorExpression | float") -> "FactorExpression":
+    def __ge__(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式大于等于另一输入的布尔条件节点。
 
         参数：
@@ -500,27 +501,27 @@ class FactorExpression:
 
         return self.apply("greater_equal", other)
 
-    def negative(self) -> "FactorExpression":
+    def negative(self) -> FactorExpression:
         """以链式方法形式构建逐元素取负节点。"""
 
         return -self
 
-    def absolute(self) -> "FactorExpression":
+    def absolute(self) -> FactorExpression:
         """以链式方法形式构建逐元素绝对值节点。"""
 
         return abs(self)
 
-    def log(self) -> "FactorExpression":
+    def log(self) -> FactorExpression:
         """构建仅对正数有效的逐元素自然对数节点。"""
 
         return self.apply("log")
 
-    def sign(self) -> "FactorExpression":
+    def sign(self) -> FactorExpression:
         """构建返回每个值正负方向的符号节点。"""
 
         return self.apply("sign")
 
-    def power(self, exponent: float) -> "FactorExpression":
+    def power(self, exponent: float) -> FactorExpression:
         """构建逐元素普通幂运算节点。
 
         参数：
@@ -529,7 +530,7 @@ class FactorExpression:
 
         return self.apply("power", exponent=exponent)
 
-    def signed_power(self, exponent: float) -> "FactorExpression":
+    def signed_power(self, exponent: float) -> FactorExpression:
         """构建保留原值符号的绝对值幂运算节点。
 
         参数：
@@ -538,7 +539,7 @@ class FactorExpression:
 
         return self.apply("signed_power", exponent=exponent)
 
-    def equal(self, other: "FactorExpression | float") -> "FactorExpression":
+    def equal(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式等于另一输入的布尔条件节点。
 
         参数：
@@ -547,7 +548,7 @@ class FactorExpression:
 
         return self.apply("equal", other)
 
-    def not_equal(self, other: "FactorExpression | float") -> "FactorExpression":
+    def not_equal(self, other: FactorExpression | float) -> FactorExpression:
         """构建当前表达式不等于另一输入的布尔条件节点。
 
         参数：
@@ -556,7 +557,7 @@ class FactorExpression:
 
         return self.apply("not_equal", other)
 
-    def delay(self, periods: int = 1) -> "FactorExpression":
+    def delay(self, periods: int = 1) -> FactorExpression:
         """构建按证券取若干历史期原值的延迟节点。
 
         参数：
@@ -565,7 +566,7 @@ class FactorExpression:
 
         return self.apply("delay", periods=periods)
 
-    def delta(self, periods: int = 1) -> "FactorExpression":
+    def delta(self, periods: int = 1) -> FactorExpression:
         """构建当前值减同证券若干历史期值的差分节点。
 
         参数：
@@ -574,7 +575,7 @@ class FactorExpression:
 
         return self.apply("delta", periods=periods)
 
-    def returns(self, periods: int = 1) -> "FactorExpression":
+    def returns(self, periods: int = 1) -> FactorExpression:
         """构建当前值相对同证券若干历史期值的收益率节点。
 
         参数：
@@ -597,7 +598,7 @@ class FactorExpression:
             "min_periods": window if min_periods is None else min_periods,
         }
 
-    def sum(self, window: int, min_periods: int | None = None) -> "FactorExpression":
+    def sum(self, window: int, min_periods: int | None = None) -> FactorExpression:
         """构建按证券计算包含当日滚动和的节点。
 
         参数：
@@ -607,7 +608,7 @@ class FactorExpression:
 
         return self.apply("ts_sum", **self._rolling_parameters(window, min_periods))
 
-    def mean(self, window: int, min_periods: int | None = None) -> "FactorExpression":
+    def mean(self, window: int, min_periods: int | None = None) -> FactorExpression:
         """构建按证券计算包含当日滚动均值的节点。
 
         参数：
@@ -622,7 +623,7 @@ class FactorExpression:
         window: int,
         min_periods: int | None = None,
         ddof: int = 1,
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """构建按证券计算包含当日滚动标准差的节点。
 
         参数：
@@ -637,7 +638,7 @@ class FactorExpression:
             ddof=ddof,
         )
 
-    def min(self, window: int, min_periods: int | None = None) -> "FactorExpression":
+    def min(self, window: int, min_periods: int | None = None) -> FactorExpression:
         """构建按证券计算包含当日滚动最小值的节点。
 
         参数：
@@ -647,7 +648,7 @@ class FactorExpression:
 
         return self.apply("ts_min", **self._rolling_parameters(window, min_periods))
 
-    def max(self, window: int, min_periods: int | None = None) -> "FactorExpression":
+    def max(self, window: int, min_periods: int | None = None) -> FactorExpression:
         """构建按证券计算包含当日滚动最大值的节点。
 
         参数：
@@ -659,7 +660,7 @@ class FactorExpression:
 
     def ts_rank(
         self, window: int, min_periods: int | None = None
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """构建当前值在同证券滚动窗口内的百分位排名节点。
 
         参数：
@@ -671,7 +672,7 @@ class FactorExpression:
 
     def argmax(
         self, window: int, min_periods: int | None = None
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """构建滚动最大值在原窗口中首次出现的 1 基位置节点。
 
         参数：
@@ -683,7 +684,7 @@ class FactorExpression:
 
     def argmin(
         self, window: int, min_periods: int | None = None
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """构建滚动最小值在原窗口中首次出现的 1 基位置节点。
 
         参数：
@@ -695,10 +696,10 @@ class FactorExpression:
 
     def correlation(
         self,
-        other: "FactorExpression",
+        other: FactorExpression,
         window: int,
         min_periods: int | None = None,
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """构建两个表达式按证券计算滚动 Pearson 相关系数的节点。
 
         参数：
@@ -715,10 +716,10 @@ class FactorExpression:
 
     def covariance(
         self,
-        other: "FactorExpression",
+        other: FactorExpression,
         window: int,
         min_periods: int | None = None,
-    ) -> "FactorExpression":
+    ) -> FactorExpression:
         """构建两个表达式按证券计算滚动样本协方差的节点。
 
         参数：
@@ -733,32 +734,32 @@ class FactorExpression:
             **self._rolling_parameters(window, min_periods),
         )
 
-    def rank(self) -> "FactorExpression":
+    def rank(self) -> FactorExpression:
         """构建按交易日计算平均并列百分位排名的横截面节点。"""
 
         return self.apply("cs_rank")
 
-    def cs_rank(self) -> "FactorExpression":
+    def cs_rank(self) -> FactorExpression:
         """提供与 ``rank`` 等价且作用域更明确的横截面排名别名。"""
 
         return self.rank()
 
-    def demean(self) -> "FactorExpression":
+    def demean(self) -> FactorExpression:
         """构建逐日减去横截面均值的中心化节点。"""
 
         return self.apply("cs_demean")
 
-    def zscore(self) -> "FactorExpression":
+    def zscore(self) -> FactorExpression:
         """构建逐日使用总体标准差归一化的横截面 Z 分数节点。"""
 
         return self.apply("cs_zscore")
 
-    def scale(self) -> "FactorExpression":
+    def scale(self) -> FactorExpression:
         """构建逐日令横截面绝对值之和为一的缩放节点。"""
 
         return self.apply("cs_scale")
 
-    def winsorize(self, lower: float = 0.01, upper: float = 0.99) -> "FactorExpression":
+    def winsorize(self, lower: float = 0.01, upper: float = 0.99) -> FactorExpression:
         """构建逐日按给定分位数上下界缩尾的横截面节点。
 
         参数：
@@ -770,9 +771,9 @@ class FactorExpression:
 
     def where(
         self,
-        condition: "FactorExpression",
-        other: "FactorExpression | float",
-    ) -> "FactorExpression":
+        condition: FactorExpression,
+        other: FactorExpression | float,
+    ) -> FactorExpression:
         """条件成立时取当前表达式，否则取 other。
 
         参数：
@@ -786,7 +787,7 @@ class FactorExpression:
 class ExpressionNamespace:
     """为真实日频数据和纯符号模板提供一致的数据源入口。"""
 
-    def __init__(self, frame: "DailyFactorFrame | None" = None):
+    def __init__(self, frame: DailyFactorFrame | None = None):
         """保存可选执行上下文，使同一入口兼容真实计算和符号建模。
 
         参数：

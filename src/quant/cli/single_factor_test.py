@@ -8,7 +8,6 @@ import pandas as pd
 from quant.config import default_market_database
 from quant.factor_research.data import validate_bars
 
-
 DEFAULT_DATABASE = default_market_database()
 DEFAULT_SYMBOL_LIMIT = 20
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """QMT 全样本日线数据内部质量自检命令行入口。"""
 
 from __future__ import annotations
@@ -9,7 +8,6 @@ from pathlib import Path
 
 from quant.config import default_qmt_config_path
 from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
-
 
 DEFAULT_CONFIG = default_qmt_config_path("kline_only.backfill.json")
 
@@ -128,7 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
     except (OSError, ValueError) as exc:
-        print("QMT 全样本数据自检未完成: {0}".format(exc))
+        print(f"QMT 全样本数据自检未完成: {exc}")
         return 2
     print(
         "QMT 全样本数据自检{0}: errors={1} warnings={2} report={3}".format(

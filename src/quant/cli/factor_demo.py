@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-from logging.handlers import RotatingFileHandler
 import math
 import re
 from datetime import datetime
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -19,9 +19,9 @@ from quant.factor_research.backtesting import run_top_n_intraday_backtest
 from quant.factor_research.data import load_market_service
 from quant.factor_research.dataset import build_direction_dataset
 from quant.factor_research.experiment import (
-    DirectionExperiment,
     PREDICTION_TASKS,
     TRAINING_MODES,
+    DirectionExperiment,
 )
 from quant.factor_research.factors import (
     DEFAULT_FEATURES,
@@ -37,7 +37,6 @@ from quant.factor_research.models.registry import (
 )
 from quant.factor_research.reporting import write_evaluation_report
 from quant.factor_research.timing import log_elapsed
-
 
 DEFAULT_DATABASE = default_market_database()
 DEFAULT_LOOKBACK_YEARS = 3

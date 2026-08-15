@@ -3,7 +3,6 @@
 
 import pandas as pd
 
-
 PRICE_COLUMNS = ["open", "high", "low", "close"]
 QUANTITY_COLUMNS = ["volume", "amount"]
 

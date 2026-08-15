@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
-from typing import Iterator, Sequence
 
 import duckdb
 import pandas as pd
@@ -11,7 +11,6 @@ import pandas as pd
 from quant.config import default_market_database
 
 from .codes import normalize_security_code
-
 
 PERIODS = {
     "5m": None,

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, field
 import logging
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -19,7 +19,6 @@ from .metrics import (
 from .models.base import DirectionModel, DirectionModelFactory
 from .models.simple_decision_tree import SimpleDecisionTreeModelFactory
 from .timing import ElapsedRecorder, log_elapsed
-
 
 logger = logging.getLogger(__name__)
 TRAINING_MODES = ("rolling", "single")

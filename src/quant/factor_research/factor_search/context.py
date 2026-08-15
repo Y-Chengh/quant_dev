@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -37,7 +37,7 @@ class SearchContext:
         selection_start: str | pd.Timestamp | None = None,
         holdout_start: str | pd.Timestamp | None = None,
         holdout_end: str | pd.Timestamp | None = None,
-    ) -> "SearchContext":
+    ) -> SearchContext:
         """校验日频表的数据契约，一次性构建目标、行映射和日期区间掩码。
 
         参数：

@@ -268,7 +268,7 @@ class DailyPartitionStore(object):
             dataset_path,
             partition_name,
             partition_value,
-            dtype={column: str for column in identity_columns},
+            dtype=dict.fromkeys(identity_columns, str),
         )
         if existing is None or len(existing) != len(expected):
             return False

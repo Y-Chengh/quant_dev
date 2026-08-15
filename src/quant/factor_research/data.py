@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Sequence
 import logging
+from collections.abc import Sequence
+from pathlib import Path
 
 import pandas as pd
 
 from .timing import log_elapsed
-
 
 logger = logging.getLogger(__name__)
 

@@ -6,11 +6,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Callable, Mapping
 
 import pandas as pd
-
 
 OperatorParameters = Mapping[str, object]
 NormalizedParameters = dict[str, object]

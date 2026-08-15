@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
+import duckdb  # noqa: F401  # 提前暴露缺失依赖，让报错指向 duckdb 而非下游调用
 import pandas as pd
-import duckdb  # 明确暴露缺失依赖，避免被下面的兼容导入逻辑误判。
 
 from .codes import normalize_security_code
 from .database import MarketDatabase

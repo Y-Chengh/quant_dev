@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import math
+import re
 from datetime import datetime
 from html import escape
-import math
 from pathlib import Path
-import re
 from typing import Any
 
 import numpy as np
@@ -12,7 +12,6 @@ import pandas as pd
 
 from .backtesting import TopNBacktestResult
 from .experiment import ExperimentResult
-
 
 METRIC_LABELS = {
     "samples": "样本数",

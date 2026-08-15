@@ -37,7 +37,7 @@ class FactorPassthroughRegressor(DirectionModel):
             raise ValueError("X 不能包含 NaN 或无穷值")
         return matrix
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "FactorPassthroughRegressor":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> FactorPassthroughRegressor:
         """记录输入列数，不从目标值学习任何参数。
 
         参数：

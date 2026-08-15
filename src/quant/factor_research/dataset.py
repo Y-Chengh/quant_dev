@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 
 import pandas as pd
 
 from .factors import DEFAULT_FEATURES
 from .timing import log_elapsed
-
 
 logger = logging.getLogger(__name__)
 

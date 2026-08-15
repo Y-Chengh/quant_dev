@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import quant.factor_research.models as models_package
+from quant.cli.factor_demo import _config_defaults, parse_args
 from quant.factor_research.models.base import DirectionModelFactory
 from quant.factor_research.models.registry import (
     MODEL_FACTORY_TYPES,
@@ -18,7 +19,6 @@ from quant.factor_research.models.simple_decision_tree import (
     SimpleDecisionTreeClassifier,
     SimpleDecisionTreeModelFactory,
 )
-from quant.cli.factor_demo import _config_defaults, parse_args
 
 
 class ModelRegistryTest(unittest.TestCase):

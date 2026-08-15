@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
-from time import perf_counter
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
+from time import perf_counter
 
 import pandas as pd
 
@@ -14,7 +14,6 @@ from .factor_dsl import DailyFactorFrame, ExpressionNode
 from .factor_factories import FACTOR_FACTORIES, get_factor_factory
 from .factor_factories.base import FactorFactory
 from .timing import log_elapsed
-
 
 logger = logging.getLogger(__name__)
 DEFAULT_FEATURES = sorted(FACTOR_FACTORIES)

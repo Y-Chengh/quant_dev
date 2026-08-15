@@ -75,12 +75,31 @@ select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
 ignore = [
     "E501",   # 行宽由 formatter 控制，历史长行不逐条改写
     "B008",   # FastAPI 依赖注入需要在默认值中调用 Query()
+
+    # 以下为存量代码的待办清单（棘轮）：规则本身有价值，但修复需要改动业务
+    # 逻辑，不能与结构重构混在一起。新增代码应主动遵守，后续按模块逐条摘除。
+    "B023",   # 闭包引用循环变量；已逐处核查，当前 2 处均在同一次迭代内消费，无实际缺陷
+    "B027",   # 抽象基类中的空方法未加 @abstractmethod
+    "B904",   # except 中 raise 未写 from
+    "B905",   # zip 未显式指定 strict
+    "C401",   # 可用集合推导替代生成器
+    "C416",   # 冗余推导式
+    "E731",   # 用 lambda 赋值代替 def
+    "SIM105", # 可用 contextlib.suppress
+    "SIM108", # 可用三元表达式
+    "SIM117", # 可合并的嵌套 with
+    "UP030",  # format 位置参数可省略序号
+    "UP031",  # 百分号格式化可改为 f-string
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# 大 QMT 内置 Python 版本较旧，禁止 pyupgrade 把兼容写法改成新语法
+# 大 QMT 内置 Python 版本较旧，禁止 pyupgrade 把兼容写法改成新语法。
 "src/quant/qmt_downloader/*" = ["UP"]
-"scripts/qmt_run_downloader.py" = ["UP"]
+# 大 QMT 策略入口的特殊约束：
+# E402 必须先注入 sys.path 再导入 quant，导入不能提到文件顶部；
+# F821 download_history_data 由大 QMT 运行时注入，静态分析看不到；
+# I001 导入顺序受上述两点约束，不能重排。
+"scripts/qmt_run_downloader.py" = ["UP", "E402", "F821", "I001"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["quant"]

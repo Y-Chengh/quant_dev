@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-
 TRADING_DAYS_PER_YEAR = 252
 DEFAULT_RANDOM_BASELINE_SIMULATIONS = 1_000
 DEFAULT_RANDOM_BASELINE_SEED = 42

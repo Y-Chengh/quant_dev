@@ -8,7 +8,6 @@ import pandas as pd
 
 from .dates import finite_number, normalize_date
 
-
 KLINE_COLUMNS = [
     "code",
     "trade_date",

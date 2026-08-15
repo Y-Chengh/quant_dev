@@ -19,7 +19,6 @@ import pandas as pd
 
 from .dates import normalize_date as _qmt_normalize_date
 
-
 ISSUE_COLUMNS = [
     "issue_code",
     "level",

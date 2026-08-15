@@ -9,19 +9,19 @@ import numpy as np
 import pandas as pd
 
 import quant.factor_research.factors as factors_module
-from quant.factor_research.dataset import build_direction_dataset, split_by_date
-from quant.factor_research.experiment import DirectionExperiment
-from quant.factor_research.factor_factories import FACTOR_FACTORIES
-from quant.factor_research.factor_dsl import ExpressionNode
-from quant.factor_research.factor_dsl.frame import DailyFactorFrame
-from quant.factor_research.factors import build_daily_features
-from quant.factor_research.models import DirectionModel, DirectionModelFactory
-from quant.factor_research.reporting import write_evaluation_report
 from quant.cli.factor_demo import (
     resolve_ic_chart_path,
     resolve_run_output_paths,
     resolve_window,
 )
+from quant.factor_research.dataset import build_direction_dataset, split_by_date
+from quant.factor_research.experiment import DirectionExperiment
+from quant.factor_research.factor_dsl import ExpressionNode
+from quant.factor_research.factor_dsl.frame import DailyFactorFrame
+from quant.factor_research.factor_factories import FACTOR_FACTORIES
+from quant.factor_research.factors import build_daily_features
+from quant.factor_research.models import DirectionModel, DirectionModelFactory
+from quant.factor_research.reporting import write_evaluation_report
 
 
 def synthetic_bars(days: int = 80, symbols: int = 3) -> pd.DataFrame:

@@ -4,12 +4,12 @@ import unittest
 
 import numpy as np
 
+from quant.cli.factor_demo import parse_args
 from quant.factor_research.models.gradient_boosting_tree import (
     GradientBoostingTreeClassifier,
     GradientBoostingTreeModelFactory,
 )
 from quant.factor_research.models.registry import available_models, model_factory_from_args
-from quant.cli.factor_demo import parse_args
 
 
 class GradientBoostingTreeTest(unittest.TestCase):

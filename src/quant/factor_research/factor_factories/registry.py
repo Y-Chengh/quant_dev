@@ -12,7 +12,6 @@ from typing import TypeVar
 
 from .base import FactorFactory
 
-
 FactoryType = TypeVar("FactoryType", bound=type[FactorFactory])
 FACTOR_FACTORIES: dict[str, FactorFactory] = {}
 

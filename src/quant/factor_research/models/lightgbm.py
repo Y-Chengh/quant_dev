@@ -55,7 +55,7 @@ class LightGBMClassifier(DirectionModel):
         self.feature_importances_ = np.array([], dtype=float)
         self._constant_probability: float | None = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LightGBMClassifier":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> LightGBMClassifier:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=int)
         if X.ndim != 2 or len(X) != len(y) or len(X) == 0:
@@ -146,7 +146,7 @@ class LightGBMRegressor(DirectionModel):
         self.feature_importances_ = np.array([], dtype=float)
         self._constant_prediction: float | None = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LightGBMRegressor":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> LightGBMRegressor:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=float)
         if X.ndim != 2 or y.ndim != 1 or len(X) != len(y) or len(X) == 0:
@@ -271,7 +271,7 @@ class LightGBMModelFactory(DirectionModelFactory):
         )
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "LightGBMModelFactory":
+    def from_args(cls, args: argparse.Namespace) -> LightGBMModelFactory:
         """根据已校验的命令行或 YAML 参数创建模型工厂。
 
         参数：

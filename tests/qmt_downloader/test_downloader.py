@@ -1,8 +1,7 @@
-# -*- coding: utf-8 -*-
 """大 QMT 下载器的接口替身、日分区和断点续传测试。"""
 
-import json
 import io
+import json
 import logging
 import shutil
 import tempfile
@@ -25,7 +24,7 @@ from quant.qmt_downloader.validation import (
 )
 
 
-class FakeContext(object):
+class FakeContext:
     """模拟大 QMT 内置 ContextInfo 的最小测试接口。
 
     子类通过覆盖 ``trading_dates`` 或 ``_kline_dates`` 配置缺失场景，
@@ -178,13 +177,13 @@ class GapRepairContext(FakeContext):
         self.market_calls.append(
             (tuple(symbols), kwargs.get("start_time"), kwargs.get("end_time"))
         )
-        return super(GapRepairContext, self).get_market_data_ex(
+        return super().get_market_data_ex(
             fields, symbols, **kwargs
         )
 
     def _kline_dates(self, code, start_date, end_date):
         """首轮漏掉 000001.SZ 的中间日，定向补下载按开关决定是否补回。"""
-        dates = super(GapRepairContext, self)._kline_dates(code, start_date, end_date)
+        dates = super()._kline_dates(code, start_date, end_date)
         if code == "000001.SZ":
             if start_date == "20240102" and end_date == "20240104":
                 return [value for value in dates if value != "20240103"]
@@ -193,7 +192,7 @@ class GapRepairContext(FakeContext):
         return dates
 
 
-class RaisingContext(object):
+class RaisingContext:
     """确保断点重跑不会再次调用远端接口的失败替身。"""
 
     def get_market_data_ex(self, fields, symbols, **kwargs):
@@ -251,7 +250,7 @@ class RaisingContext(object):
         raise AssertionError("断点续传不应重新读取除权")
 
 
-class EmptyFinanceContext(object):
+class EmptyFinanceContext:
     """模拟大 QMT 财务缓存尚未下载的空结果。"""
 
     def get_raw_financial_data(self, fields, symbols, start_date, end_date, report_type="report_time"):
@@ -299,7 +298,7 @@ class MissingMarketDayContext(FakeContext):
         返回：
             删除第二个交易日后的行情字典。
         """
-        output = super(MissingMarketDayContext, self).get_market_data_ex(
+        output = super().get_market_data_ex(
             fields, symbols, **kwargs
         )
         return {code: frame.iloc[:1].copy() for code, frame in output.items()}
@@ -323,7 +322,7 @@ class PartialFinanceContext(FakeContext):
         返回：
             缺少后续证券键的部分财务嵌套字典。
         """
-        return super(PartialFinanceContext, self).get_raw_financial_data(
+        return super().get_raw_financial_data(
             fields, list(symbols)[:1], start_date, end_date, report_type
         )
 
@@ -342,7 +341,7 @@ class InvalidKlineContext(FakeContext):
         返回：
             将最高价改为零后的行情字典。
         """
-        output = super(InvalidKlineContext, self).get_market_data_ex(
+        output = super().get_market_data_ex(
             fields, symbols, **kwargs
         )
         for frame in output.values():
@@ -368,7 +367,7 @@ class AllNoneFinanceContext(FakeContext):
         返回：
             与真实接口同结构但业务值全为 ``None`` 的嵌套字典。
         """
-        output = super(AllNoneFinanceContext, self).get_raw_financial_data(
+        output = super().get_raw_financial_data(
             fields, symbols, start_date, end_date, report_type
         )
         for values_by_field in output.values():
@@ -395,7 +394,7 @@ class ChangedFinanceContext(FakeContext):
         返回：
             与真实接口同结构且业务字段值为 ``999`` 的嵌套字典。
         """
-        output = super(ChangedFinanceContext, self).get_raw_financial_data(
+        output = super().get_raw_financial_data(
             fields, symbols, start_date, end_date, report_type
         )
         for values_by_field in output.values():
@@ -565,7 +564,7 @@ class DownloaderTests(unittest.TestCase):
     def test_kline_requests_fill_data_and_suspension_is_not_missing(self):
         """日线请求应启用填充，停牌标记行不应生成缺口警告。"""
         context = FakeContext()
-        logger = logging.getLogger("qmt_fill_data_test_{0}".format(id(context)))
+        logger = logging.getLogger(f"qmt_fill_data_test_{id(context)}")
         logger.handlers = [logging.NullHandler()]
         logger.propagate = False
         gateway = QmtGateway(context, lambda *args: None, logger, retry_count=1)
@@ -1047,7 +1046,7 @@ class DownloaderTests(unittest.TestCase):
     def test_progress_log_contains_batch_and_date_percentages(self):
         """进度日志应包含批次、日期序号及百分比，便于终端观察长任务。"""
         stream = io.StringIO()
-        logger = logging.getLogger("qmt_progress_test_{0}".format(id(stream)))
+        logger = logging.getLogger(f"qmt_progress_test_{id(stream)}")
         logger.handlers = []
         logger.propagate = False
         logger.setLevel(logging.INFO)
@@ -1093,7 +1092,7 @@ class DownloaderTests(unittest.TestCase):
 
     def test_kline_error_log_contains_stage_and_request_context(self):
         """行情接口异常日志应包含阶段、证券、日期和参数定位信息。"""
-        class ErrorContext(object):
+        class ErrorContext:
             """模拟大 QMT 日线读取失败。"""
 
             def get_market_data_ex(self, fields, symbols, **kwargs):
@@ -1101,7 +1100,7 @@ class DownloaderTests(unittest.TestCase):
                 raise RuntimeError("模拟行情服务断开")
 
         stream = io.StringIO()
-        logger = logging.getLogger("qmt_error_detail_test_{0}".format(id(stream)))
+        logger = logging.getLogger(f"qmt_error_detail_test_{id(stream)}")
         logger.handlers = []
         logger.propagate = False
         logger.setLevel(logging.INFO)
@@ -1125,14 +1124,14 @@ class DownloaderTests(unittest.TestCase):
     def test_parallel_save_error_log_contains_target_label(self):
         """本地文件写入失败时日志应直接包含目标日期或路径标签。"""
         stream = io.StringIO()
-        logger = logging.getLogger("qmt_parallel_error_test_{0}".format(id(stream)))
+        logger = logging.getLogger(f"qmt_parallel_error_test_{id(stream)}")
         logger.handlers = []
         logger.propagate = False
         logger.setLevel(logging.INFO)
         handler = logging.StreamHandler(stream)
         logger.addHandler(handler)
 
-        class Config(object):
+        class Config:
             """提供并行保存线程数的最小配置。"""
 
             save_workers = 2
@@ -1393,7 +1392,7 @@ def _build_runner(config, context, history_downloader):
     返回：
         可直接执行的 ``QmtDailyDownloader``。
     """
-    logger = logging.getLogger("qmt_daily_downloader_test_{0}".format(id(context)))
+    logger = logging.getLogger(f"qmt_daily_downloader_test_{id(context)}")
     logger.handlers = [logging.NullHandler()]
     logger.propagate = False
     store = DailyPartitionStore(config.output_root)

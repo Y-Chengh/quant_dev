@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -13,6 +13,7 @@ from quant.factor_research.metrics import (
     cross_sectional_ic_metrics,
     daily_cross_sectional_ic,
 )
+
 from .context import SearchContext
 from .space import FactorCandidate
 

@@ -20,8 +20,8 @@ class _Node:
     samples: int
     feature: int | None = None
     threshold: float | None = None
-    left: "_Node | None" = None
-    right: "_Node | None" = None
+    left: _Node | None = None
+    right: _Node | None = None
 
 
 class SimpleDecisionTreeClassifier(DirectionModel):
@@ -46,7 +46,7 @@ class SimpleDecisionTreeClassifier(DirectionModel):
         probability = float(y.mean())
         return 2 * probability * (1 - probability)
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "SimpleDecisionTreeClassifier":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> SimpleDecisionTreeClassifier:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=int)
         if X.ndim != 2 or len(X) != len(y) or len(X) == 0:
@@ -156,7 +156,7 @@ class SimpleDecisionTreeModelFactory(DirectionModelFactory):
         )
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "SimpleDecisionTreeModelFactory":
+    def from_args(cls, args: argparse.Namespace) -> SimpleDecisionTreeModelFactory:
         return cls(
             max_depth=args.max_depth,
             min_samples_leaf=args.min_samples_leaf,

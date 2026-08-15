@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
 import numpy as np
 import pandas as pd
 
+from quant.cli.factor_demo import parse_args, resolve_equity_chart_path
 from quant.factor_research.backtesting import (
     TRADING_DAYS_PER_YEAR,
     TopNBacktestResult,
@@ -17,7 +18,6 @@ from quant.factor_research.reporting import (
     render_equity_curve_svg,
     write_evaluation_report,
 )
-from quant.cli.factor_demo import parse_args, resolve_equity_chart_path
 
 
 class TopNIntradayBacktestTest(unittest.TestCase):

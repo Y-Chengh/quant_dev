@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-import os
 from time import perf_counter
 from types import TracebackType
-from typing import Callable, Protocol, Sequence
+from typing import Protocol
 
 from quant.factor_research.factor_dsl import DailyFactorFrame
 
 from .context import SearchContext
 from .evaluators import CandidateEvaluator
 from .space import FactorCandidate
-
 
 BatchProgressCallback = Callable[[int, int, int], None]
 """批次进度回调：依次接收累计完成数、总数和累计失败数。"""
@@ -53,7 +53,7 @@ class ExecutionBackend(Protocol):
 class ExecutionSession(Protocol):
     """约束可跨多个候选批次复用资源的执行会话。"""
 
-    def __enter__(self) -> "ExecutionSession":
+    def __enter__(self) -> ExecutionSession:
         """进入执行会话并返回自身。"""
 
     def __exit__(
@@ -157,7 +157,7 @@ class SequentialBackend:
         context: SearchContext,
         evaluator: CandidateEvaluator,
         batch_size: int,
-    ) -> "SequentialExecutionSession":
+    ) -> SequentialExecutionSession:
         """创建可跨遗传代次复用日频执行上下文的串行会话。
 
         参数：
@@ -197,7 +197,7 @@ class SequentialExecutionSession:
         self._batch_size = batch_size
         self._frame = DailyFactorFrame(context.daily)
 
-    def __enter__(self) -> "SequentialExecutionSession":
+    def __enter__(self) -> SequentialExecutionSession:
         """进入串行会话并返回自身。"""
 
         return self
@@ -353,7 +353,7 @@ class ProcessBackend:
         context: SearchContext,
         evaluator: CandidateEvaluator,
         batch_size: int,
-    ) -> "ProcessExecutionSession":
+    ) -> ProcessExecutionSession:
         """创建只初始化一次 worker 上下文的持久化多进程会话。
 
         参数：
@@ -403,7 +403,7 @@ class ProcessExecutionSession:
         self._evaluator = evaluator
         self._executor: ProcessPoolExecutor | None = None
 
-    def __enter__(self) -> "ProcessExecutionSession":
+    def __enter__(self) -> ProcessExecutionSession:
         """进入多进程会话并返回自身。"""
 
         return self

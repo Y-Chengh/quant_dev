@@ -1,19 +1,17 @@
-# -*- coding: utf-8 -*-
 """QMT 全样本日线数据内部质量自检测试。"""
 
 from __future__ import annotations
 
-import tempfile
-import unittest
 import hashlib
 import json
+import tempfile
+import unittest
 from pathlib import Path
 
 import pandas as pd
 
 from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
 from quant.qmt_downloader.storage import DailyPartitionStore
-
 
 SYMBOLS = ["000001.SZ", "600000.SH"]
 KLINE_COLUMNS = [

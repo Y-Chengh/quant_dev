@@ -15,16 +15,6 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 
-from quant.factor_research.factor_search import (
-    FactorGeneticSearch,
-    FactorGridSearch,
-    GeneticProgressEvent,
-    HoldoutIcEvaluator,
-    PipelineGrid,
-    SearchContext,
-    identity,
-    op,
-)
 from quant.cli.grid_search import (
     _markdown_table,
     _powershell_single_quoted,
@@ -35,6 +25,16 @@ from quant.cli.grid_search import (
     print_genetic_progress,
     resolve_report_output_dir,
     write_grid_search_report,
+)
+from quant.factor_research.factor_search import (
+    FactorGeneticSearch,
+    FactorGridSearch,
+    GeneticProgressEvent,
+    HoldoutIcEvaluator,
+    PipelineGrid,
+    SearchContext,
+    identity,
+    op,
 )
 
 

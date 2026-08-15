@@ -13,7 +13,6 @@ from pathlib import Path
 import pandas as pd
 from iFinDPy import THS_HF, THS_iFinDLogin, THS_iFinDLogout
 
-
 DEFAULT_INDICATORS = (
     "volume;amount;change;changeRatio;turnoverRatio;open;high;low;close"
 )

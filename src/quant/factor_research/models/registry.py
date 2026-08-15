@@ -9,7 +9,6 @@ from typing import TypeVar
 
 from .base import DirectionModelFactory
 
-
 FactoryType = TypeVar("FactoryType", bound=type[DirectionModelFactory])
 MODEL_FACTORY_TYPES: dict[str, type[DirectionModelFactory]] = {}
 DEFAULT_MODEL = "simple_decision_tree"

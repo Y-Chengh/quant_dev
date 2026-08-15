@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 
+from quant.cli.factor_demo import parse_args
 from quant.factor_research.experiment import DirectionExperiment
 from quant.factor_research.models.logistic_regression import (
     LogisticRegressionClassifier,
@@ -14,7 +15,6 @@ from quant.factor_research.models.logistic_regression import (
     RidgeRegressionModel,
 )
 from quant.factor_research.models.registry import available_models, model_factory_from_args
-from quant.cli.factor_demo import parse_args
 
 
 class LogisticRegressionModelTest(unittest.TestCase):
@@ -167,14 +167,12 @@ class LogisticRegressionModelTest(unittest.TestCase):
             {"random_state": True},
         )
         for parameters in invalid_classification:
-            with self.subTest(parameters=parameters):
-                with self.assertRaises(ValueError):
-                    LogisticRegressionClassifier(**parameters)
+            with self.subTest(parameters=parameters), self.assertRaises(ValueError):
+                LogisticRegressionClassifier(**parameters)
 
         for parameters in ({"alpha": -1.0}, {"tol": np.inf}):
-            with self.subTest(parameters=parameters):
-                with self.assertRaises(ValueError):
-                    RidgeRegressionModel(**parameters)
+            with self.subTest(parameters=parameters), self.assertRaises(ValueError):
+                RidgeRegressionModel(**parameters)
 
     def test_classification_runs_walk_forward_without_future_labels(self) -> None:
         """逻辑分类工厂注入实验后，训练截止日期必须严格早于预测日期。"""

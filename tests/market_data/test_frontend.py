@@ -4,7 +4,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 APP_JS = (
     Path(__file__).resolve().parents[2]
     / "src"

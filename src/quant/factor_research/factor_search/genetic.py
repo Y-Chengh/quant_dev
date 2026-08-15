@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import combinations, product
-import math
 from time import perf_counter
 from types import TracebackType
-from typing import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -233,7 +233,7 @@ class _BackendSessionAdapter:
         self._evaluator = evaluator
         self._batch_size = batch_size
 
-    def __enter__(self) -> "_BackendSessionAdapter":
+    def __enter__(self) -> _BackendSessionAdapter:
         """进入无额外资源的兼容会话并返回自身。"""
 
         return self

@@ -36,7 +36,7 @@ class GradientBoostingTreeClassifier(DirectionModel):
         self.feature_importances_ = np.array([], dtype=float)
         self._constant_probability: float | None = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "GradientBoostingTreeClassifier":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> GradientBoostingTreeClassifier:
         X = np.asarray(X, dtype=float)
         y = np.asarray(y, dtype=int)
         if X.ndim != 2 or len(X) != len(y) or len(X) == 0:
@@ -114,7 +114,7 @@ class GradientBoostingTreeModelFactory(DirectionModelFactory):
         )
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "GradientBoostingTreeModelFactory":
+    def from_args(cls, args: argparse.Namespace) -> GradientBoostingTreeModelFactory:
         return cls(
             n_estimators=args.n_estimators,
             learning_rate=args.learning_rate,

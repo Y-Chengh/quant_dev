@@ -1,24 +1,24 @@
 from __future__ import annotations
 
 import argparse
+import logging
+import unittest
 from contextlib import ExitStack
 from datetime import datetime
-import logging
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
+from quant.cli import factor_demo
 from quant.factor_research.experiment import ExperimentResult
 from quant.factor_research.reporting import (
     render_markdown_report_html,
     write_evaluation_report,
 )
-from quant.cli import factor_demo
 
 
 def _result() -> ExperimentResult:

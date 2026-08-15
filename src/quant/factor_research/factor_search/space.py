@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import product
-from typing import Callable, Mapping, Protocol, Sequence
+from typing import Protocol
 
 from quant.factor_research.factor_dsl import (
     ExpressionNode,

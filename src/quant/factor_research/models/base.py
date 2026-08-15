@@ -12,7 +12,7 @@ class DirectionModel(ABC):
     """滚动方向预测所需的最小模型接口。"""
 
     @abstractmethod
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "DirectionModel":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> DirectionModel:
         """使用二维特征矩阵和 0/1 标签训练模型。"""
 
     @abstractmethod
@@ -36,7 +36,7 @@ class DirectionModelFactory(ABC):
         """向主程序注册该模型专属的命令行参数。"""
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "DirectionModelFactory":
+    def from_args(cls, args: argparse.Namespace) -> DirectionModelFactory:
         """读取命令行参数；无专属配置的工厂默认使用无参构造。"""
         return cls()
 

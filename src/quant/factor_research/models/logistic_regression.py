@@ -143,7 +143,7 @@ class LogisticRegressionClassifier(DirectionModel):
         self._constant_probability: float | None = None
         self._n_features: int | None = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "LogisticRegressionClassifier":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> LogisticRegressionClassifier:
         """使用当前训练窗口的因子和 0/1 方向标签拟合模型。
 
         参数：
@@ -217,7 +217,7 @@ class RidgeRegressionModel(DirectionModel):
         self._constant_prediction: float | None = None
         self._n_features: int | None = None
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "RidgeRegressionModel":
+    def fit(self, X: np.ndarray, y: np.ndarray) -> RidgeRegressionModel:
         """使用当前训练窗口的因子和连续收益率拟合岭回归。
 
         参数：
@@ -366,7 +366,7 @@ class LogisticRegressionModelFactory(DirectionModelFactory):
         )
 
     @classmethod
-    def from_args(cls, args: argparse.Namespace) -> "LogisticRegressionModelFactory":
+    def from_args(cls, args: argparse.Namespace) -> LogisticRegressionModelFactory:
         """从命令行或 YAML 已校验参数构建模型工厂。
 
         参数：
