@@ -1032,7 +1032,7 @@ class DownloaderTests(unittest.TestCase):
     def test_qmt_entry_source_is_ascii_safe(self):
         """确保由大 QMT 编辑器直接载入的入口源码不受 GBK/UTF-8 转码影响。"""
         entry_path = (
-            Path(__file__).resolve().parents[1] / "scripts" / "qmt_run_downloader.py"
+            Path(__file__).resolve().parents[2] / "scripts" / "qmt_run_downloader.py"
         )
         source = entry_path.read_bytes()
         self.assertEqual(source.decode("ascii").encode("ascii"), source)

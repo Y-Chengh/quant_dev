@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 APP_JS = (
-    Path(__file__).resolve().parents[1]
+    Path(__file__).resolve().parents[2]
     / "src"
     / "quant"
     / "market_data"
