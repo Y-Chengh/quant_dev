@@ -103,7 +103,8 @@ class DownloaderConfig(object):
 
         参数：
             values: JSON 配置解析后的字典；必须包含输出目录、模式、起止日期，
-                股票列表可为空并改由 ``sector`` 指定大 QMT 板块。
+                股票列表可为空并改由 ``sector`` 指定大 QMT 板块，``expired_sectors``
+                可额外并入过期（退市）板块。
         """
         self.output_root = Path(values.get("output_root", r"D:\qmt_data_test"))
         self.mode = str(values.get("mode", "backfill"))
@@ -126,6 +127,20 @@ class DownloaderConfig(object):
         self.no_work = False
         self.symbols = tuple(str(item).strip() for item in values.get("symbols", []) if str(item).strip())
         self.sector = str(values.get("sector", "")).strip()
+        # 过期（退市）板块，例如 ``过期沪深A股``。默认关闭：需要先在大 QMT 界面端
+        # “数据管理 → 过期合约数据 → 过期合约列表”下载并重启客户端，板块名以本机
+        # ``get_sector_list()`` 的实际返回为准。
+        # 去重并排序：板块名是集合语义，重复写同一个板块不应改变证券池，却会让
+        # watermark_scope 与历史 _SUCCESS.json 失配，把自动增量静默拖回全量重跑。
+        self.expired_sectors = tuple(
+            sorted(
+                set(
+                    str(item).strip()
+                    for item in values.get("expired_sectors", [])
+                    if str(item).strip()
+                )
+            )
+        )
         self.batch_size = int(values.get("batch_size", 100))
         self.save_workers = int(values.get("save_workers", 1))
         self.retry_count = int(values.get("retry_count", 3))
@@ -142,6 +157,11 @@ class DownloaderConfig(object):
             "symbols": sorted(str(code).strip().upper() for code in self.symbols),
             "sector": self.sector,
         }
+        # 未配置过期板块时不写入该键：既有输出目录的水位标记里没有它，无条件写入会让
+        # 全部历史水位失配，自动增量退回初始起点重跑。一旦配置了过期板块，键出现导致
+        # 水位失配正是期望结果——证券池已经变了，旧水位不再代表同一业务范围。
+        if self.expired_sectors:
+            self.watermark_scope["expired_sectors"] = list(self.expired_sectors)
         self.finance_lookback_start = str(
             values.get("finance_lookback_start", "20000101")
         )
@@ -188,8 +208,8 @@ class DownloaderConfig(object):
         _parse_date(self.finance_lookback_start, "finance_lookback_start")
         if start > end and not self.no_work:
             raise ValueError("start_date 不能晚于 end_date")
-        if not self.symbols and not self.sector:
-            raise ValueError("symbols 与 sector 至少需要配置一个")
+        if not self.symbols and not self.sector and not self.expired_sectors:
+            raise ValueError("symbols、sector 与 expired_sectors 至少需要配置一个")
         if self.batch_size <= 0:
             raise ValueError("batch_size 必须大于 0")
         if self.save_workers <= 0 or self.save_workers > 16:

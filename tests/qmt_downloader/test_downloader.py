@@ -79,7 +79,9 @@ class FakeContext:
         return output
 
     def get_stock_list_in_sector(self, sector):
-        """返回测试用沪深 A 股证券池。"""
+        """按板块名返回测试证券池；过期板块返回已退市代码。"""
+        if str(sector).startswith("过期"):
+            return ["000003.SZ", "600001.SH"]
         return ["000001.SZ", "600000.SH"]
 
     def get_instrument_detail(self, code):
@@ -1466,6 +1468,293 @@ class DownloaderTests(unittest.TestCase):
             self.assertEqual(str(unresolved.iloc[0]["code"]), "000001.SZ")
             self.assertEqual(str(unresolved.iloc[0]["date"]), "20240103")
 
+    def test_expired_sectors_join_sector_symbol_pool(self):
+        """过期板块应并入板块证券池，让回测能看到已退市标的。"""
+        gateway = _build_gateway(FakeContext())
+        self.assertEqual(
+            gateway.resolve_symbols([], "沪深A股", ("过期沪深A股",)),
+            ["000001.SZ", "000003.SZ", "600000.SH", "600001.SH"],
+        )
+
+    def test_expired_sectors_join_explicit_symbol_pool(self):
+        """过期板块是附加项，显式 symbols 也应并入而不是被覆盖。"""
+        gateway = _build_gateway(FakeContext())
+        self.assertEqual(
+            gateway.resolve_symbols(["000001.SZ"], "沪深A股", ("过期沪深A股",)),
+            ["000001.SZ", "000003.SZ", "600001.SH"],
+        )
+
+    def test_absent_expired_sectors_keep_previous_symbol_pool(self):
+        """未配置过期板块时证券池必须与启用该功能之前完全一致。"""
+        gateway = _build_gateway(FakeContext())
+        self.assertEqual(
+            gateway.resolve_symbols([], "沪深A股", ()),
+            ["000001.SZ", "600000.SH"],
+        )
+
+    def test_two_argument_call_keeps_previous_symbol_pool(self):
+        """省略第三参数的旧式调用必须继续可用，保证接口向后兼容。"""
+        gateway = _build_gateway(FakeContext())
+        self.assertEqual(
+            gateway.resolve_symbols([], "沪深A股"),
+            ["000001.SZ", "600000.SH"],
+        )
+
+    def test_expired_sectors_only_pool_skips_living_sector_lookup(self):
+        """只配过期板块时不得拿空板块名去查接口，否则真机可能直接抛错。"""
+
+        class RecordingContext(FakeContext):
+            """记录板块接口收到的全部板块名。"""
+
+            def __init__(self):
+                """初始化板块名记录列表。"""
+                self.requested_sectors = []
+
+            def get_stock_list_in_sector(self, sector):
+                """记录板块名后沿用父类的分支返回。"""
+                self.requested_sectors.append(sector)
+                return FakeContext.get_stock_list_in_sector(self, sector)
+
+        context = RecordingContext()
+        gateway = _build_gateway(context)
+        self.assertEqual(
+            gateway.resolve_symbols([], "", ("过期沪深A股",)),
+            ["000003.SZ", "600001.SH"],
+        )
+        self.assertEqual(context.requested_sectors, ["过期沪深A股"])
+
+    def test_expired_sector_returning_none_fails(self):
+        """板块接口返回 None 与返回空列表同样必须报错，不能被 or [] 静默吞掉。"""
+
+        class NoneExpiredContext(FakeContext):
+            """过期板块返回 ``None`` 的客户端替身。"""
+
+            def get_stock_list_in_sector(self, sector):
+                """过期板块返回 None，其余板块正常。"""
+                if str(sector).startswith("过期"):
+                    return None
+                return ["000001.SZ", "600000.SH"]
+
+        gateway = _build_gateway(NoneExpiredContext())
+        with self.assertRaises(RuntimeError):
+            gateway.resolve_symbols([], "沪深A股", ("过期沪深A股",))
+
+    def test_known_but_empty_expired_sector_only_warns(self):
+        """多板块中某个板块合法为空时只告警，不阻断其余板块的退市标的。"""
+
+        class EmptyKnownSectorContext(FakeContext):
+            """板块列表含两个过期板块，其中科创板没有成分证券。"""
+
+            def get_sector_list(self):
+                """返回含两个目标过期板块的板块名列表。"""
+                return ["沪深A股", "过期沪深A股", "过期科创板"]
+
+            def get_stock_list_in_sector(self, sector):
+                """过期科创板返回空列表，其余板块沿用父类分支。"""
+                if sector == "过期科创板":
+                    return []
+                return FakeContext.get_stock_list_in_sector(self, sector)
+
+        context = EmptyKnownSectorContext()
+        gateway = _build_gateway(context)
+        with self.assertLogs(_gateway_logger_name(context), "WARNING") as captured:
+            resolved = gateway.resolve_symbols(
+                [], "沪深A股", ("过期沪深A股", "过期科创板")
+            )
+        self.assertEqual(
+            resolved, ["000001.SZ", "000003.SZ", "600000.SH", "600001.SH"]
+        )
+        self.assertIn("过期科创板", "\n".join(captured.output))
+
+    def test_all_expired_sectors_empty_fails(self):
+        """过期板块合计没带回任何证券时必须报错，否则偏差原封不动地回来了。"""
+
+        class AllEmptyKnownSectorContext(FakeContext):
+            """板块名全部合法但全部没有成分证券。"""
+
+            def get_sector_list(self):
+                """返回含全部目标过期板块的板块名列表。"""
+                return ["沪深A股", "过期沪深A股", "过期科创板"]
+
+            def get_stock_list_in_sector(self, sector):
+                """所有过期板块返回空列表，其余板块正常。"""
+                if str(sector).startswith("过期"):
+                    return []
+                return ["000001.SZ", "600000.SH"]
+
+        gateway = _build_gateway(AllEmptyKnownSectorContext())
+        with self.assertRaises(RuntimeError) as caught:
+            gateway.resolve_symbols([], "沪深A股", ("过期沪深A股", "过期科创板"))
+        self.assertIn("过期科创板", str(caught.exception))
+
+    def test_empty_living_sector_fails_even_with_expired_sectors(self):
+        """存续板块为空不得被过期板块掩盖，否则会静默跑出纯退市数据集。"""
+
+        class EmptyLivingSectorContext(FakeContext):
+            """存续板块名写错、只有过期板块有成分的客户端替身。"""
+
+            def get_stock_list_in_sector(self, sector):
+                """存续板块返回空列表，过期板块沿用父类分支。"""
+                if str(sector).startswith("过期"):
+                    return FakeContext.get_stock_list_in_sector(self, sector)
+                return []
+
+        gateway = _build_gateway(EmptyLivingSectorContext())
+        with self.assertRaises(RuntimeError) as caught:
+            gateway.resolve_symbols([], "沪深A股错", ("过期沪深A股",))
+        self.assertIn("沪深A股错", str(caught.exception))
+
+    def test_unknown_empty_expired_sector_still_fails(self):
+        """板块名不在客户端板块列表中时必须报错，避免板块名写错被当成无退市标的。"""
+
+        class UnknownSectorContext(FakeContext):
+            """板块列表不含被请求的过期板块。"""
+
+            def get_sector_list(self):
+                """返回不含目标过期板块的板块名列表。"""
+                return ["沪深A股", "过期沪深A股"]
+
+            def get_stock_list_in_sector(self, sector):
+                """过期板块返回空列表，其余板块正常。"""
+                if str(sector).startswith("过期"):
+                    return []
+                return ["000001.SZ", "600000.SH"]
+
+        gateway = _build_gateway(UnknownSectorContext())
+        with self.assertRaises(RuntimeError) as caught:
+            gateway.resolve_symbols([], "沪深A股", ("过期北证A股",))
+        self.assertIn("过期北证A股", str(caught.exception))
+
+    def test_blank_expired_sector_names_are_ignored(self):
+        """空白板块名不得拿去查接口，也不得被当成“配置了过期板块”。"""
+
+        class RecordingContext(FakeContext):
+            """记录板块接口收到的全部板块名。"""
+
+            def __init__(self):
+                """初始化板块名记录列表。"""
+                self.requested_sectors = []
+
+            def get_stock_list_in_sector(self, sector):
+                """记录板块名后沿用父类的分支返回。"""
+                self.requested_sectors.append(sector)
+                return FakeContext.get_stock_list_in_sector(self, sector)
+
+        context = RecordingContext()
+        gateway = _build_gateway(context)
+        self.assertEqual(
+            gateway.resolve_symbols([], "沪深A股", ("  ",)),
+            ["000001.SZ", "600000.SH"],
+        )
+        self.assertEqual(context.requested_sectors, ["沪深A股"])
+
+    def test_expired_sector_names_may_be_a_generator(self):
+        """一次性可迭代对象不得被二次消费，否则报错消息里的板块名会丢失。"""
+
+        class AllEmptyKnownSectorContext(FakeContext):
+            """板块名合法但没有成分证券。"""
+
+            def get_sector_list(self):
+                """返回含目标过期板块的板块名列表。"""
+                return ["沪深A股", "过期沪深A股"]
+
+            def get_stock_list_in_sector(self, sector):
+                """过期板块返回空列表，其余板块正常。"""
+                if str(sector).startswith("过期"):
+                    return []
+                return ["000001.SZ", "600000.SH"]
+
+        gateway = _build_gateway(AllEmptyKnownSectorContext())
+        with self.assertRaises(RuntimeError) as caught:
+            gateway.resolve_symbols(
+                [], "沪深A股", (name for name in ["过期沪深A股"])
+            )
+        self.assertIn("过期沪深A股", str(caught.exception))
+
+    def test_expired_sector_code_without_market_suffix_is_rejected(self):
+        """过期板块返回的畸形代码必须走既有市场后缀校验，不得混入证券池。"""
+
+        class MalformedExpiredContext(FakeContext):
+            """过期板块返回缺少市场后缀的代码。"""
+
+            def get_stock_list_in_sector(self, sector):
+                """过期板块返回无后缀代码，其余板块正常。"""
+                if str(sector).startswith("过期"):
+                    return ["000003"]
+                return ["000001.SZ", "600000.SH"]
+
+        gateway = _build_gateway(MalformedExpiredContext())
+        with self.assertRaises(ValueError):
+            gateway.resolve_symbols([], "沪深A股", ("过期沪深A股",))
+
+    def test_duplicate_expired_sectors_are_deduplicated(self):
+        """重复板块名不得改变水位范围，否则自动增量会无故退回全量重跑。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["expired_sectors"] = ["过期沪深A股", " 过期沪深A股 ", ""]
+            config = DownloaderConfig(values)
+            self.assertEqual(config.expired_sectors, ("过期沪深A股",))
+            self.assertEqual(
+                config.watermark_scope["expired_sectors"], ["过期沪深A股"]
+            )
+
+    def test_configured_expired_sectors_reach_the_symbol_pool(self):
+        """配置项必须真正接到网关：整跑后的证券池和分区范围都应含退市代码。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["symbols"] = []
+            values["sector"] = "沪深A股"
+            values["expired_sectors"] = ["过期沪深A股"]
+            values["datasets"] = ["kline_1d"]
+            runner = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            )
+            summary = runner.run()
+            self.assertEqual(summary["errors"], 0)
+            self.assertIn("000003.SZ", runner.symbols)
+            self.assertIn("000003.SZ", runner.partition_scope["symbols"])
+
+    def test_empty_expired_sector_fails_instead_of_silently_shrinking(self):
+        """过期合约列表未下载时必须报错，避免证券池悄悄退回只含存续标的。"""
+
+        class NoExpiredContext(FakeContext):
+            """模拟界面端尚未下载过期合约列表的客户端。"""
+
+            def get_stock_list_in_sector(self, sector):
+                """过期板块返回空列表，其余板块正常。"""
+                if str(sector).startswith("过期"):
+                    return []
+                return ["000001.SZ", "600000.SH"]
+
+        gateway = _build_gateway(NoExpiredContext())
+        with self.assertRaises(RuntimeError) as caught:
+            gateway.resolve_symbols([], "沪深A股", ("过期沪深A股",))
+        self.assertIn("过期沪深A股", str(caught.exception))
+
+    def test_expired_sectors_only_change_watermark_scope_when_configured(self):
+        """过期板块留空时水位范围不得新增键，否则既有输出目录的水位全部失配。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            self.assertNotIn(
+                "expired_sectors", DownloaderConfig(values).watermark_scope
+            )
+            values["expired_sectors"] = ["过期沪深A股"]
+            config = DownloaderConfig(values)
+            self.assertEqual(config.expired_sectors, ("过期沪深A股",))
+            self.assertEqual(
+                config.watermark_scope["expired_sectors"], ["过期沪深A股"]
+            )
+
+    def test_expired_sectors_alone_satisfy_symbol_pool_validation(self):
+        """只配置过期板块也是合法证券池，用于单独回补退市标的。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["symbols"] = []
+            values["expired_sectors"] = ["过期沪深A股"]
+            self.assertEqual(
+                DownloaderConfig(values).expired_sectors, ("过期沪深A股",)
+            )
+
 
 def _config(directory):
     """构造使用临时输出目录的测试配置。
@@ -1500,6 +1789,39 @@ def _config_values(directory):
         "datasets": ["kline_1d", "finance_raw", "finance_daily", "corporate_actions"],
         "finance_lookback_start": "20230101",
     }
+
+
+def _gateway_logger_name(context):
+    """生成与当前存活 ``context`` 对应的网关测试日志器名。
+
+    ``id`` 在对象回收后会被复用，因此不同用例可能拿到同名日志器；这不影响断言，
+    ``_build_gateway`` 每次都会重置处理器，``assertLogs`` 也会在退出时还原。
+
+    参数：
+        context: 大 QMT ``ContextInfo`` 替身。
+
+    返回：
+        日志器名称字符串；需要断言日志内容的用例据此取回同一个日志器。
+    """
+    return f"qmt_gateway_test_{id(context)}"
+
+
+def _build_gateway(context):
+    """组装只用于证券池解析断言的网关。
+
+    必须在 ``assertLogs`` 块之外调用：本函数会重置日志器的处理器，在块内调用会顶掉
+    ``assertLogs`` 装好的捕获处理器。
+
+    参数：
+        context: 大 QMT ``ContextInfo`` 替身。
+
+    返回：
+        绑定丢弃全部输出的独立 logger 的 ``QmtGateway``。
+    """
+    logger = logging.getLogger(_gateway_logger_name(context))
+    logger.handlers = [logging.NullHandler()]
+    logger.propagate = False
+    return QmtGateway(context, lambda *args: None, logger, retry_count=1)
 
 
 def _build_runner(config, context, history_downloader, logger=None):

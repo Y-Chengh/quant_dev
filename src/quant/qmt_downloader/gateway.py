@@ -108,27 +108,107 @@ class QmtGateway(object):
         self.logger = logger
         self.retry_count = int(retry_count)
 
-    def resolve_symbols(self, symbols, sector):
-        """从显式代码列表或大 QMT 板块解析证券池。
+    def resolve_symbols(self, symbols, sector, expired_sectors=()):
+        """从显式代码列表、大 QMT 板块和过期（退市）板块解析证券池。
 
         参数：
-            symbols: 配置中显式填写的证券代码序列；非空时优先使用。
-            sector: 大 QMT 客户端中的板块名称，仅在 ``symbols`` 为空时使用。
+            symbols: 配置中显式填写的证券代码序列；非空时优先于 ``sector``。
+            sector: 大 QMT 客户端中的板块名称，仅在 ``symbols`` 为空时使用；两者
+                都为空时只按 ``expired_sectors`` 组池，不会拿空板块名去查接口。
+            expired_sectors: 过期（退市）板块名称序列，例如 ``过期沪深A股``。这是
+                附加项：无论存续证券来自 ``symbols`` 还是 ``sector`` 都会并入，用于
+                消除回测的幸存者偏差。留空时行为与不带该参数时完全一致。
 
         返回：
-            去重、排序并转为大写的证券代码列表。
+            去重、排序并转为大写的证券代码列表。以下情况抛 ``RuntimeError``：
+            ``sector`` 没有成分证券、过期板块无成分且不在客户端板块列表中、配置的
+            过期板块合计没带回任何证券、最终证券池为空；单个过期板块存在但无成分只
+            记 ``WARNING``。代码缺少市场后缀时抛 ``ValueError``。
         """
         if symbols:
-            resolved = list(symbols)
+            living = _normalize_codes(symbols)
+        elif sector:
+            living = _normalize_codes(self.context.get_stock_list_in_sector(sector) or [])
+            if not living:
+                # 单独判定存续板块：过期板块会让整体证券池非空，板块名写错就再也碰不到
+                # 下面的空池判定，最终静默跑出一份只含退市标的的数据集。
+                raise RuntimeError(
+                    "板块 {0} 没有返回任何证券，请检查大 QMT 板块名称".format(sector)
+                )
         else:
-            resolved = self.context.get_stock_list_in_sector(sector) or []
-        output = sorted(set(str(code).strip().upper() for code in resolved if str(code).strip()))
+            # 只配过期板块时没有存续板块可查；空板块名对大 QMT 没有意义，某些版本会直接抛错。
+            living = set()
+        # 先物化并去空白：``expired_sectors`` 是公开参数，传入生成器时逐处判定会二次
+        # 消费，错误消息里的板块名会变成空串；空白板块名同样不能拿去查接口。
+        expired_names = [
+            str(item).strip() for item in expired_sectors if str(item).strip()
+        ]
+        expired = set()
+        known_sectors = self._sector_names() if expired_names else None
+        for name in expired_names:
+            codes = _normalize_codes(self.context.get_stock_list_in_sector(name) or [])
+            if codes:
+                self.logger.info("过期板块解析完成 sector=%s codes=%d", name, len(codes))
+                expired |= codes
+                continue
+            if known_sectors is not None and name in known_sectors:
+                # 板块存在但确实没有成分，例如该市场尚无退市标的。这不是配置错误，
+                # 阻断整次运行只会逼用户删掉一个本来正确的板块名。
+                self.logger.warning(
+                    "过期板块 %s 存在但没有成分证券，本次不并入该板块的退市标的", name
+                )
+                continue
+            # 板块名写错或客户端未下载过期合约列表。静默放行会让证券池悄悄退回只含
+            # 存续标的，回测重新带上幸存者偏差且毫无提示，因此直接失败。
+            raise RuntimeError(
+                "过期板块 {0} 没有返回任何证券，也不在客户端板块列表中；请在大 QMT "
+                "界面端“数据管理 → 过期合约数据 → 过期合约列表”下载并重启客户端，"
+                "再用 get_sector_list() 核对板块名".format(name)
+            )
+        if expired_names and not expired:
+            # 单个板块合法为空可以放行，但配置的过期板块一个退市标的都没带回来时，
+            # 证券池实际退回了只含存续标的的状态，幸存者偏差原封不动地回来了。
+            raise RuntimeError(
+                "配置的过期板块（{0}）全部没有成分证券，证券池只剩存续标的；"
+                "请确认已在大 QMT 界面端“数据管理 → 过期合约数据 → 过期合约列表”"
+                "下载并重启客户端".format("、".join(expired_names))
+            )
+        output = sorted(living | expired)
         if not output:
             raise RuntimeError("证券池为空，请检查 symbols 或大 QMT 板块名称")
         invalid = [code for code in output if "." not in code]
         if invalid:
             raise ValueError("证券代码必须包含市场后缀: {0}".format(",".join(invalid)))
+        if expired_names:
+            self.logger.info(
+                "证券池解析完成 存续=%d 过期=%d 合计=%d",
+                len(living),
+                len(expired - living),
+                len(output),
+            )
         return output
+
+    def _sector_names(self):
+        """读取客户端板块名集合，用于区分“板块不存在”和“板块存在但为空”。
+
+        返回：
+            去空白后的板块名集合；接口缺失、抛错或返回空时返回 ``None``，调用方
+            据此退回“板块为空即失败”的严格判定，不会因为这一步不可用而放过缩池。
+        """
+        getter = getattr(self.context, "get_sector_list", None)
+        if getter is None:
+            return None
+        try:
+            names = getter() or []
+        except Exception as error:
+            self.logger.warning(
+                "板块列表读取异常 stage=get_sector_list error_type=%s error=%s",
+                type(error).__name__,
+                error,
+            )
+            return None
+        output = set(str(name).strip() for name in names if str(name).strip())
+        return output or None
 
     def fetch_kline(self, symbols, start_date, end_date, download_first=True):
         """补充并读取指定证券的日 K 线。
@@ -688,6 +768,20 @@ def _finance_columns(fields):
     return ["code", "report_date", "announce_date"] + [
         field.split(".", 1)[1] for field in fields[2:]
     ]
+
+
+def _normalize_codes(values):
+    """把一份原始证券代码序列规整为去重的大写代码集合。
+
+    参数：
+        values: 显式配置或板块接口返回的代码序列，允许含空白项。
+
+    返回：
+        去除首尾空白并转为大写的代码集合；空白项被丢弃。
+    """
+    return {
+        str(code).strip().upper() for code in values if str(code).strip()
+    }
 
 
 def _cached_normalize_date(value, cache):

@@ -8,6 +8,11 @@
   "incremental_lag_auto_cutoff": "16:00",
   "symbols": [],
   "sector": "沪深A股",
+  // 过期（退市）板块，附加到上面的证券池，消除回测的幸存者偏差。启用前需在大 QMT
+  // 界面端“数据管理 → 过期合约数据 → 过期合约列表”下载并重启客户端，并用
+  // get_sector_list() 核对本机板块名；留空则只下载当前存续证券。
+  "expired_sectors": [],
+  // "expired_sectors": ["过期沪深A股"],
   "batch_size": 600,
   "retry_count": 3,
   "kline_gap_retry_count": 2,

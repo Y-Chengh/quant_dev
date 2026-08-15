@@ -83,7 +83,9 @@ class QmtDailyDownloader(
         """
         # 计时起点放在最前，让证券池解析和交易日历请求也计入总耗时。
         self.started_at = time.time()
-        self.symbols = self.gateway.resolve_symbols(self.config.symbols, self.config.sector)
+        self.symbols = self.gateway.resolve_symbols(
+            self.config.symbols, self.config.sector, self.config.expired_sectors
+        )
         self.partition_scope = {
             "schema_version": 2,
             "datasets": sorted(self.config.datasets),
