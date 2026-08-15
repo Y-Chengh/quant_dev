@@ -235,9 +235,18 @@ class _ReferenceLoadingMixin(_CheckerState):
 
         calendar_path = self.config.calendar_csv
         if calendar_path is None:
-            default_path = self.root / "trading_calendar" / "data.csv"
-            if default_path.is_file():
-                calendar_path = default_path
+            # 优先使用下载器在 datasets 中启用 trading_calendar 后写出的快照分区，并
+            # 按辅助数据集核验其完成标记：整份审计的日历基准必须可证明未被改动。手工
+            # 导出到 trading_calendar/data.csv 的扁平文件没有完成标记，仍然识别。
+            snapshot_dir = self.root / "trading_calendar" / "snapshot=latest"
+            legacy_path = self.root / "trading_calendar" / "data.csv"
+            if (snapshot_dir / "data.csv").is_file():
+                calendar_path = snapshot_dir / "data.csv"
+                self._read_auxiliary_marker(
+                    snapshot_dir, "trading_calendar", "snapshot=latest"
+                )
+            elif legacy_path.is_file():
+                calendar_path = legacy_path
         authoritative = calendar_path is not None
         dates: list[str] = []
         if calendar_path is not None:
@@ -249,11 +258,11 @@ class _ReferenceLoadingMixin(_CheckerState):
                 "ERROR",
                 "trading_calendar",
                 "未提供独立 QMT 交易日历，只能使用现有日线分区日期推导审计日历。",
-                expected="--calendar-csv 或 trading_calendar/data.csv",
+                expected="--calendar-csv 或 trading_calendar/snapshot=latest/data.csv",
                 actual="使用 {0} 个已观察分区日期".format(len(dates)),
                 evidence="这种退化模式可以发现单只股票缺失，但不能发现整个交易日分区完全缺失",
-                possible_causes="下载器尚未持久化交易日历或命令行未指定日历文件",
-                suggested_action="从 QMT get_trading_dates 导出 trade_date 列后重新执行自检",
+                possible_causes="下载配置的 datasets 未包含 trading_calendar，或命令行未指定日历文件",
+                suggested_action="在 datasets 中加入 trading_calendar 重新运行下载器，或指定 --calendar-csv",
             )
         start = self.config.start_date
         end = self.config.end_date
@@ -414,7 +423,7 @@ class _ReferenceLoadingMixin(_CheckerState):
             if open_date is None:
                 self._add_issue(
                     "OPEN_DATE_MISSING",
-                    "ERROR",
+                    "WARNING",
                     "instrument_info",
                     "证券缺少合法上市日期，无法准确确定应有行情起点。",
                     code=code,

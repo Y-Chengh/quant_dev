@@ -412,6 +412,50 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertIn("DATA_ON_NON_TRADING_DATE", set(result.issues["issue_code"]))
             self.assertEqual(result.exit_code, 1)
 
+    def test_uses_downloaded_trading_calendar_snapshot_by_default(self) -> None:
+        """下载器落表的日历快照应被当作权威日历，无需再传 --calendar-csv。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            store.write_partition(
+                "trading_calendar",
+                "snapshot",
+                "latest",
+                pd.DataFrame(
+                    {
+                        "trade_date": ["20240102", "20240103"],
+                        "calendar_symbol": ["000001.SH", "000001.SH"],
+                    }
+                ),
+                ["trade_date", "calendar_symbol"],
+                ["trade_date"],
+                ["trade_date"],
+                {},
+            )
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
+                ["000001.SZ"],
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(output_root=root, report_dir=root / "audit")
+            )
+
+            codes = set(result.issues["issue_code"])
+            self.assertNotIn("CALENDAR_INFERRED_FROM_PARTITIONS", codes)
+            self.assertTrue(result.summary["authoritative_calendar"])
+            self.assertEqual(result.summary["trading_days"], 2)
+            # 日历里有而分区里没有的 20240103 必须被识别为整日缺失。
+            self.assertIn("MISSING_DATE_PARTITION", codes)
+
     def test_handles_qmt_timestamp_calendar_invalid_expire_and_bad_marker(self) -> None:
         """支持 QMT 秒/毫秒时间戳，并把非法退市日期和畸形标记写入报告。"""
 
@@ -469,6 +513,43 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             errors = result.issues.loc[result.issues["level"] == "ERROR"]
             for column in ("expected", "actual", "evidence", "possible_causes", "suggested_action", "source_file"):
                 self.assertTrue(errors[column].map(bool).all(), column)
+
+    def test_missing_open_date_is_warning_not_error(self) -> None:
+        """open_date 缺失只报 WARNING，不应单独把自检结论判定为未通过。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240103",
+                [_bar("000001.SZ", "20240103", 10.1, 10.0)],
+                ["000001.SZ"],
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+            missing = result.issues.loc[result.issues["issue_code"] == "OPEN_DATE_MISSING"]
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(missing.iloc[0]["level"], "WARNING")
+            self.assertEqual(result.summary["status"], "passed")
 
     def test_date_mismatch_does_not_count_as_present(self) -> None:
         """分区内 trade_date 错位行不能掩盖同日理论缺失。"""
