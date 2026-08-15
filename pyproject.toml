@@ -49,6 +49,7 @@ quant-market-server = "quant.cli.market_server:main"
 quant-qmt-self-check = "quant.cli.qmt_self_check:main"
 quant-single-factor-test = "quant.cli.single_factor_test:main"
 quant-ifind-download = "quant.cli.ifind_download:main"
+quant-build-market-db = "quant.market_data.build_database:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
