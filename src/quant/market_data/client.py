@@ -7,20 +7,24 @@ from typing import Sequence
 import pandas as pd
 import duckdb  # 明确暴露缺失依赖，避免被下面的兼容导入逻辑误判。
 
-try:
-    from .codes import normalize_security_code
-    from .database import MarketDatabase
-    from .models import KlineQuery, PagedBars, RawBarQuery
-except ImportError:  # 支持直接从源码目录运行
-    from codes import normalize_security_code
-    from database import MarketDatabase
-    from models import KlineQuery, PagedBars, RawBarQuery
+from .codes import normalize_security_code
+from .database import MarketDatabase
+from .models import KlineQuery, PagedBars, RawBarQuery
 
 
 class MarketDataClient:
     """行情数据唯一公共入口；调用方无需了解 DuckDB 或 Parquet。"""
 
-    def __init__(self, database_path: str | Path = r"D:\量化\market.duckdb") -> None:
+    def __init__(self, database_path: str | Path | None = None) -> None:
+        """绑定行情库文件。
+
+        参数：
+            database_path: ``market.duckdb`` 文件路径；``None`` 表示按
+                ``MARKET_DB_PATH`` 环境变量解析，未设置时使用内置回退路径。
+
+        返回：
+            无返回值。
+        """
         self._repository = MarketDatabase(database_path)
 
     def get_metadata(self) -> dict:

@@ -8,10 +8,9 @@ from typing import Iterator, Sequence
 import duckdb
 import pandas as pd
 
-try:
-    from .codes import normalize_security_code
-except ImportError:  # 支持直接从源码目录运行。
-    from codes import normalize_security_code
+from quant.config import default_market_database
+
+from .codes import normalize_security_code
 
 
 PERIODS = {
@@ -26,8 +25,17 @@ PERIODS = {
 
 
 class MarketDatabase:
-    def __init__(self, path: str | Path = r"D:\量化\market.duckdb") -> None:
-        self.path = Path(path)
+    def __init__(self, path: str | Path | None = None) -> None:
+        """绑定只读的 DuckDB 行情库文件。
+
+        参数：
+            path: ``market.duckdb`` 文件路径；``None`` 表示按
+                ``MARKET_DB_PATH`` 环境变量解析，未设置时使用内置回退路径。
+
+        返回：
+            无返回值；连接在 ``connect()`` 中按需建立。
+        """
+        self.path = Path(path) if path is not None else default_market_database()
 
     @contextmanager
     def connect(self) -> Iterator[duckdb.DuckDBPyConnection]:

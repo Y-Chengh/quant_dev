@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 import pandas as pd
 
+from quant.config import default_market_database
 from quant.factor_research.data import validate_bars
 
 
-DEFAULT_DATABASE = Path(os.getenv("MARKET_DB_PATH", r"D:\量化\market.duckdb"))
+DEFAULT_DATABASE = default_market_database()
 DEFAULT_SYMBOL_LIMIT = 20
 
 

@@ -14,9 +14,9 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from quant.market_data.client import MarketDataClient
-
+from quant.config import default_market_database
 from quant.factor_research.data import load_market_service
+from quant.market_data.client import MarketDataClient
 from quant.factor_research.factor_search import (
     FactorGeneticSearch,
     FactorSearchResult,
@@ -38,7 +38,7 @@ from quant.factor_research.reporting import (
 )
 
 
-DATABASE = Path(r"D:\量化\market.duckdb")
+DATABASE = default_market_database()
 REPORT_ROOT = Path("logs/_search")
 CODE_LIMIT = 500
 DATA_START = "2018-01-01"

@@ -7,12 +7,11 @@ import argparse
 import json
 from pathlib import Path
 
+from quant.config import default_qmt_config_path
 from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
 
 
-DEFAULT_CONFIG = Path(
-    r"C:\Users\win10\Documents\quant\configs\qmt_downloader\kline_only.backfill.json"
-)
+DEFAULT_CONFIG = default_qmt_config_path("kline_only.backfill.json")
 
 
 def build_parser() -> argparse.ArgumentParser:

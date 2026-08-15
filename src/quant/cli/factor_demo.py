@@ -5,7 +5,6 @@ import json
 import logging
 from logging.handlers import RotatingFileHandler
 import math
-import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +14,7 @@ from uuid import uuid4
 import pandas as pd
 import yaml
 
+from quant.config import default_market_database
 from quant.factor_research.backtesting import run_top_n_intraday_backtest
 from quant.factor_research.data import load_market_service
 from quant.factor_research.dataset import build_direction_dataset
@@ -39,7 +39,7 @@ from quant.factor_research.reporting import write_evaluation_report
 from quant.factor_research.timing import log_elapsed
 
 
-DEFAULT_DATABASE = Path(os.getenv("MARKET_DB_PATH", r"D:\量化\market.duckdb"))
+DEFAULT_DATABASE = default_market_database()
 DEFAULT_LOOKBACK_YEARS = 3
 DEFAULT_VALIDATION_YEARS = 1
 DEFAULT_SYMBOL_LIMIT = 80

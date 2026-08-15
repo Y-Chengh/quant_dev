@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import os
 from datetime import date, datetime
 from pathlib import Path
 
@@ -9,19 +8,15 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-try:
-    from .client import MarketDataClient
-    from .codes import normalize_security_code
-    from .models import KlinePeriod, KlineQuery, RawBarQuery
-except ImportError:  # 支持直接从源码目录运行
-    from client import MarketDataClient
-    from codes import normalize_security_code
-    from models import KlinePeriod, KlineQuery, RawBarQuery
+from quant.config import default_market_database
 
+from .client import MarketDataClient
+from .codes import normalize_security_code
+from .models import KlinePeriod, KlineQuery, RawBarQuery
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
-DB_PATH = Path(os.getenv("MARKET_DB_PATH", r"D:\量化\market.duckdb"))
+DB_PATH = default_market_database()
 client = MarketDataClient(DB_PATH)
 
 app = FastAPI(title="本地5分钟行情服务", version="1.0.0")
