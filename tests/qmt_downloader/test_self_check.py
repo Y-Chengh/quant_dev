@@ -422,6 +422,12 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertTrue(zero_volume["source_file"].endswith("data.csv"))
             self.assertEqual(int(zero_volume["source_row"]), 2)
 
+            # 正向验证 ERROR/WARNING 问题确实落入了磁盘上的 issues.csv，避免
+            # INFO/issues.csv 拆分的回归把该文件误清空却不被发现。
+            issues_csv = pd.read_csv(result.report_dir / "issues.csv", encoding="utf-8-sig")
+            self.assertIn("DATA_BEFORE_LISTING", set(issues_csv["issue_code"]))
+            self.assertIn("ACTIVE_ZERO_VOLUME", set(issues_csv["issue_code"]))
+
     def test_detects_missing_partition_and_hash_mismatch(self) -> None:
         """权威日历中的整日缺失及被修改的完成分区必须阻止通过。"""
 
@@ -1231,7 +1237,8 @@ class QmtDataSelfCheckTests(unittest.TestCase):
         """无法用除权事件解释的昨收断层只报 INFO，不应算作告警。
 
         统一改用 close 计算涨跌幅后，pre_close 本身的连续性不再影响下游
-        计算，历史验证显示该字段可能存在误差，因此降级为 INFO。
+        计算，历史验证显示该字段可能存在误差，因此降级为 INFO。INFO 级问题
+        还应单独写入 info.csv，不再混入 issues.csv 这份「报错」报告。
         """
 
         with tempfile.TemporaryDirectory() as directory:
@@ -1269,6 +1276,15 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertEqual(len(issues), 1)
             self.assertEqual(issues.iloc[0]["level"], "INFO")
             self.assertEqual(result.summary["status"], "passed")
+
+            issues_csv = pd.read_csv(result.report_dir / "issues.csv", encoding="utf-8-sig")
+            info_csv = pd.read_csv(result.report_dir / "info.csv", encoding="utf-8-sig")
+            self.assertNotIn("PRE_CLOSE_DISCONTINUITY", set(issues_csv["issue_code"]))
+            self.assertIn("PRE_CLOSE_DISCONTINUITY", set(info_csv["issue_code"]))
+            self.assertNotIn("INFO", set(issues_csv["level"]))
+            self.assertNotIn("PRE_CLOSE_DISCONTINUITY", set(
+                pd.read_csv(result.report_dir / "statistical_anomalies.csv", encoding="utf-8-sig")["issue_code"]
+            ))
 
 
 if __name__ == "__main__":

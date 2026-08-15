@@ -57,11 +57,15 @@ class _SummaryReportMixin(_CheckerState):
             coverage_dates: 按交易日统计的证券覆盖率表。
 
         返回：
-            可直接序列化为 JSON 的审计摘要字典。
+            可直接序列化为 JSON 的审计摘要字典；``issue_codes`` 只统计 ERROR/WARNING
+            级问题编号，不含仅供参考的 INFO 级问题。
         """
 
         levels = Counter(issues["level"].tolist()) if not issues.empty else Counter()
-        issue_codes = Counter(issues["issue_code"].tolist()) if not issues.empty else Counter()
+        # INFO 级问题只供参考、不代表数据缺陷，因此不计入错误编号统计表，
+        # 避免和 ERROR/WARNING 混在一起被误读为「报错」；完整明细见 info.csv。
+        non_info = issues[issues["level"] != "INFO"] if not issues.empty else issues
+        issue_codes = Counter(non_info["issue_code"].tolist()) if not non_info.empty else Counter()
         expected_rows = int(coverage_dates["expected_symbols"].sum()) if not coverage_dates.empty else 0
         actual_rows = int(coverage_dates["actual_expected_symbols"].sum()) if not coverage_dates.empty else 0
         return {
@@ -99,29 +103,35 @@ class _SummaryReportMixin(_CheckerState):
         参数：
             report_dir: 本次自检唯一报告目录。
             summary: 可序列化的整体统计摘要。
-            issues: 含完整定位、证据、原因和建议的全部问题表。
+            issues: 含完整定位、证据、原因和建议的全部问题表，含 ERROR/WARNING/INFO
+                三种级别。
             missing_spans: 按证券压缩后的连续缺失区间表。
             coverage_dates: 每个交易日的应有、实有和缺失证券统计。
             coverage_symbols: 每只证券的应有、实有、停牌和异常统计。
 
         返回：
-            无返回值；任一文件写入失败时抛出对应文件系统异常。
+            无返回值；任一文件写入失败时抛出对应文件系统异常。``issues.csv`` 及各
+            分类明细只含 ERROR/WARNING 级问题；INFO 级问题只供参考，单独写入
+            ``info.csv``，不再混入「报错」类报告。
         """
 
+        non_info = issues[issues["level"] != "INFO"]
+        info_only = issues[issues["level"] == "INFO"]
         _write_json_atomic(report_dir / "summary.json", summary)
         _write_text_atomic(report_dir / "summary.md", _summary_markdown(summary))
-        _write_csv_atomic(report_dir / "issues.csv", issues)
+        _write_csv_atomic(report_dir / "issues.csv", non_info)
+        _write_csv_atomic(report_dir / "info.csv", info_only)
         _write_csv_atomic(report_dir / "missing_spans.csv", missing_spans)
         _write_csv_atomic(report_dir / "coverage_by_date.csv", coverage_dates)
         _write_csv_atomic(report_dir / "coverage_by_symbol.csv", coverage_symbols)
-        lifecycle = issues[issues["issue_code"].isin(
+        lifecycle = non_info[non_info["issue_code"].isin(
             ["DATA_BEFORE_LISTING", "DATA_AFTER_DELISTING", "OPEN_DATE_MISSING", "INVALID_LIFECYCLE_RANGE"]
         )]
-        volume = issues[issues["issue_code"].isin(
+        volume = non_info[non_info["issue_code"].isin(
             ["ACTIVE_ZERO_VOLUME", "ACTIVE_ZERO_AMOUNT", "SUSPENDED_WITH_TURNOVER", "ABNORMAL_VOLUME_SCALE"]
         )]
-        partition = issues[issues["issue_code"].str.startswith("PARTITION_")]
-        statistical = issues[issues["issue_code"].isin(
+        partition = non_info[non_info["issue_code"].str.startswith("PARTITION_")]
+        statistical = non_info[non_info["issue_code"].isin(
             ["ABNORMAL_PRICE_JUMP", "ABNORMAL_VOLUME_SCALE", "PRE_CLOSE_DISCONTINUITY"]
         )]
         _write_csv_atomic(report_dir / "lifecycle_violations.csv", lifecycle)
