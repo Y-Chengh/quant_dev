@@ -19,10 +19,12 @@ build/
 dist/
 *.egg-info/
 
-# Project-generated caches and logs
+# Project-generated caches, logs and reports
 .factor_cache/
 logs/
 *.log
+output/
+reports/
 
 # Local data files
 *.parquet
