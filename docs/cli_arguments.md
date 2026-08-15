@@ -346,6 +346,8 @@ quant-ifind-download `
 
 ## 7. 数据源选择
 
+> 日线数据从下载到跑实验的完整流程见 [qmt_daily_guide.md](qmt_daily_guide.md)。
+
 `quant-factor-demo` 通过 `--data-source` 选择行情来源，缺省 `market_service`
 （本地 5 分钟库，与改动前行为完全一致）。数据源参数与模型参数一样采用两阶段解析：
 程序先读取 `--data-source`，再只注册所选数据源的专属参数，因此不同数据源可以有同名

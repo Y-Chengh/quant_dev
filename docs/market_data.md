@@ -84,7 +84,7 @@ REST层不提供任意SQL执行能力。
 ## QMT日线库
 
 日线数据来自大 QMT，落在**独立**的 `qmt_daily.duckdb` 与 `bars_1d` 月度 Parquet 上，
-与上面的 5 分钟库互不影响。构建、增量同步、复权口径与并发约束见
+与上面的 5 分钟库互不影响。端到端操作步骤见 [qmt_daily_guide.md](qmt_daily_guide.md)；库结构、增量机制与复权口径见
 [qmt_daily_store.md](qmt_daily_store.md)，合法性审计见 [market_check.md](market_check.md)。
 
 ```python
