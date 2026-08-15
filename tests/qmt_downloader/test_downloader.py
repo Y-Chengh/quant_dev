@@ -7,6 +7,7 @@ import logging
 import shutil
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,11 @@ from quant.qmt_downloader.config import (
 )
 from quant.qmt_downloader.finance import materialize_finance_daily
 from quant.qmt_downloader.gateway import FINANCE_FIELDS, QmtGateway
+from quant.qmt_downloader.logging_setup import (
+    configure_logging,
+    log_run_configuration,
+    mode_log_token,
+)
 from quant.qmt_downloader.runner import QmtDailyDownloader
 from quant.qmt_downloader.runner.helpers import _format_elapsed, _make_job_key
 from quant.qmt_downloader.state import CheckpointStore
@@ -668,6 +674,113 @@ class DownloaderTests(unittest.TestCase):
         )
         self.assertEqual(missing, [])
 
+    def test_batch_downloader_replaces_per_symbol_history_calls(self):
+        """提供批量下载接口时应一次性补全整批，不再逐只调用。"""
+        context = FakeContext()
+        logger = logging.getLogger(f"qmt_batch_download_test_{id(context)}")
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        per_symbol_calls = []
+        batch_calls = []
+
+        def per_symbol(code, period, start_date, end_date):
+            per_symbol_calls.append(code)
+
+        def batch(codes, period, start_date, end_date):
+            batch_calls.append((list(codes), period, start_date, end_date))
+
+        gateway = QmtGateway(
+            context,
+            per_symbol,
+            logger,
+            retry_count=1,
+            batch_history_downloader=batch,
+        )
+        frame, issues = gateway.fetch_kline(
+            ["000001.SZ", "600000.SH"], "20240102", "20240103"
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(per_symbol_calls, [])
+        self.assertEqual(
+            batch_calls,
+            [(["000001.SZ", "600000.SH"], "1d", "20240102", "20240103")],
+        )
+        self.assertFalse(frame.empty)
+
+    def test_batch_download_failure_falls_back_to_per_symbol(self):
+        """批量下载整体失败时应回退逐只下载，并保留按证券归因的错误。"""
+        context = FakeContext()
+        logger = logging.getLogger(f"qmt_batch_fallback_test_{id(context)}")
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        per_symbol_calls = []
+
+        def per_symbol(code, period, start_date, end_date):
+            per_symbol_calls.append(code)
+            if code == "600000.SH":
+                raise RuntimeError("单只下载失败")
+
+        def batch(codes, period, start_date, end_date):
+            raise RuntimeError("批量接口不可用")
+
+        gateway = QmtGateway(
+            context,
+            per_symbol,
+            logger,
+            retry_count=1,
+            batch_history_downloader=batch,
+        )
+        frame, issues = gateway.fetch_kline(
+            ["000001.SZ", "600000.SH"], "20240102", "20240103"
+        )
+        self.assertEqual(per_symbol_calls, ["000001.SZ", "600000.SH"])
+        self.assertEqual([issue["code"] for issue in issues], ["600000.SH"])
+        self.assertEqual(issues[0]["level"], "ERROR")
+        # 回退后未失败的证券仍应正常读取行情，失败证券不进入结果。
+        self.assertEqual(set(frame["code"]), {"000001.SZ"})
+
+    def test_batch_download_failure_disables_batch_for_later_batches(self):
+        """批量下载失败后应停用批量接口，且不得重试，避免每批重复等待。"""
+        context = FakeContext()
+        logger = logging.getLogger(f"qmt_batch_disable_test_{id(context)}")
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        batch_attempts = []
+
+        def batch(codes, period, start_date, end_date):
+            batch_attempts.append(list(codes))
+            raise RuntimeError("无法连接行情服务!")
+
+        gateway = QmtGateway(
+            context,
+            lambda *args: None,
+            logger,
+            retry_count=3,
+            batch_history_downloader=batch,
+        )
+        for _ in range(3):
+            gateway.fetch_kline(["000001.SZ", "600000.SH"], "20240102", "20240103")
+        # retry_count=3 也只允许尝试一次，且失败后不再尝试后续批次。
+        self.assertEqual(len(batch_attempts), 1)
+        self.assertIsNone(gateway.batch_history_downloader)
+
+    def test_batch_downloader_is_skipped_when_download_disabled(self):
+        """download_first 为 False 时不应触发任何下载调用。"""
+        context = FakeContext()
+        logger = logging.getLogger(f"qmt_batch_skip_test_{id(context)}")
+        logger.handlers = [logging.NullHandler()]
+        logger.propagate = False
+        calls = []
+        gateway = QmtGateway(
+            context,
+            lambda *args: calls.append(args),
+            logger,
+            retry_count=1,
+            batch_history_downloader=lambda *args: calls.append(args),
+        )
+        gateway.fetch_kline(["000001.SZ"], "20240102", "20240103", download_first=False)
+        self.assertEqual(calls, [])
+
     def test_instrument_info_filters_pre_listing_kline_warning(self):
         """上市前日期的 K 线缺失提示应被生命周期信息过滤。"""
         runner = object.__new__(QmtDailyDownloader)
@@ -1116,6 +1229,123 @@ class DownloaderTests(unittest.TestCase):
             self.assertTrue((raw["revenue"] == 999.0).all())
             self.assertTrue((daily["income_revenue"] == 999.0).all())
 
+    def test_log_file_name_encodes_date_hour_and_mode(self):
+        """日志文件名必须能直接看出运行日期、小时和运行模式。"""
+        started = datetime(2026, 8, 15, 9, 30, 0)
+        expected = {
+            "backfill": "downloader.20260815.09.back_fill.log",
+            "incremental": "downloader.20260815.09.inc.log",
+            "repair": "downloader.20260815.09.repair.log",
+        }
+        self.addCleanup(_close_downloader_logger)
+        for mode, name in expected.items():
+            with tempfile.TemporaryDirectory() as directory:
+                _, log_path = configure_logging(
+                    directory, 1024, 1, mode, started_at=started
+                )
+                self.assertEqual(log_path.name, name)
+                self.assertEqual(log_path.parent, Path(directory) / "logs")
+                _close_downloader_logger()
+        # 未知模式不得让整次运行失败，也不得生成带路径分隔符的文件名。
+        self.assertEqual(mode_log_token("Odd Mode/x"), "odd_mode_x")
+        self.assertEqual(mode_log_token("  "), "unknown")
+
+    def test_each_run_gets_its_own_log_file(self):
+        """同一小时内重复运行不得把两次运行混进同一个日志文件。"""
+        started = datetime(2026, 8, 15, 9, 0, 0)
+        self.addCleanup(_close_downloader_logger)
+        with tempfile.TemporaryDirectory() as directory:
+            logger, first = configure_logging(
+                directory, 1024 * 1024, 1, "incremental", started_at=started
+            )
+            logger.info("第一次运行")
+            logger, second = configure_logging(
+                directory, 1024 * 1024, 1, "incremental", started_at=started
+            )
+            logger.info("第二次运行")
+            _close_downloader_logger()
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.name, "downloader.20260815.09.inc.log")
+            self.assertEqual(second.name, "downloader.20260815.09.inc.2.log")
+            first_text = first.read_text(encoding="utf-8")
+            second_text = second.read_text(encoding="utf-8")
+            self.assertIn("第一次运行", first_text)
+            self.assertNotIn("第二次运行", first_text)
+            self.assertIn("第二次运行", second_text)
+            self.assertNotIn("第一次运行", second_text)
+
+    def test_run_configuration_is_logged_before_download(self):
+        """日志起始必须完整记录生效配置，包括自动解析后的日期。"""
+        self.addCleanup(_close_downloader_logger)
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["mode"] = "incremental"
+            values["start_date"] = "auto"
+            values["end_date"] = "20240103"
+            values["incremental_initial_start_date"] = "20240102"
+            config = DownloaderConfig(values)
+            logger, log_path = configure_logging(
+                directory,
+                1024 * 1024,
+                1,
+                config.mode,
+                started_at=datetime(2026, 8, 15, 9, 0, 0),
+            )
+            log_run_configuration(logger, config.describe())
+            _close_downloader_logger()
+            text = log_path.read_text(encoding="utf-8")
+            self.assertIn("生效配置开始", text)
+            self.assertIn("生效配置结束", text)
+            self.assertIn("配置 mode=incremental", text)
+            self.assertIn("配置 batch_size=1", text)
+            self.assertIn("配置 symbols=000001.SZ, 600000.SH", text)
+            self.assertIn("配置 datasets=kline_1d, finance_raw", text)
+            # auto 起始日已解析为实际日期，日志据此可直接复现本次下载区间。
+            self.assertIn("配置 start_date=20240102", text)
+            self.assertIn("配置 end_date=20240103", text)
+
+    def test_describe_covers_every_configuration_key(self):
+        """新增配置项后必须同步进 describe()，否则日志会漏记该项。"""
+        config_path = (
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "quant"
+            / "qmt_downloader"
+            / "config.py"
+        )
+        tree = ast.parse(config_path.read_text(encoding="utf-8"), str(config_path))
+        # 只收集从配置字典读取的键；metadata.get 等其它字典读取与配置项无关。
+        keys = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            receiver = node.func.value
+            if node.func.attr != "get" or not isinstance(receiver, ast.Name):
+                continue
+            if receiver.id != "values" or not node.args:
+                continue
+            first = node.args[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                keys.add(first.value)
+        # 防止 AST 收集写错时静默通过：配置至少包含这些必填键。
+        self.assertTrue({"output_root", "mode", "start_date", "datasets"} <= keys)
+        described = {name for name, _ in _config("D:\\unused").describe()}
+        self.assertEqual(sorted(keys - described), [])
+
+    def test_config_from_json_records_source_path(self):
+        """日志需要指出本次运行读取了哪份配置文件。"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "run.json"
+            path.write_text(
+                json.dumps(_config_values(directory)), encoding="utf-8"
+            )
+            config = DownloaderConfig.from_json(path)
+            self.assertEqual(config.source_path, path)
+            described = dict(config.describe())
+            self.assertEqual(described["config_path"], str(path))
+            # 直接以字典构造时没有来源文件，仍须留空而不是崩溃。
+            self.assertEqual(dict(_config(directory).describe())["config_path"], "")
+
     def test_qmt_entry_source_is_ascii_safe(self):
         """确保由大 QMT 编辑器直接载入的入口源码不受 GBK/UTF-8 转码影响。"""
         entry_path = (
@@ -1468,6 +1698,125 @@ class DownloaderTests(unittest.TestCase):
             self.assertEqual(str(unresolved.iloc[0]["code"]), "000001.SZ")
             self.assertEqual(str(unresolved.iloc[0]["date"]), "20240103")
 
+    def test_trading_calendar_dataset_writes_snapshot_partition(self):
+        """datasets 含 trading_calendar 时应写出带完成标记的日历快照。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["kline_1d", "trading_calendar"]
+            summary = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            ).run()
+            self.assertEqual(summary["errors"], 0)
+            partition = Path(directory) / "trading_calendar" / "snapshot=latest"
+            self.assertTrue((partition / "_SUCCESS.json").is_file())
+            saved = pd.read_csv(
+                str(partition / "data.csv"),
+                encoding="utf-8-sig",
+                dtype={"trade_date": str},
+            )
+            self.assertEqual(saved["trade_date"].tolist(), ["20240102", "20240103"])
+            self.assertEqual(
+                saved["calendar_symbol"].tolist(), ["000001.SH", "000001.SH"]
+            )
+
+    def test_trading_calendar_dataset_is_optional(self):
+        """datasets 不含 trading_calendar 时不得生成日历快照目录。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["kline_1d"]
+            summary = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            ).run()
+            self.assertEqual(summary["errors"], 0)
+            self.assertFalse((Path(directory) / "trading_calendar").exists())
+
+    def test_trading_calendar_snapshot_accumulates_history(self):
+        """日历快照必须与历史并集后重写，不能被本次短区间截断。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["kline_1d", "trading_calendar"]
+            store = DailyPartitionStore(directory)
+            store.write_partition(
+                "trading_calendar",
+                "snapshot",
+                "latest",
+                pd.DataFrame(
+                    {
+                        "trade_date": ["20231228", "20231229"],
+                        "calendar_symbol": ["399001.SZ", "399001.SZ"],
+                    }
+                ),
+                ["trade_date", "calendar_symbol"],
+                ["trade_date"],
+                ["trade_date"],
+                {},
+            )
+            summary = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            ).run()
+            self.assertEqual(summary["errors"], 0)
+            saved = pd.read_csv(
+                str(
+                    Path(directory)
+                    / "trading_calendar"
+                    / "snapshot=latest"
+                    / "data.csv"
+                ),
+                encoding="utf-8-sig",
+                dtype={"trade_date": str},
+            )
+            self.assertEqual(
+                saved["trade_date"].tolist(),
+                ["20231228", "20231229", "20240102", "20240103"],
+            )
+            # 区间外的历史日期保留原有基准代码，本次区间内以本次结果为准。
+            self.assertEqual(
+                saved["calendar_symbol"].tolist(),
+                ["399001.SZ", "399001.SZ", "000001.SH", "000001.SH"],
+            )
+
+    def test_trading_calendar_toggle_keeps_job_key_and_scope(self):
+        """开关日历落表不得改变任务键、水位范围和已有分区的抽取范围。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["kline_1d", "corporate_actions"]
+            without = DownloaderConfig(values)
+            values["datasets"] = ["kline_1d", "corporate_actions", "trading_calendar"]
+            with_calendar = DownloaderConfig(values)
+            self.assertFalse(without.save_trading_calendar)
+            self.assertTrue(with_calendar.save_trading_calendar)
+            self.assertEqual(
+                _make_job_key(without, ["000001.SZ"]),
+                _make_job_key(with_calendar, ["000001.SZ"]),
+            )
+            self.assertEqual(without.watermark_scope, with_calendar.watermark_scope)
+            runner = _build_runner(with_calendar, FakeContext(), lambda *args: None)
+            runner.run()
+            with (
+                Path(directory) / "kline_1d" / "date=20240102" / "_SUCCESS.json"
+            ).open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            self.assertEqual(
+                metadata["partition_scope"]["datasets"],
+                ["corporate_actions", "kline_1d"],
+            )
+
+    def test_calendar_only_run_writes_no_daily_watermark(self):
+        """只落交易日历时不得生成任何按日业务分区或整日水位。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["trading_calendar"]
+            summary = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            ).run()
+            self.assertEqual(summary["errors"], 0)
+            root = Path(directory)
+            self.assertTrue(
+                (root / "trading_calendar" / "snapshot=latest" / "data.csv").is_file()
+            )
+            self.assertFalse((root / "kline_1d").exists())
+            self.assertFalse((root / "run_complete").exists())
+
     def test_expired_sectors_join_sector_symbol_pool(self):
         """过期板块应并入板块证券池，让回测能看到已退市标的。"""
         gateway = _build_gateway(FakeContext())
@@ -1754,6 +2103,21 @@ class DownloaderTests(unittest.TestCase):
             self.assertEqual(
                 DownloaderConfig(values).expired_sectors, ("过期沪深A股",)
             )
+
+
+def _close_downloader_logger():
+    """关闭全局下载器日志器的全部处理器。
+
+    Windows 上未关闭的文件处理器会一直占用日志文件，使 ``TemporaryDirectory``
+    清理失败，因此调用 ``configure_logging`` 的用例必须在离开临时目录前调用。
+
+    返回：
+        无返回值。
+    """
+    logger = logging.getLogger("quant.qmt_downloader")
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
 
 
 def _config(directory):

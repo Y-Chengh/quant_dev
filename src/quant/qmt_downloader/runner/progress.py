@@ -51,12 +51,17 @@ class _ProgressLoggingMixin(_RunnerState):
             status: 进度事件状态，如“开始”、“完成”或“跳过”。
 
         返回：
-            无返回值。
+            无返回值；只有首日、末日和每前进 5% 的日期写 INFO，其余降级为 DEBUG。
         """
         total = max(int(total), 1)
         current = min(index + 1, total)
         percent = current * 100.0 / total
-        self.logger.info(
+        # 全区间任务的交易日数以千计，逐日输出会把批次级进度和真正的问题淹没。
+        # 需要定位单个日期卡在哪一步时，把日志级别调到 DEBUG 即可恢复逐日输出。
+        step = max(total // 20, 1)
+        milestone = current == 1 or current == total or current % step == 0
+        write_log = self.logger.info if milestone else self.logger.debug
+        write_log(
             "[%s] %s 日期 %d/%d (%.1f%%) date=%s",
             dataset,
             status,
@@ -108,7 +113,9 @@ class _ProgressLoggingMixin(_RunnerState):
                         )
                     )
             return results
-        self.logger.info(
+        # 落盘按固定大小分块，一个长区间任务会调用本方法数百次且每次内容雷同，
+        # 因此降级为 DEBUG；线程数属于静态配置，任务进度另有批次和日期日志。
+        self.logger.debug(
             "[%s] 并行保存任务数=%d workers=%d",
             stage,
             len(task_list),

@@ -90,6 +90,9 @@ def _format_elapsed(seconds):
 def _make_job_key(config, symbols):
     """根据影响抽取结果的配置生成稳定任务标识。
 
+    只使用业务数据集，交易日历开关不参与：它不产生任何 staging 批次，若纳入任务键，
+    仅仅打开落表就会让长区间回溯的全部断点失效并重新下载。
+
     参数：
         config: 当前 ``DownloaderConfig``。
         symbols: 已解析并排序的最终证券池。
@@ -104,7 +107,7 @@ def _make_job_key(config, symbols):
         "end_date": config.end_date,
         "finance_lookback_start": config.finance_lookback_start,
         "symbols": list(symbols),
-        "datasets": list(config.datasets),
+        "datasets": list(config.business_datasets),
         "download_kline": config.download_kline,
         "batch_size": config.batch_size,
         "allow_partial_finance": config.allow_partial_finance,

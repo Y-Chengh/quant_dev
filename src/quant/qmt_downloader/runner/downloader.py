@@ -20,12 +20,14 @@ from .issues import _IssueHandlingMixin
 from .kline import _KlineCollectionMixin
 from .partitions import _PartitionWriteMixin
 from .progress import _ProgressLoggingMixin
+from .trading_calendar import _TradingCalendarMixin
 
 
 class QmtDailyDownloader(
     _InstrumentInfoMixin,
     _IssueHandlingMixin,
     _ProgressLoggingMixin,
+    _TradingCalendarMixin,
     _KlineCollectionMixin,
     _FinanceCollectionMixin,
     _CorporateActionMixin,
@@ -88,7 +90,9 @@ class QmtDailyDownloader(
         )
         self.partition_scope = {
             "schema_version": 2,
-            "datasets": sorted(self.config.datasets),
+            # 只登记业务数据集：交易日历不改变任何业务分区的内容，若纳入范围，仅仅
+            # 打开落表就会让已完成分区的范围核验失败并拒绝写入。
+            "datasets": sorted(self.config.business_datasets),
             "symbols": list(self.symbols),
             "finance_lookback_start": self.config.finance_lookback_start,
             "finance_fields": {
@@ -148,6 +152,16 @@ class QmtDailyDownloader(
             return self._finish_without_download(run_id, "no_trading_dates")
 
         all_datasets_succeeded = True
+        if self.config.save_trading_calendar:
+            # 交易日历只依赖上面已经取得的 trade_dates，放在业务数据之前落表：即使随后
+            # 的日线或财务失败，自检也已经拿得到本次区间的权威日历。落表失败按所选数据
+            # 集失败处理，不推进整日水位，重跑时业务分区会因范围一致而快速跳过。
+            try:
+                self._write_trading_calendar(trade_dates)
+            except Exception as error:
+                all_datasets_succeeded = False
+                self.issues.add("ERROR", "trading_calendar", "", "", str(error))
+                self.logger.exception("交易日历落表失败")
         if "kline_1d" in self.config.datasets or "finance_daily" in self.config.datasets:
             lifecycle = {}
             instrument_info = None

@@ -94,7 +94,14 @@ CORPORATE_ACTION_COLUMNS = [
 class QmtGateway(object):
     """将大 QMT ContextInfo 返回值转换为稳定的表格结构。"""
 
-    def __init__(self, context, history_downloader, logger, retry_count=3):
+    def __init__(
+        self,
+        context,
+        history_downloader,
+        logger,
+        retry_count=3,
+        batch_history_downloader=None,
+    ):
         """保存大 QMT 上下文及历史行情下载函数。
 
         参数：
@@ -102,11 +109,15 @@ class QmtGateway(object):
             history_downloader: 大 QMT 内置全局 ``download_history_data`` 函数。
             logger: 已配置终端和文件处理器的日志对象。
             retry_count: 单只证券接口失败后的最大尝试次数。
+            batch_history_downloader: 可选的批量历史下载函数，签名为
+                ``(codes, period, start_time, end_time)``（大 QMT 的
+                ``download_history_data2``）。为 ``None`` 时始终逐只下载。
         """
         self.context = context
         self.history_downloader = history_downloader
         self.logger = logger
         self.retry_count = int(retry_count)
+        self.batch_history_downloader = batch_history_downloader
 
     def resolve_symbols(self, symbols, sector, expired_sectors=()):
         """从显式代码列表、大 QMT 板块和过期（退市）板块解析证券池。
@@ -210,29 +221,73 @@ class QmtGateway(object):
         output = set(str(name).strip() for name in names if str(name).strip())
         return output or None
 
-    def fetch_kline(self, symbols, start_date, end_date, download_first=True):
-        """补充并读取指定证券的日 K 线。
+    def _download_kline_history(self, symbols, start_date, end_date):
+        """补充本地日线缓存，可用时优先走批量下载接口。
+
+        批量接口把整批证券压缩成一次请求，省掉逐只调用的往返开销；一旦批量调用
+        失败，就退回逐只下载，把失败归因到具体证券，行为与改造前一致，并对本次
+        运行的其余批次直接禁用批量接口。批量调用成功但个别证券实际未补齐时，后
+        续的缺口检查和定向补下载仍会兜住。
 
         参数：
             symbols: 当前批次证券代码列表。
-            start_date: 八位起始交易日，区间两端均包含。
-            end_date: 八位结束交易日，区间两端均包含。
-            download_first: 是否先调用大 QMT 历史行情下载接口更新本地缓存。
+            start_date: 八位起始交易日。
+            end_date: 八位结束交易日。
 
         返回：
-            ``(DataFrame, issues)``，前者每行是一只证券一天的未复权行情，后者为问题列表。
+            ``(available, issues)``；``available`` 为可以继续读取行情的代码列表。
         """
-        issues = []
-        available = []
-        for code in symbols:
+        codes = list(symbols)
+        if self.batch_history_downloader is not None and len(codes) > 1:
+            started_at = time.perf_counter()
+            self.logger.info(
+                "日线下载开始 stage=download_history mode=batch symbols=%d start=%s end=%s",
+                len(codes),
+                start_date,
+                end_date,
+            )
             try:
-                if download_first:
-                    self._retry(
-                        lambda current=code: self.history_downloader(
-                            current, "1d", start_date, end_date
-                        ),
-                        "下载日线 {0}".format(code),
-                    )
+                # 逐只下载随时可以顶上，因此批量调用不重试：重试只会在每个批次前
+                # 白等数秒，而连接类故障不会在同一次运行内自愈。
+                self.batch_history_downloader(codes, "1d", start_date, end_date)
+            except Exception as error:
+                self.logger.warning(
+                    "批量下载日线失败，本次运行改用逐只下载 stage=download_history_data2 symbols=%d "
+                    "start=%s end=%s elapsed=%.2fs error_type=%s error=%s",
+                    len(codes),
+                    start_date,
+                    end_date,
+                    time.perf_counter() - started_at,
+                    type(error).__name__,
+                    error,
+                )
+                # 首次失败后禁用，避免其余批次重复付出同样的失败等待。
+                self.batch_history_downloader = None
+            else:
+                self.logger.info(
+                    "日线下载完成 stage=download_history mode=batch symbols=%d elapsed=%.2fs",
+                    len(codes),
+                    time.perf_counter() - started_at,
+                )
+                return codes, []
+
+        started_at = time.perf_counter()
+        self.logger.info(
+            "日线下载开始 stage=download_history mode=per_symbol symbols=%d start=%s end=%s",
+            len(codes),
+            start_date,
+            end_date,
+        )
+        available = []
+        issues = []
+        for code in codes:
+            try:
+                self._retry(
+                    lambda current=code: self.history_downloader(
+                        current, "1d", start_date, end_date
+                    ),
+                    "下载日线 {0}".format(code),
+                )
                 available.append(code)
             except Exception as error:
                 self.logger.exception(
@@ -254,6 +309,30 @@ class QmtGateway(object):
                         ),
                     )
                 )
+        self.logger.info(
+            "日线下载完成 stage=download_history mode=per_symbol symbols=%d available=%d elapsed=%.2fs",
+            len(codes),
+            len(available),
+            time.perf_counter() - started_at,
+        )
+        return available, issues
+
+    def fetch_kline(self, symbols, start_date, end_date, download_first=True):
+        """补充并读取指定证券的日 K 线。
+
+        参数：
+            symbols: 当前批次证券代码列表。
+            start_date: 八位起始交易日，区间两端均包含。
+            end_date: 八位结束交易日，区间两端均包含。
+            download_first: 是否先调用大 QMT 历史行情下载接口更新本地缓存。
+
+        返回：
+            ``(DataFrame, issues)``，前者每行是一只证券一天的未复权行情，后者为问题列表。
+        """
+        if download_first:
+            available, issues = self._download_kline_history(symbols, start_date, end_date)
+        else:
+            available, issues = list(symbols), []
         if not available:
             return pd.DataFrame(columns=KLINE_COLUMNS), issues
 

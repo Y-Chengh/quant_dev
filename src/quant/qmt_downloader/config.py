@@ -14,12 +14,16 @@ except ImportError:  # 大 QMT 内置 Python 可能未提供 zoneinfo
 
 
 SUPPORTED_MODES = ("backfill", "incremental", "repair")
-SUPPORTED_DATASETS = (
+# 交易日历只是整体覆盖的运行时快照，不按交易日分区，也不影响任何业务分区的内容，
+# 因此单独成名并在任务键、分区范围和整日水位范围中排除，见 BUSINESS_DATASETS。
+CALENDAR_DATASET = "trading_calendar"
+BUSINESS_DATASETS = (
     "kline_1d",
     "finance_raw",
     "finance_daily",
     "corporate_actions",
 )
+SUPPORTED_DATASETS = BUSINESS_DATASETS + (CALENDAR_DATASET,)
 try:
     _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo is not None else None
 except (OSError, ValueError, KeyError):
@@ -98,14 +102,16 @@ def strip_jsonc(text):
 class DownloaderConfig(object):
     """保存经过校验的大 QMT 下载任务配置。"""
 
-    def __init__(self, values):
+    def __init__(self, values, source_path=None):
         """初始化下载配置并校验日期、批量大小及数据集。
 
         参数：
             values: JSON 配置解析后的字典；必须包含输出目录、模式、起止日期，
                 股票列表可为空并改由 ``sector`` 指定大 QMT 板块，``expired_sectors``
                 可额外并入过期（退市）板块。
+            source_path: 配置文件路径，仅用于日志记录；直接以字典构造时可省略。
         """
+        self.source_path = None if source_path is None else Path(source_path)
         self.output_root = Path(values.get("output_root", r"D:\qmt_data_test"))
         self.mode = str(values.get("mode", "backfill"))
         self.start_date = str(values.get("start_date", ""))
@@ -146,14 +152,22 @@ class DownloaderConfig(object):
         self.retry_count = int(values.get("retry_count", 3))
         self.kline_gap_retry_count = int(values.get("kline_gap_retry_count", 2))
         self.download_kline = bool(values.get("download_kline", True))
+        self.download_kline_batch = bool(values.get("download_kline_batch", True))
         self.overwrite_completed_partition = bool(
             values.get("overwrite_completed_partition", self.mode == "repair")
         )
         self.datasets = tuple(values.get("datasets", SUPPORTED_DATASETS))
+        # 交易日历与日线平级，通过 datasets 中的 trading_calendar 控制是否落表；它
+        # 不产生按日分区，因此下面所有影响断点匹配和分区口径的派生值都只看业务数据集，
+        # 使已有输出目录在开关切换后仍能续跑、跳过和推进水位。
+        self.save_trading_calendar = CALENDAR_DATASET in self.datasets
+        self.business_datasets = tuple(
+            name for name in self.datasets if name != CALENDAR_DATASET
+        )
         self.allow_partial_finance = bool(values.get("allow_partial_finance", False))
         self.calendar_symbol = str(values.get("calendar_symbol", "000001.SH")).strip().upper()
         self.watermark_scope = {
-            "datasets": sorted(self.datasets),
+            "datasets": sorted(self.business_datasets),
             "symbols": sorted(str(code).strip().upper() for code in self.symbols),
             "sector": self.sector,
         }
@@ -193,7 +207,60 @@ class DownloaderConfig(object):
             )
         if not isinstance(values, dict):
             raise ValueError("下载器配置根节点必须是 JSON 对象")
-        return cls(values)
+        return cls(values, config_path)
+
+    def describe(self):
+        """列出本次运行的全部生效配置，供日志起始处完整记录。
+
+        自动解析后的起止日期、滞后天数和派生数据集分组都按最终取值给出，因此
+        日志中的值与下载器实际使用的值一致，排查时不必再回头对照配置文件。
+
+        返回：
+            ``(名称, 文本值)`` 二元组列表，顺序与配置读取顺序一致。
+        """
+        return [
+            ("config_path", "" if self.source_path is None else str(self.source_path)),
+            ("output_root", str(self.output_root)),
+            ("mode", self.mode),
+            ("start_date", self.start_date),
+            ("end_date", self.end_date),
+            ("auto_start_requested", str(self.auto_start_requested)),
+            ("incremental_initial_start_date", self.incremental_initial_start_date),
+            ("incremental_lag_days", str(self.incremental_lag_days)),
+            ("incremental_lag_days_auto", str(self.incremental_lag_days_auto)),
+            ("incremental_lag_auto_cutoff", self.incremental_lag_auto_cutoff),
+            (
+                "incremental_lag_decision_time",
+                self.incremental_lag_decision_time.strftime("%Y-%m-%d %H:%M:%S %z"),
+            ),
+            ("no_work", str(self.no_work)),
+            ("symbol_count", str(len(self.symbols))),
+            ("symbols", ", ".join(self.symbols)),
+            ("sector", self.sector),
+            ("expired_sectors", ", ".join(self.expired_sectors)),
+            ("batch_size", str(self.batch_size)),
+            ("save_workers", str(self.save_workers)),
+            ("retry_count", str(self.retry_count)),
+            ("kline_gap_retry_count", str(self.kline_gap_retry_count)),
+            ("download_kline", str(self.download_kline)),
+            ("download_kline_batch", str(self.download_kline_batch)),
+            (
+                "overwrite_completed_partition",
+                str(self.overwrite_completed_partition),
+            ),
+            ("datasets", ", ".join(str(name) for name in self.datasets)),
+            ("save_trading_calendar", str(self.save_trading_calendar)),
+            ("business_datasets", ", ".join(self.business_datasets)),
+            ("allow_partial_finance", str(self.allow_partial_finance)),
+            ("calendar_symbol", self.calendar_symbol),
+            (
+                "watermark_scope",
+                json.dumps(self.watermark_scope, ensure_ascii=False, sort_keys=True),
+            ),
+            ("finance_lookback_start", self.finance_lookback_start),
+            ("log_max_bytes", str(self.log_max_bytes)),
+            ("log_backup_count", str(self.log_backup_count)),
+        ]
 
     def _validate(self):
         """校验配置内部一致性并拒绝可能误写数据的参数。

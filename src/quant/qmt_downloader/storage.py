@@ -365,6 +365,34 @@ class DailyPartitionStore(object):
         """
         return _validate_fragment(self._fragment_path(job_key, dataset, batch_id))
 
+    def fragment_total_rows(self, job_key, dataset, batch_ids):
+        """从 staging 元数据累加各批次记录的行数，不读取 CSV 正文。
+
+        只用于回答“这个数据集有没有数据”这类问题。跨数千个交易日逐个读取 CSV
+        只为判断是否为空，代价远高于读取同名 ``.meta.json``；数据完整性仍由随后
+        真正读取分片时的 SHA-256 与行数校验保证。
+
+        参数：
+            job_key: 稳定任务标识。
+            dataset: staging 数据集名。
+            batch_ids: 需要累加的批次编号可迭代对象。
+
+        返回：
+            元数据中记录的总行数；元数据缺失或损坏的批次按 0 计入。
+        """
+        total = 0
+        for batch_id in batch_ids:
+            metadata_path = self._fragment_path(job_key, dataset, batch_id).with_suffix(
+                ".meta.json"
+            )
+            try:
+                with metadata_path.open("r", encoding="utf-8") as handle:
+                    metadata = json.load(handle)
+                total += max(int(metadata.get("rows", 0)), 0)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+        return total
+
     def write_fragment(self, job_key, dataset, batch_id, frame):
         """原子写入一个可复用的批次中间文件。
 
@@ -424,9 +452,6 @@ class DailyPartitionStore(object):
                         "ex_date": str,
                     },
                 )
-                for column in ("trade_date", "report_date", "announce_date", "ex_date"):
-                    if column in frame.columns:
-                        frame[column] = frame[column].apply(normalize_date)
                 frames.append(frame)
             except pd.errors.EmptyDataError:
                 frames.append(pd.DataFrame())
@@ -434,7 +459,13 @@ class DailyPartitionStore(object):
         if not non_empty:
             return pd.DataFrame()
         # 大 QMT 内置的旧版 pandas.concat 不支持 sort 参数。
-        return pd.concat(non_empty, ignore_index=True)
+        merged = pd.concat(non_empty, ignore_index=True)
+        # 合并后整列规范化一次，而不是对每个分片各做一次：向量化的固定开销在
+        # 几百行的分片上摊不开，按交易日合并全部批次后才划算。
+        for column in ("trade_date", "report_date", "announce_date", "ex_date"):
+            if column in merged.columns:
+                merged[column] = _normalize_date_column(merged[column])
+        return merged
 
     def write_issue_report(self, rows, run_id):
         """将缺失与异常提示写入外部 CSV 报告。
@@ -546,6 +577,28 @@ def _identity_digest(frame, identity_columns):
         digest.update(key.encode("utf-8"))
         digest.update(b"\x1e")
     return digest.hexdigest()
+
+
+def _normalize_date_column(values):
+    """规范化 staging 日期列，整列已是标准八位日期时跳过逐行转换。
+
+    分片里的日期几乎都是本程序自己写出的 ``YYYYMMDD``，逐行调用
+    ``normalize_date`` 只是把同样的值重算一遍。按交易日读回全量 staging 时这项
+    开销会累计到分钟级，因此先用一次向量化匹配确认整列已合规再决定是否跳过。
+    存在空值时一律走逐行转换，保持空值统一变成 ``None`` 的既有行为。
+
+    参数：
+        values: 从 staging CSV 读出的日期列 ``Series``。
+
+    返回：
+        与逐行 ``normalize_date`` 完全一致的 ``Series``。
+    """
+    if bool(values.notna().all()):
+        text = values.astype(str)
+        # 旧版 pandas 没有 str.fullmatch，用锚定的 str.match 达到同样效果。
+        if bool(text.str.match(r"^(19|20)\d{6}$").all()):
+            return text
+    return values.apply(normalize_date)
 
 
 def _write_csv_atomic(frame, temporary, final_path):

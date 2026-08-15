@@ -1,5 +1,5 @@
 {
-  "output_root": "D:\\qmt_kline",
+  "output_root": "D:\\qmt_kline_test1",
   "mode": "incremental",
   "start_date": "auto",
   "end_date": "auto",
@@ -13,7 +13,8 @@
   // get_sector_list() 核对本机板块名；留空则只下载当前存续证券。
   "expired_sectors": [],
   // "expired_sectors": ["过期沪深A股"],
-  "batch_size": 600,
+  "batch_size": 1500,
+  "save_workers": 8,
   "retry_count": 3,
   "kline_gap_retry_count": 2,
   "calendar_symbol": "000001.SH",
@@ -22,9 +23,12 @@
   "overwrite_completed_partition": false,
   "datasets": [
     "kline_1d",
-    "finance_raw",
+    // "finance_raw",
     // "finance_daily",
-    // "corporate_actions"
+    "corporate_actions",
+    // 与日线平级的落表开关：写出 trading_calendar/snapshot=latest，供自检做权威日历
+    "trading_calendar",
+    "trading_calendar"
   ],
   "finance_lookback_start": "20000101",
   "log_max_bytes": 20971520,

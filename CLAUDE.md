@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+最终回复用户时，始终使用中文
+
 本项目的开发规范、目录说明和验证要求统一维护在 `AGENTS.md`，请以该文件为唯一来源。
 本文件只做导航，不复制 `AGENTS.md` 的内容，避免两份规范出现分歧。
 

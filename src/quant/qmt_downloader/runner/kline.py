@@ -387,22 +387,34 @@ class _KlineCollectionMixin(_RunnerState):
                 )
         if failed:
             return True
-        missing_dates = []
-        for trade_date in expected_trade_dates:
-            daily = self.store.read_fragments(
+        all_dates = tuple(expected_trade_dates)
+        date_positions = {value: index for index, value in enumerate(all_dates)}
+        # 判断某个交易日是否全市场无数据，只需 staging 元数据里记录的行数；为这一个
+        # 判断把每个分片的 CSV 正文读一遍，等于把全部分片多读一整轮。分片完整性仍
+        # 由随后写分区时的读取校验保证，缺口检查也挪到那一次读取里顺带完成。
+        check_started_at = time.perf_counter()
+        self.logger.info(
+            "全局交易日检查开始 dataset=%s dates=%d batches=%d",
+            dataset,
+            len(all_dates),
+            len(self.batches),
+        )
+        missing_dates = [
+            trade_date
+            for trade_date in all_dates
+            if not self.store.fragment_total_rows(
                 self.job_key,
                 "kline_daily_{0}".format(trade_date),
                 range(len(self.batches)),
             )
-            daily = _ensure_columns(daily, KLINE_COLUMNS)
-            if daily.empty:
-                missing_dates.append(trade_date)
-            else:
-                quality_issues = find_missing_kline(
-                    daily, _codes_alive_on(self.symbols, lifecycle, trade_date), [trade_date]
-                )
-                self.issues.extend(quality_issues)
-                self._log_global_issue_details(dataset, quality_issues)
+        ]
+        self.logger.info(
+            "全局交易日检查完成 dataset=%s dates=%d missing=%d elapsed=%.2fs",
+            dataset,
+            len(all_dates),
+            len(missing_dates),
+            time.perf_counter() - check_started_at,
+        )
         if missing_dates:
             failed = True
             for trade_date in missing_dates:
@@ -428,37 +440,53 @@ class _KlineCollectionMixin(_RunnerState):
             return True
         if "kline_1d" in self.config.datasets:
             chunk_size = max(self.config.save_workers * 4, 1)
-            all_dates = tuple(expected_trade_dates)
             for chunk_start in range(0, len(all_dates), chunk_size):
                 date_chunk = all_dates[chunk_start : chunk_start + chunk_size]
                 save_tasks = [
-                    lambda current_date=trade_date, dates=all_dates: self._write_kline_date_partition(
-                        current_date, dates
+                    lambda current_date=trade_date: self._write_kline_date_partition(
+                        current_date, date_positions, len(all_dates), lifecycle
                     )
                     for trade_date in date_chunk
                 ]
-                self._parallel_save(save_tasks, "kline_daily_final", date_chunk)
+                results = self._parallel_save(save_tasks, "kline_daily_final", date_chunk)
+                # _parallel_save 按输入顺序返回结果，因此并行写入不会打乱问题报告
+                # 的交易日顺序，收集也留在主线程完成。
+                for item in results:
+                    quality_issues = item["issues"]
+                    if quality_issues:
+                        self.issues.extend(quality_issues)
+                        self._log_global_issue_details(dataset, quality_issues)
         return False
 
-    def _write_kline_date_partition(self, trade_date, trade_dates):
-        """读取一个交易日的日线 staging 并写入最终 CSV 分区。
-        ``trade_dates`` 是本次任务完整交易日序列，仅用于计算并行写入进度。
+    def _write_kline_date_partition(self, trade_date, date_positions, total, lifecycle):
+        """读取一个交易日的日线 staging，检查缺口并写入最终 CSV 分区。
+
+        缺口检查和分区写入都需要当日全市场行情，因此共用同一次 staging 读取；
+        拆成两遍会把每个分片读两次，长区间任务下这一遍读取要以分钟计。
 
         参数：
             trade_date: 当前交易日的八位日期字符串。
-            trade_dates: 本次任务完整交易日序列，用于计算进度日志中的位置和总数。
+            date_positions: 交易日到零基序号的映射，仅用于进度日志。
+            total: 本次任务的交易日总数。
+            lifecycle: 证券生命周期映射，用于跳过未上市和已退市的证券日。
 
         返回：
-            最终日线分区的写入结果字典。
+            含 ``result``（分区写入结果）和 ``issues``（当日缺口提示）的字典；
+            问题由调用方在主线程按交易日顺序汇总，避免并行写入打乱报告顺序。
         """
-        date_index = self._date_index(trade_dates, trade_date)
-        self._log_date_progress("kline_1d", date_index, len(trade_dates), trade_date, "开始写入")
+        date_index = date_positions.get(trade_date, 0)
+        self._log_date_progress("kline_1d", date_index, total, trade_date, "开始写入")
         daily = self.store.read_fragments(
             self.job_key,
             "kline_daily_{0}".format(trade_date),
             range(len(self.batches)),
         )
         daily = _ensure_columns(daily, KLINE_COLUMNS)
+        quality_issues = []
+        if not daily.empty:
+            quality_issues = find_missing_kline(
+                daily, _codes_alive_on(self.symbols, lifecycle, trade_date), [trade_date]
+            )
         # 已完成分区由存储层先校验证券池范围，再按业务主键集合决定跳过或重写。
         result = self._write_partition(
             "kline_1d",
@@ -469,8 +497,8 @@ class _KlineCollectionMixin(_RunnerState):
             ["code", "trade_date"],
             ["code"],
         )
-        self._log_date_progress("kline_1d", date_index, len(trade_dates), trade_date, "完成")
-        return result
+        self._log_date_progress("kline_1d", date_index, total, trade_date, "完成")
+        return {"result": result, "issues": quality_issues}
 
     @staticmethod
     def _date_index(values, target):
@@ -482,7 +510,16 @@ class _KlineCollectionMixin(_RunnerState):
 
         返回：
             零基索引；找不到时返回零以保证错误日志仍可输出。
+
+        序列自带 ``index`` 时直接使用，避免每次调用都复制一份序列——按交易日
+        逐个调用时，那份复制的总开销会随日期数平方增长。
         """
+        try:
+            return values.index(target)
+        except AttributeError:
+            pass
+        except ValueError:
+            return 0
         try:
             return list(values).index(target)
         except ValueError:

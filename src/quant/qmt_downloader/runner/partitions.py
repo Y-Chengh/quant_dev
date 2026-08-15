@@ -68,7 +68,9 @@ class _PartitionWriteMixin(_RunnerState):
                 else bool(overwrite)
             ),
         )
-        self.logger.info(
+        # 长区间任务每个交易日都会写一个分区，逐个输出会淹没日志；INFO 级别的
+        # 进度由 _log_date_progress 按里程碑给出，这里保留 DEBUG 供逐分区排查。
+        self.logger.debug(
             "分区%s dataset=%s %s=%s rows=%s path=%s",
             "写入" if result["status"] == "written" else "跳过",
             dataset_path,
@@ -106,8 +108,10 @@ class _PartitionWriteMixin(_RunnerState):
             trade_dates: 已通过交易日历和数据质量校验的实际交易日序列。
 
         返回：
-            无返回值；任一引用业务分区损坏时抛出异常并拒绝推进水位。
+            无返回值；任一引用业务分区损坏时抛出异常并拒绝推进水位。逐日明细写
+            DEBUG，INFO 只汇总一条，避免长区间任务刷屏。
         """
+        written = []
         for trade_date in trade_dates:
             required = []
             if "kline_1d" in self.config.datasets:
@@ -123,6 +127,10 @@ class _PartitionWriteMixin(_RunnerState):
                             table_name, trade_date
                         )
                     )
+            if not required:
+                # 只落交易日历时没有任何按日业务分区，写出空引用的水位既无法被增量识别
+                # （引用为空的水位一律忽略），又会凭空生成成千上万个空目录。
+                continue
             path = self.store.write_run_date_complete(
                 trade_date,
                 required,
@@ -132,4 +140,12 @@ class _PartitionWriteMixin(_RunnerState):
                     "watermark_scope": self.config.watermark_scope,
                 },
             )
-            self.logger.info("整日完成水位写入 date=%s path=%s", trade_date, path)
+            self.logger.debug("整日完成水位写入 date=%s path=%s", trade_date, path)
+            written.append(trade_date)
+        if written:
+            self.logger.info(
+                "整日完成水位写入 dates=%d first=%s last=%s",
+                len(written),
+                written[0],
+                written[-1],
+            )
