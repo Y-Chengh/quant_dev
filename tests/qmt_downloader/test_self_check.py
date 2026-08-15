@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
 
 import pandas as pd
 
-from quant.qmt_downloader.self_check import SelfCheckConfig, run_full_sample_self_check
+from quant.qmt_downloader.self_check import (
+    LOGGER_NAME,
+    SelfCheckConfig,
+    run_full_sample_self_check,
+)
 from quant.qmt_downloader.storage import DailyPartitionStore
 
 SYMBOLS = ["000001.SZ", "600000.SH"]
@@ -139,6 +144,32 @@ def _bar(
         "amount": amount,
         "suspend_flag": suspend_flag,
     }
+
+
+def _write_corporate_action(
+    store: DailyPartitionStore, date_value: str, code: str
+) -> None:
+    """写出一个只含单只证券的除权事件分区。
+
+    参数：
+        store: 指向临时 QMT 根目录的日分区存储器。
+        date_value: 除权日期，即分区键 ``ex_date``。
+        code: 发生除权的证券代码。
+
+    返回：
+        无返回值。
+    """
+
+    store.write_partition(
+        "corporate_actions",
+        "ex_date",
+        date_value,
+        pd.DataFrame([{"code": code, "ex_date": date_value}]),
+        ["code", "ex_date"],
+        ["code"],
+        ["code"],
+        {"partition_scope": {"symbols": [code]}},
+    )
 
 
 def _write_staging_kline(root: Path, date_value: str, rows: list[dict[str, object]]) -> None:
@@ -480,6 +511,369 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.summary["source_mode"], "staging")
             self.assertEqual(result.summary["expected_rows"], 2)
+
+    def test_progress_logs_cover_phases_and_daily_scan(self) -> None:
+        """自检应按阶段和交易日输出进度日志，便于观察长时间运行。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            dates = ["20240102", "20240103", "20240104"]
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            previous = 9.8
+            for date_value in dates:
+                _write_kline(
+                    store,
+                    date_value,
+                    [_bar("000001.SZ", date_value, previous + 0.1, previous)],
+                    ["000001.SZ"],
+                )
+                previous = previous + 0.1
+
+            with self.assertLogs(LOGGER_NAME, level="INFO") as captured:
+                result = run_full_sample_self_check(
+                    SelfCheckConfig(
+                        output_root=root,
+                        calendar_csv=calendar,
+                        report_dir=root / "audit",
+                        # 步长为 1 时每个交易日都必须留下一条 INFO 进度。
+                        progress_every=1,
+                    )
+                )
+
+            self.assertEqual(result.exit_code, 0)
+            messages = captured.output
+            for phase in (
+                "发现日线分区",
+                "装载证券信息与证券池",
+                "装载交易日历",
+                "解析证券生命周期与除权事件",
+                "逐日扫描行情",
+                "汇总并写出报告",
+            ):
+                self.assertTrue(
+                    any("阶段开始 " + phase in line for line in messages),
+                    f"缺少阶段开始日志: {phase}",
+                )
+                self.assertTrue(
+                    any("阶段完成 " + phase in line for line in messages),
+                    f"缺少阶段完成日志: {phase}",
+                )
+            scan_lines = [line for line in messages if "逐日扫描 " in line]
+            self.assertEqual(len(scan_lines), len(dates))
+            for index, date_value in enumerate(dates):
+                self.assertIn(
+                    f"{index + 1}/{len(dates)}", scan_lines[index]
+                )
+                self.assertIn("date=" + date_value, scan_lines[index])
+            self.assertTrue(
+                any("分区校验 1/3" in line for line in messages),
+                "缺少分区校验进度日志",
+            )
+            self.assertTrue(
+                any("[自检] 结束" in line and "总耗时" in line for line in messages),
+                "缺少总耗时结束日志",
+            )
+
+    def test_progress_every_default_limits_scan_log_volume(self) -> None:
+        """缺省步长下逐日进度按总量的 5% 输出，不应逐日刷屏。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            dates = [f"202401{day:02d}" for day in range(1, 29)] + [
+                f"202402{day:02d}" for day in range(1, 13)
+            ]
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240101", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            previous = 9.8
+            for date_value in dates:
+                _write_kline(
+                    store,
+                    date_value,
+                    [_bar("000001.SZ", date_value, previous + 0.1, previous)],
+                    ["000001.SZ"],
+                )
+                previous = previous + 0.1
+
+            with self.assertLogs(LOGGER_NAME, level="INFO") as captured:
+                run_full_sample_self_check(
+                    SelfCheckConfig(
+                        output_root=root,
+                        calendar_csv=calendar,
+                        report_dir=root / "audit",
+                    )
+                )
+
+            scan_lines = [line for line in captured.output if "逐日扫描 " in line]
+            # 40 个交易日、步长 2：第 2、4、…、40 日各一条共 20 条，加上首日 1 条。
+            self.assertEqual(len(scan_lines), 21)
+            self.assertIn("逐日扫描 1/40", scan_lines[0])
+            self.assertIn("逐日扫描 40/40", scan_lines[-1])
+
+    def test_progress_every_above_total_keeps_first_and_last_only(self) -> None:
+        """步长大于总量时仍应保留首尾两条进度，不能一条都不输出。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            dates = ["20240102", "20240103", "20240104"]
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            previous = 9.8
+            for date_value in dates:
+                _write_kline(
+                    store,
+                    date_value,
+                    [_bar("000001.SZ", date_value, previous + 0.1, previous)],
+                    ["000001.SZ"],
+                )
+                previous = previous + 0.1
+
+            with self.assertLogs(LOGGER_NAME, level="INFO") as captured:
+                run_full_sample_self_check(
+                    SelfCheckConfig(
+                        output_root=root,
+                        calendar_csv=calendar,
+                        report_dir=root / "audit",
+                        progress_every=1000,
+                    )
+                )
+
+            scan_lines = [line for line in captured.output if "逐日扫描 " in line]
+            self.assertEqual(len(scan_lines), 2)
+            self.assertIn("逐日扫描 1/3", scan_lines[0])
+            self.assertIn("逐日扫描 3/3", scan_lines[1])
+
+    def test_debug_level_logs_every_trading_day(self) -> None:
+        """DEBUG 级别应逐日输出，用于定位卡在哪个交易日。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            dates = ["20240102", "20240103", "20240104"]
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            previous = 9.8
+            for date_value in dates:
+                _write_kline(
+                    store,
+                    date_value,
+                    [_bar("000001.SZ", date_value, previous + 0.1, previous)],
+                    ["000001.SZ"],
+                )
+                previous = previous + 0.1
+
+            with self.assertLogs(LOGGER_NAME, level="DEBUG") as captured:
+                run_full_sample_self_check(
+                    SelfCheckConfig(
+                        output_root=root,
+                        calendar_csv=calendar,
+                        report_dir=root / "audit",
+                        progress_every=1000,
+                    )
+                )
+
+            scan_lines = [line for line in captured.output if "逐日扫描 " in line]
+            self.assertEqual(len(scan_lines), len(dates))
+            self.assertTrue(
+                any(line.startswith("DEBUG") for line in scan_lines),
+                "非里程碑进度必须降级为 DEBUG",
+            )
+
+    def test_library_run_installs_no_log_handler(self) -> None:
+        """库层只写日志器，不得安装处理器或改动级别，避免污染宿主日志配置。"""
+
+        logger = logging.getLogger(LOGGER_NAME)
+        self.assertEqual(logger.handlers, [])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102"])
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
+                ["000001.SZ"],
+            )
+
+            run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+        self.assertEqual(logger.handlers, [])
+        self.assertEqual(logger.level, logging.NOTSET)
+
+    def test_negative_progress_every_is_rejected(self) -> None:
+        """负步长会让进度日志无法输出，必须在配置校验阶段拒绝。"""
+
+        with self.assertRaises(ValueError):
+            SelfCheckConfig(output_root=Path("."), progress_every=-1)
+
+    def test_partitions_outside_audit_range_are_not_read(self) -> None:
+        """限定区间时不得读取区间外分区，其损坏也不应进入本次报告。"""
+
+        dates = ["20240102", "20240103", "20240104"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            previous = 9.8
+            for date_value in dates:
+                _write_kline(
+                    store,
+                    date_value,
+                    [_bar("000001.SZ", date_value, previous + 0.1, previous)],
+                    ["000001.SZ"],
+                )
+                previous = previous + 0.1
+            # 破坏区间外分区：内容与完成标记的 SHA-256 不再一致。
+            outside = root / "kline_1d" / "date=20240102" / "data.csv"
+            outside.write_text(
+                outside.read_text(encoding="utf-8-sig") + "\n", encoding="utf-8-sig"
+            )
+
+            with self.assertLogs(LOGGER_NAME, level="INFO") as captured:
+                result = run_full_sample_self_check(
+                    SelfCheckConfig(
+                        output_root=root,
+                        calendar_csv=calendar,
+                        report_dir=root / "audit",
+                        start_date="20240103",
+                        end_date="20240104",
+                    )
+                )
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertNotIn("PARTITION_HASH_MISMATCH", set(result.issues["issue_code"]))
+            self.assertTrue(
+                any("待校验日线分区 2 个" in line for line in captured.output),
+                "区间外分区不应进入校验循环",
+            )
+
+    def test_corrupted_partition_inside_audit_range_is_still_reported(self) -> None:
+        """区间内分区仍必须做完整哈希校验，范围裁剪不能放过真正的损坏。"""
+
+        dates = ["20240102", "20240103", "20240104"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            previous = 9.8
+            for date_value in dates:
+                _write_kline(
+                    store,
+                    date_value,
+                    [_bar("000001.SZ", date_value, previous + 0.1, previous)],
+                    ["000001.SZ"],
+                )
+                previous = previous + 0.1
+            inside = root / "kline_1d" / "date=20240103" / "data.csv"
+            inside.write_text(
+                inside.read_text(encoding="utf-8-sig") + "\n", encoding="utf-8-sig"
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                    start_date="20240103",
+                    end_date="20240104",
+                )
+            )
+
+            self.assertIn("PARTITION_HASH_MISMATCH", set(result.issues["issue_code"]))
+
+    def test_corporate_actions_are_limited_to_audit_range(self) -> None:
+        """除权分区只按审计区间读取，区间内事件仍能解释昨收断层。"""
+
+        dates = ["20240102", "20240103", "20240104"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, dates)
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240102",
+                [_bar("000001.SZ", "20240102", 10.0, 9.8)],
+                ["000001.SZ"],
+            )
+            _write_kline(
+                store,
+                "20240103",
+                [_bar("000001.SZ", "20240103", 10.1, 10.0)],
+                ["000001.SZ"],
+            )
+            # 20240104 的昨收相对前一日收盘跳空，需由当日除权事件解释。
+            _write_kline(
+                store,
+                "20240104",
+                [_bar("000001.SZ", "20240104", 9.2, 9.1)],
+                ["000001.SZ"],
+            )
+            for date_value in dates:
+                _write_corporate_action(store, date_value, "000001.SZ")
+
+            with self.assertLogs(LOGGER_NAME, level="INFO") as captured:
+                result = run_full_sample_self_check(
+                    SelfCheckConfig(
+                        output_root=root,
+                        calendar_csv=calendar,
+                        report_dir=root / "audit",
+                        start_date="20240103",
+                        end_date="20240104",
+                    )
+                )
+
+            issue_codes = set(result.issues["issue_code"])
+            self.assertIn("PRE_CLOSE_DISCONTINUITY_EXPLAINED", issue_codes)
+            self.assertNotIn("PRE_CLOSE_DISCONTINUITY", issue_codes)
+            self.assertTrue(
+                any("待读取除权事件分区 2 个" in line for line in captured.output),
+                "区间外除权分区不应被读取",
+            )
 
 
 if __name__ == "__main__":

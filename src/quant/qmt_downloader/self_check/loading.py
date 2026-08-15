@@ -18,6 +18,7 @@ from .utils import (
     _parse_lifecycle_value,
     _read_calendar_csv,
     _sample,
+    _select_paths_in_range,
 )
 
 
@@ -289,7 +290,12 @@ class _ReferenceLoadingMixin(_CheckerState):
             if (self.config.start_date is None or date_value >= self.config.start_date)
             and (self.config.end_date is None or date_value <= self.config.end_date)
         )
-        for date_value in extra_dates:
+        if extra_dates:
+            self.logger.info("[自检] 日历外分区 %d 个待审计", len(extra_dates))
+        for index, date_value in enumerate(extra_dates):
+            self._log_step_progress(
+                "日历外分区", index, len(extra_dates), "date=" + date_value, pending=True
+            )
             directory = self.partition_paths[date_value]
             self._add_issue(
                 "DATA_ON_NON_TRADING_DATE",
@@ -438,14 +444,26 @@ class _ReferenceLoadingMixin(_CheckerState):
         """读取公司行为分区中的证券和除权日期主键。
 
         返回：
-            ``(证券代码, 除权日期)`` 集合，用于解释跨日价格连续性差异。
+            ``(证券代码, 除权日期)`` 集合，用于解释跨日价格连续性差异。行级校验只按
+            ``(代码, 当日日期)`` 查询该集合，因此只读取审计区间内的除权分区即可，
+            区间外的事件不会被查到。
         """
 
         keys: set[tuple[str, str]] = set()
         root = self.root / "corporate_actions"
         if not root.is_dir():
             return keys
-        for directory in sorted(root.glob("ex_date=*")):
+        directories = _select_paths_in_range(
+            sorted(root.glob("ex_date=*")),
+            r"ex_date=(\d{8})",
+            self.config.start_date,
+            self.config.end_date,
+        )
+        self.logger.info("[自检] 待读取除权事件分区 %d 个", len(directories))
+        for index, directory in enumerate(directories):
+            self._log_step_progress(
+                "除权事件", index, len(directories), directory.name, pending=True
+            )
             path = directory / "data.csv"
             if not path.is_file():
                 continue

@@ -88,6 +88,8 @@ class SelfCheckConfig:
     volume_history_min_periods: int = 10
     verify_staging_hash: bool = False
     staging_root: Path | None = None
+    #: 长循环每前进多少个元素输出一条 INFO 进度；0 表示按总量的 5% 自动选择。
+    progress_every: int = 0
 
     def __post_init__(self) -> None:
         """校验日期、覆盖率和统计异常阈值。
@@ -112,6 +114,8 @@ class SelfCheckConfig:
             raise ValueError("volume_history_window 必须大于 0")
         if not 1 <= self.volume_history_min_periods <= self.volume_history_window:
             raise ValueError("volume_history_min_periods 必须位于 1 和窗口长度之间")
+        if self.progress_every < 0:
+            raise ValueError("progress_every 不能为负数")
 
 
 @dataclass

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import _CheckerState
-from .utils import _csv_row_count, _file_sha256
+from .utils import _csv_row_count, _file_sha256, _select_paths_in_range
 
 
 class _PartitionDiscoveryMixin(_CheckerState):
@@ -39,7 +39,21 @@ class _PartitionDiscoveryMixin(_CheckerState):
                 source_file=str(kline_root),
             )
             return
-        for directory in sorted(kline_root.glob("date=*")):
+        directories = _select_paths_in_range(
+            sorted(kline_root.glob("date=*")),
+            r"date=(\d{8})",
+            self.config.start_date,
+            self.config.end_date,
+        )
+        self.logger.info(
+            "[自检] 待校验日线分区 %d 个 root=%s", len(directories), kline_root
+        )
+        for index, directory in enumerate(directories):
+            # 每个分区都要读完成标记并对 data.csv 做全文件 SHA-256，是整轮自检里
+            # 仅次于逐日扫描的耗时环节，因此在循环入口就报告进度。
+            self._log_step_progress(
+                "分区校验", index, len(directories), directory.name, pending=True
+            )
             if not directory.is_dir():
                 continue
             raw_date = directory.name.split("=", 1)[-1]
@@ -196,7 +210,25 @@ class _PartitionDiscoveryMixin(_CheckerState):
             path.stem
             for path in flat_root.glob("batch_*.csv")
         } if flat_root.is_dir() else set()
-        for directory in sorted(matched, key=lambda item: item.name):
+        staging_directories = _select_paths_in_range(
+            sorted(matched, key=lambda item: item.name),
+            r"kline_daily_(\d{8})",
+            self.config.start_date,
+            self.config.end_date,
+        )
+        self.logger.info(
+            "[自检] 待校验 staging 日目录 %d 个 root=%s",
+            len(staging_directories),
+            staging_root,
+        )
+        for index, directory in enumerate(staging_directories):
+            self._log_step_progress(
+                "staging 目录校验",
+                index,
+                len(staging_directories),
+                directory.name,
+                pending=True,
+            )
             match = re.fullmatch(r"kline_daily_(\d{8})", directory.name)
             if match is None:
                 self._add_issue(

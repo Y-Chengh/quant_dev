@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -37,3 +38,16 @@ class _CheckerState:
     _lifecycle_issue_keys: set[tuple[str, str]]
     #: staging 模式下按日期记录的缺口证券列表。
     staging_daily_gap_dates: list[tuple[str, list[str]]]
+    #: 进度日志器，名称固定为 ``quant.qmt_downloader.self_check``；库层不加处理器，
+    #: 由命令行入口决定是否输出到终端。
+    logger: logging.Logger
+    #: 本次自检开始时的单调时钟读数，单位秒，用于统计总耗时。
+    _run_started_at: float
+    #: 当前阶段名称，由 ``_begin_phase`` 写入、``_end_phase`` 读取。
+    _phase_name: str
+    #: 当前阶段开始时的单调时钟读数，单位秒，用于统计阶段耗时。
+    _phase_started_at: float
+    #: 当前正在输出进度的长循环名称，用于识别循环切换并重置循环计时器。
+    _step_stage: str
+    #: 当前长循环首条进度的单调时钟读数，单位秒，用于估算剩余时间。
+    _step_started_at: float

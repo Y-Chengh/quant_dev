@@ -53,6 +53,9 @@ class _CalendarScanMixin(_CheckerState):
         stats = {code: _SymbolStats() for code in symbols}
         missing_spans: list[dict[str, Any]] = []
         coverage_rows: list[dict[str, Any]] = []
+        self.logger.info(
+            "[自检] 待扫描交易日 %d 个，证券池 %d 只", len(calendar), len(symbols)
+        )
         for position, date_value in enumerate(calendar):
             previous_date = calendar[position - 1] if position > 0 else ""
             for code in remove_events.get(position, []):
@@ -148,6 +151,14 @@ class _CalendarScanMixin(_CheckerState):
                     suggested_action="优先核查该日期日志和 staging 批次，再执行整日 repair",
                     source_file=str(directory or self._expected_partition_path(date_value)),
                 )
+            self._log_step_progress(
+                "逐日扫描",
+                position,
+                len(calendar),
+                "date={0} 行数={1} 覆盖率={2:.2%} 累计问题={3}".format(
+                    date_value, len(frame), coverage, len(self.issues)
+                ),
+            )
 
         if calendar:
             for code in list(state.missing_open):

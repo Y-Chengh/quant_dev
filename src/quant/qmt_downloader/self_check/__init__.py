@@ -6,6 +6,7 @@
 - ``models``：问题记录、审计结果与配置数据类。
 - ``base``：各 mixin 共享的实例状态契约。
 - ``utils``：与自检器状态无关的解析、校验与文件摘要工具。
+- ``progress``：阶段起止耗时与长循环百分比进度的日志输出。
 - ``writers``：报告文件的原子写入与摘要 Markdown 渲染。
 - ``discovery``：分区发现、日线根目录定位与分区元数据读取。
 - ``loading``：生命周期、交易日历、证券池与除权事件装载。
@@ -22,11 +23,12 @@
 
 from __future__ import annotations
 
-from .checker import QmtDataSelfChecker, run_full_sample_self_check
+from .checker import LOGGER_NAME, QmtDataSelfChecker, run_full_sample_self_check
 from .models import ISSUE_COLUMNS, AuditIssue, AuditResult, SelfCheckConfig
 
 __all__ = [
     "ISSUE_COLUMNS",
+    "LOGGER_NAME",
     "AuditIssue",
     "AuditResult",
     "QmtDataSelfChecker",

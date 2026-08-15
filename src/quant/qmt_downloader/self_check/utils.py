@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -116,6 +117,59 @@ def _optional_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return converted if converted >= 0 else None
+
+
+def _within_audit_range(
+    date_value: str, start_date: str | None, end_date: str | None
+) -> bool:
+    """判断一个八位日期是否落在本次审计的闭区间内。
+
+    参数：
+        date_value: 待判断的八位日期，通常来自分区目录名。
+        start_date: 审计起点；``None`` 表示不限制下界。
+        end_date: 审计终点；``None`` 表示不限制上界。
+
+    返回：
+        位于区间内返回 ``True``；八位日期定长且左侧补零，因此字符串比较与日期
+        比较等价，不必再转成 ``datetime``。
+    """
+
+    if start_date is not None and date_value < start_date:
+        return False
+    return not (end_date is not None and date_value > end_date)
+
+
+def _select_paths_in_range(
+    paths: Iterable[Path],
+    name_pattern: str,
+    start_date: str | None,
+    end_date: str | None,
+) -> list[Path]:
+    """按目录名中的日期挑出落在审计区间内的分区目录。
+
+    只审计一小段区间时，读取区间外分区的完成标记、哈希和明细是纯粹的浪费：
+    这些分区既不参与覆盖率统计，也不会被行级校验读取。因此在进入耗时循环前
+    先按目录名过滤，把工作量压到审计区间本身。
+
+    参数：
+        paths: 待过滤的分区目录序列，通常来自 ``glob`` 的排序结果。
+        name_pattern: 完整匹配目录名并把八位日期捕获为第一组的正则，
+            如 ``date=(\\d{8})``。
+        start_date: 审计起点；``None`` 表示不限制下界。
+        end_date: 审计终点；``None`` 表示不限制上界。
+
+    返回：
+        保持原有顺序的目录列表。目录名不匹配 ``name_pattern`` 时无法判断其日期，
+        一律保留交由调用方按非法目录报告，不会因为设了区间而被静默跳过。
+    """
+
+    matcher = re.compile(name_pattern)
+    selected = []
+    for path in paths:
+        match = matcher.fullmatch(path.name)
+        if match is None or _within_audit_range(match.group(1), start_date, end_date):
+            selected.append(path)
+    return selected
 
 
 def _optional_date(value: str | None, field_name: str) -> None:
