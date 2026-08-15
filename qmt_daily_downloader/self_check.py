@@ -94,6 +94,8 @@ class SelfCheckConfig:
     volume_scale_warning_ratio: float = 100.0
     volume_history_window: int = 20
     volume_history_min_periods: int = 10
+    verify_staging_hash: bool = False
+    staging_root: Path | None = None
 
     def __post_init__(self) -> None:
         """校验日期、覆盖率和统计异常阈值。
@@ -104,6 +106,8 @@ class SelfCheckConfig:
 
         _optional_date(self.start_date, "start_date")
         _optional_date(self.end_date, "end_date")
+        if self.staging_root is not None and not str(self.staging_root).strip():
+            raise ValueError("staging_root 不能是空路径")
         if self.start_date and self.end_date and self.start_date > self.end_date:
             raise ValueError("start_date 不能晚于 end_date")
         if not 0.0 < self.coverage_error_threshold <= 1.0:
@@ -150,9 +154,13 @@ class QmtDataSelfChecker:
 
         self.config = config
         self.root = config.output_root.resolve()
+        self.data_root = self.root
+        self.source_mode = "partitions"
         self.issues: list[AuditIssue] = []
         self.partition_paths: dict[str, Path] = {}
         self.reference_scope: dict[str, Any] | None = None
+        self._lifecycle_issue_keys: set[tuple[str, str]] = set()
+        self.staging_daily_gap_dates: list[tuple[str, list[str]]] = []
 
     def run(self) -> AuditResult:
         """执行全样本自检并写出 Markdown、JSON 与 CSV 报告。
@@ -271,7 +279,10 @@ class QmtDataSelfChecker:
             无返回值；发现的问题追加到当前自检器的问题集合。
         """
 
-        kline_root = self.root / "kline_1d"
+        kline_root = self._resolve_kline_root()
+        if self.source_mode == "staging":
+            self._discover_staging_partitions(kline_root)
+            return
         if not kline_root.is_dir():
             self._add_issue(
                 "KLINE_DATASET_MISSING",
@@ -339,6 +350,163 @@ class QmtDataSelfChecker:
                             suggested_action="按统一配置使用 repair 重建异常分区，或改用独立输出目录",
                             source_file=str(directory / "_SUCCESS.json"),
                         )
+
+    def _resolve_kline_root(self) -> Path:
+        """解析最终分区或 staging 日目录的实际来源路径。
+
+        返回：
+            最终布局的 ``kline_1d`` 目录，或 staging 作业目录（其中包含
+            ``kline_daily_YYYYMMDD`` 子目录）。当最终目录不存在时，会自动
+            选择 output_root/staging 下唯一可识别的 QMT 作业目录。
+        """
+
+        configured = self.config.staging_root
+        if configured is not None:
+            candidate = configured.resolve()
+            if (candidate / "kline_1d").is_dir() and not any(
+                candidate.glob("kline_daily_*")
+            ):
+                self.source_mode = "staging"
+                self.data_root = candidate
+                return candidate
+            children = [
+                item
+                for item in candidate.iterdir()
+                if item.is_dir() and any(item.glob("kline_daily_*"))
+            ] if candidate.is_dir() else []
+            if len(children) == 1:
+                self.source_mode = "staging"
+                self.data_root = children[0]
+                return children[0]
+            if len(children) > 1:
+                self._add_issue(
+                    "STAGING_JOB_AMBIGUOUS",
+                    "ERROR",
+                    "kline_1d",
+                    "staging 目录包含多个可审计 QMT 作业，无法安全猜测数据来源。",
+                    expected="--staging-root 直接指向唯一作业目录",
+                    actual=", ".join(str(item) for item in children),
+                    evidence="多个作业都包含 kline_daily_YYYYMMDD 日目录",
+                    possible_causes="历史作业未清理或命令行只传入了 staging 父目录",
+                    suggested_action="把 --staging-root 改为具体的 staging\\qmt_<job_key> 目录",
+                    source_file=str(candidate),
+                )
+            self.source_mode = "staging"
+            self.data_root = candidate
+            return candidate
+        final_root = self.root / "kline_1d"
+        if final_root.is_dir() and any(final_root.glob("date=*")):
+            return final_root
+        staging_parent = self.root / "staging"
+        children = [
+            item
+            for item in staging_parent.iterdir()
+            if item.is_dir() and any(item.glob("kline_daily_*"))
+        ] if staging_parent.is_dir() else []
+        if len(children) == 1:
+            self.source_mode = "staging"
+            self.data_root = children[0]
+            return children[0]
+        return final_root
+
+    def _discover_staging_partitions(self, staging_root: Path) -> None:
+        """发现 staging 中按日保存的 QMT 行情目录。
+
+        参数：
+            staging_root: 具体 QMT 作业目录，子目录名称应严格为
+                ``kline_daily_YYYYMMDD``。
+        返回：
+            无返回值；发现的日期映射写入 ``partition_paths``，结构问题写入 issues。
+        """
+
+        if not staging_root.is_dir():
+            self._add_issue(
+                "KLINE_DATASET_MISSING",
+                "ERROR",
+                "kline_1d",
+                "staging 行情作业目录不存在，无法执行日线完整性审计。",
+                expected="存在 staging/qmt_<job_key>/kline_daily_YYYYMMDD",
+                actual="目录不存在: {0}".format(staging_root),
+                evidence="未发现任何按日行情目录",
+                possible_causes="下载作业尚未开始、作业 key 错误或 staging 被移动",
+                suggested_action="检查 D:\\qmt_kline\\staging 下的作业目录并传入 --staging-root",
+                source_file=str(staging_root),
+            )
+            return
+        matched = list(staging_root.glob("kline_daily_*"))
+        if not matched:
+            self._add_issue(
+                "KLINE_DATASET_MISSING",
+                "ERROR",
+                "kline_1d",
+                "staging 作业中没有按日行情目录。",
+                expected="至少存在一个 kline_daily_YYYYMMDD 目录",
+                actual="未找到 kline_daily_*",
+                evidence="当前作业可能只有未整理的 kline_1d 批次文件",
+                possible_causes="下载尚未完成或使用了不兼容的 staging 布局",
+                suggested_action="确认 runner 已生成 kline_daily_YYYYMMDD，或先 finalize 成最终分区",
+                source_file=str(staging_root),
+            )
+            return
+        flat_root = staging_root / "kline_1d"
+        flat_batch_ids = {
+            path.stem
+            for path in flat_root.glob("batch_*.csv")
+        } if flat_root.is_dir() else set()
+        for directory in sorted(matched, key=lambda item: item.name):
+            match = re.fullmatch(r"kline_daily_(\d{8})", directory.name)
+            if match is None:
+                self._add_issue(
+                    "INVALID_PARTITION_DATE",
+                    "ERROR",
+                    "kline_1d",
+                    "staging 日线目录名称不是严格的 YYYYMMDD 格式。",
+                    expected="kline_daily_YYYYMMDD",
+                    actual=directory.name,
+                    evidence="目录名无法作为唯一交易日键",
+                    possible_causes="目录被重命名、临时目录混入或日期格式错误",
+                    suggested_action="修正目录名或重新生成该日期的 staging 批次",
+                    source_file=str(directory),
+                )
+                continue
+            date_value = match.group(1)
+            if date_value in self.partition_paths:
+                self._add_issue(
+                    "DUPLICATE_PARTITION_DATE",
+                    "ERROR",
+                    "kline_1d",
+                    "多个 staging 日目录映射到同一个交易日。",
+                    date=date_value,
+                    expected="每个交易日只能有一个 kline_daily_YYYYMMDD 目录",
+                    actual=str(directory),
+                    evidence="重复日期会使覆盖率和缺失区间无法可靠计算",
+                    possible_causes="作业重试残留或目录复制",
+                    suggested_action="保留完整且唯一的一份日期目录后重新审计",
+                    source_file=str(directory),
+                )
+                continue
+            self.partition_paths[date_value] = directory
+            if flat_batch_ids:
+                daily_batch_ids = {
+                    path.stem for path in directory.glob("batch_*.csv")
+                }
+                missing_ids = sorted(flat_batch_ids.difference(daily_batch_ids))
+                if missing_ids:
+                    self.staging_daily_gap_dates.append((date_value, missing_ids))
+        if self.staging_daily_gap_dates:
+            sample = self.staging_daily_gap_dates[:3]
+            self._add_issue(
+                "STAGING_DAILY_BATCH_GAPS",
+                "ERROR",
+                "kline_1d",
+                "staging 按日目录缺少 flat kline_1d 中存在的批次，按日覆盖率不能代表完整作业数据。",
+                expected="每个 kline_daily_YYYYMMDD 包含与 staging/kline_1d 相同的 batch_*.csv 集合",
+                actual="{0} 个日期存在缺批；示例 {1}".format(len(self.staging_daily_gap_dates), sample),
+                evidence="flat kline_1d 批次可作为缺失证券的补充来源，但当前扫描只读取按日目录",
+                possible_causes="批次写入中断、按日整理步骤漏拷贝或多个下载阶段未合并",
+                suggested_action="先修复/重新生成缺失批次，或将 flat kline_1d finalize 成完整 date=YYYYMMDD 分区后再审计",
+                source_file=str(staging_root),
+            )
 
     def _read_partition_metadata(
         self, directory: Path, date_value: str
@@ -722,7 +890,11 @@ class QmtDataSelfChecker:
                 evidence="该日期不在 calendar_csv 的完整交易日集合中",
                 possible_causes="日历文件范围错误、误把自然日当交易日或分区日期写错",
                 suggested_action="核对 QMT get_trading_dates 与分区目录，确认后移出或重建异常分区",
-                source_file=str(directory / "data.csv"),
+                source_file=str(
+                    directory
+                    if self.source_mode == "staging"
+                    else directory / "data.csv"
+                ),
             )
             frame = self._read_kline_partition(directory, date_value)
             stats = {code: _SymbolStats() for code in symbols}
@@ -929,12 +1101,12 @@ class QmtDataSelfChecker:
                     "kline_1d",
                     "QMT 交易日历包含该日期，但整个日线分区不存在。",
                     date=date_value,
-                    expected=str(self.root / "kline_1d" / ("date=" + date_value) / "data.csv"),
+                    expected=str(self._expected_partition_path(date_value)),
                     actual="日期目录不存在",
                     evidence="理论应有证券 {0} 只，实际记录 0 条".format(len(active)),
                     possible_causes="当日任务未运行、下载失败、水位错误推进或目录被删除",
                     suggested_action="检查 downloader.log 与 run_complete 水位，并使用 repair 补齐该日期",
-                    source_file=str(self.root / "kline_1d" / ("date=" + date_value)),
+                    source_file=str(self._expected_partition_path(date_value)),
                 )
             else:
                 frame = self._read_kline_partition(directory, date_value)
@@ -989,8 +1161,8 @@ class QmtDataSelfChecker:
                     possible_causes="部分下载批次失败、本地缓存不完整或分区错误标记为完成",
                     suggested_action="按 missing_spans.csv 定位证券和区间，并使用 repair 重建相关分区",
                     source_file=str(
-                        (directory or self.root / "kline_1d" / ("date=" + date_value))
-                        / "data.csv"
+                        (directory or self._expected_partition_path(date_value))
+                        / ("" if self.source_mode == "staging" else "data.csv")
                     ),
                 )
             if coverage < self.config.coverage_error_threshold:
@@ -1005,7 +1177,7 @@ class QmtDataSelfChecker:
                     evidence="缺失示例: {0}".format(_sample(missing)),
                     possible_causes="下载任务中断、多个批次失败或证券池口径不一致",
                     suggested_action="优先核查该日期日志和 staging 批次，再执行整日 repair",
-                    source_file=str(directory or ""),
+                    source_file=str(directory or self._expected_partition_path(date_value)),
                 )
 
         if calendar:
@@ -1070,6 +1242,8 @@ class QmtDataSelfChecker:
             原始日线表；文件不存在、为空或无法解析时返回空表。
         """
 
+        if self.source_mode == "staging":
+            return self._read_staging_partition(directory, date_value)
         path = directory / "data.csv"
         if not path.is_file():
             return pd.DataFrame()
@@ -1089,6 +1263,175 @@ class QmtDataSelfChecker:
                 source_file=str(path),
             )
             return pd.DataFrame()
+
+    def _expected_partition_path(self, date_value: str) -> Path:
+        """返回指定交易日在当前数据布局中的预期路径。
+
+        参数：
+            date_value: 八位交易日期。
+        返回：
+            最终分区的 ``data.csv`` 父目录，或 staging 的按日目录。
+        """
+
+        if self.source_mode == "staging":
+            return self.data_root / ("kline_daily_" + date_value)
+        return self.data_root / "kline_1d" / ("date=" + date_value)
+
+    def _read_staging_partition(self, directory: Path, date_value: str) -> pd.DataFrame:
+        """读取 staging 日目录下的批次 CSV，并校验批次元数据行数。
+
+        参数：
+            directory: ``kline_daily_YYYYMMDD`` staging 日目录。
+            date_value: 目录对应的八位交易日期。
+        返回：
+            合并后的日线 DataFrame；没有可读批次时返回空表并记录详细错误。
+        """
+
+        paths = sorted(directory.glob("batch_*.csv"), key=lambda item: item.name)
+        if not paths:
+            self._add_issue(
+                "STAGING_BATCHES_MISSING",
+                "ERROR",
+                "kline_1d",
+                "staging 日目录存在但没有 batch_*.csv 数据批次。",
+                date=date_value,
+                expected="至少存在一个 batch_*.csv 及其可选 .meta.json",
+                actual="未找到 CSV 批次",
+                evidence=str(directory),
+                possible_causes="下载任务中断、批次被删除或目录尚未写完",
+                suggested_action="检查 downloader 日志并重新下载该交易日",
+                source_file=str(directory),
+            )
+            return pd.DataFrame()
+        frames: list[pd.DataFrame] = []
+        for path in paths:
+            try:
+                frame = pd.read_csv(
+                    str(path), encoding="utf-8-sig", dtype={"code": str, "trade_date": str}
+                )
+            except (OSError, pd.errors.ParserError, pd.errors.EmptyDataError) as exc:
+                self._add_issue(
+                    "KLINE_PARTITION_UNREADABLE",
+                    "ERROR",
+                    "kline_1d",
+                    "staging 行情批次 CSV 无法读取。",
+                    date=date_value,
+                    expected="合法 UTF-8 CSV",
+                    actual="{0}: {1}".format(type(exc).__name__, exc),
+                    evidence="批次文件读取失败",
+                    possible_causes="文件截断、编码错误、列数错位或空文件",
+                    suggested_action="删除并重新生成该交易日 staging 批次",
+                    source_file=str(path),
+                )
+                continue
+            metadata_path = path.with_suffix(".meta.json")
+            if not metadata_path.is_file():
+                self._add_issue(
+                    "STAGING_BATCH_METADATA_MISSING",
+                    "ERROR",
+                    "kline_1d",
+                    "staging 批次缺少对应的 .meta.json 完成元数据。",
+                    date=date_value,
+                    expected=str(metadata_path),
+                    actual="文件不存在",
+                    evidence=str(path),
+                    possible_causes="批次写入尚未完成、元数据被删除或文件被单独复制",
+                    suggested_action="重新生成该批次并确认 CSV 与 .meta.json 同时落盘",
+                    source_file=str(path),
+                )
+            else:
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, json.JSONDecodeError) as exc:
+                    self._add_issue(
+                        "STAGING_BATCH_METADATA_INVALID",
+                        "ERROR",
+                        "kline_1d",
+                        "staging 批次元数据无法解析。",
+                        date=date_value,
+                        expected="包含 rows 和 sha256 的 JSON 对象",
+                        actual="{0}: {1}".format(type(exc).__name__, exc),
+                        evidence=str(metadata_path),
+                        possible_causes="元数据写入中断或文件被修改",
+                        suggested_action="重新生成该批次的 CSV 和 .meta.json",
+                        source_file=str(metadata_path),
+                    )
+                else:
+                    if not isinstance(metadata, dict):
+                        self._add_issue(
+                            "STAGING_BATCH_METADATA_INVALID",
+                            "ERROR",
+                            "kline_1d",
+                            "staging 批次元数据不是 JSON 对象。",
+                            date=date_value,
+                            expected="JSON object containing rows and sha256",
+                            actual=type(metadata).__name__,
+                            evidence=str(metadata_path),
+                            possible_causes="元数据文件格式损坏",
+                            suggested_action="重新生成该批次的 CSV 和 .meta.json",
+                            source_file=str(metadata_path),
+                        )
+                    else:
+                        expected_rows = metadata.get("rows")
+                        try:
+                            rows_match = int(expected_rows) == len(frame)
+                        except (TypeError, ValueError):
+                            rows_match = False
+                        if not rows_match:
+                            self._add_issue(
+                                "STAGING_BATCH_ROW_COUNT_MISMATCH",
+                                "ERROR",
+                                "kline_1d",
+                                "staging 批次实际行数与元数据不一致。",
+                                date=date_value,
+                                field="rows",
+                                expected=str(expected_rows),
+                                actual=str(len(frame)),
+                                evidence=str(path),
+                                possible_causes="批次写入中断、文件被追加或元数据过期",
+                                suggested_action="重新生成该批次并确认写入完成标记",
+                                source_file=str(metadata_path),
+                            )
+                        expected_hash = str(metadata.get("sha256", ""))
+                        if not expected_hash:
+                            self._add_issue(
+                                "STAGING_BATCH_HASH_MISSING",
+                                "ERROR",
+                                "kline_1d",
+                                "staging 批次元数据缺少 sha256。",
+                                date=date_value,
+                                field="sha256",
+                                expected="非空 SHA-256 字符串",
+                                actual=repr(metadata.get("sha256")),
+                                evidence=str(metadata_path),
+                                possible_causes="元数据写入不完整或使用了旧版下载器",
+                                suggested_action="重新生成批次元数据，或使用 --verify-staging-hash 做完整校验",
+                                source_file=str(metadata_path),
+                            )
+                        elif self.config.verify_staging_hash:
+                            actual_hash = _file_sha256(path)
+                            if expected_hash != actual_hash:
+                                self._add_issue(
+                                    "STAGING_BATCH_HASH_MISMATCH",
+                                    "ERROR",
+                                    "kline_1d",
+                                    "staging 批次内容与 .meta.json 的 SHA-256 不一致。",
+                                    date=date_value,
+                                    field="sha256",
+                                    expected=expected_hash,
+                                    actual=actual_hash,
+                                    evidence=str(path),
+                                    possible_causes="CSV 被追加/修改、磁盘损坏或元数据来自另一份批次",
+                                    suggested_action="丢弃该批次并重新下载，确认写入完成后再审计",
+                                    source_file=str(metadata_path),
+                                )
+            frame = frame.copy()
+            frame["_source_file"] = str(path)
+            frame["_source_row"] = range(2, len(frame) + 2)
+            frames.append(frame)
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
 
     def _validate_rows(
         self,
@@ -1132,7 +1475,11 @@ class QmtDataSelfChecker:
             "suspend_flag",
         }
         missing_columns = sorted(required.difference(frame.columns))
-        path = (directory / "data.csv") if directory is not None else Path("")
+        path = (
+            directory
+            if directory is not None and self.source_mode == "staging"
+            else (directory / "data.csv") if directory is not None else Path("")
+        )
         if missing_columns:
             self._add_issue(
                 "KLINE_COLUMNS_MISSING",
@@ -1154,6 +1501,16 @@ class QmtDataSelfChecker:
         )
         for index in frame.index[duplicated]:
             code = normalized_codes.loc[index]
+            duplicate_path = path
+            duplicate_index: Any = index
+            if self.source_mode == "staging":
+                source_value = frame.loc[index].get("_source_file")
+                if isinstance(source_value, str) and source_value:
+                    duplicate_path = Path(source_value)
+                try:
+                    duplicate_index = int(frame.loc[index].get("_source_row")) - 2
+                except (TypeError, ValueError):
+                    pass
             self._row_issue(
                 "KLINE_DUPLICATE_KEY",
                 "ERROR",
@@ -1165,12 +1522,19 @@ class QmtDataSelfChecker:
                 "存在重复记录",
                 "批次合并重复、文件被追加或修复时未覆盖旧记录",
                 "重建该日期分区，不要任意保留重复行",
-                path,
-                index,
+                duplicate_path,
+                duplicate_index,
             )
         present: set[str] = set()
         for index, row in frame.iterrows():
             code = normalized_codes.loc[index]
+            source_path = row.get("_source_file")
+            if isinstance(source_path, str) and source_path:
+                path = Path(source_path)
+                try:
+                    index = int(row.get("_source_row")) - 2
+                except (TypeError, ValueError):
+                    pass
             row_date = _normalize_date_text(row.get("trade_date"))
             if not code or code.lower() == "nan":
                 self._row_issue(
@@ -1225,7 +1589,8 @@ class QmtDataSelfChecker:
             in_lifecycle = date_value >= open_date and (
                 expire_date is None or date_value <= expire_date
             )
-            if date_value < open_date:
+            if date_value < open_date and (code, "before") not in self._lifecycle_issue_keys:
+                self._lifecycle_issue_keys.add((code, "before"))
                 self._row_issue(
                     "DATA_BEFORE_LISTING",
                     "ERROR",
@@ -1240,7 +1605,8 @@ class QmtDataSelfChecker:
                     path,
                     index,
                 )
-            if expire_date is not None and date_value > expire_date:
+            if expire_date is not None and date_value > expire_date and (code, "after") not in self._lifecycle_issue_keys:
+                self._lifecycle_issue_keys.add((code, "after"))
                 self._row_issue(
                     "DATA_AFTER_DELISTING",
                     "ERROR",
@@ -1255,6 +1621,12 @@ class QmtDataSelfChecker:
                     path,
                     index,
                 )
+            if not in_lifecycle:
+                # 上市前/退市后的 QMT 占位行只用于生命周期审计；其零价格和零成交量
+                # 不应再次被当作行情字段损坏，从而避免全样本报告产生百万级重复错误。
+                continue
+            if not in_lifecycle:
+                continue
             invalid = self._validate_numeric_row(row, code, date_value, path, index, stats)
             if invalid:
                 stats[code].invalid_rows += 1
@@ -1613,7 +1985,7 @@ class QmtDataSelfChecker:
             evidence=evidence,
             possible_causes="QMT 本地行情未下载完整、下载批次失败或日期分区写入不完整",
             suggested_action="核对 missing_spans.csv，并使用 repair 模式重建涉及的日期分区",
-            source_file=str(self.root / "kline_1d"),
+            source_file=str(self._expected_partition_path(end_date)),
         )
 
     def _row_issue(
@@ -1763,6 +2135,8 @@ class QmtDataSelfChecker:
         return {
             "status": "failed" if levels.get("ERROR", 0) else "passed",
             "output_root": str(self.root),
+            "data_root": str(self.data_root),
+            "source_mode": self.source_mode,
             "start_date": calendar[0] if calendar else "",
             "end_date": calendar[-1] if calendar else "",
             "trading_days": len(calendar),
@@ -1907,13 +2281,16 @@ def _parse_lifecycle_value(value: Any) -> tuple[str | None, bool]:
         value: instrument_info 中的上市日期或退市日期原始值。
 
     返回：
-        ``(日期, 是否为非法非空值)``；空值和 99999999 返回 ``(None, False)``。
+        ``(日期, 是否为非法非空值)``；空值、99999999 以及 QMT 常见的
+        19700101/19700427 无期限哨兵返回 ``(None, False)``。
     """
 
     if value is None:
         return None, False
     text = str(value).strip()
-    if not text or text.lower() in {"nan", "nat", "none", "99999999", "0"}:
+    if not text or text.lower() in {
+        "nan", "nat", "none", "99999999", "0", "19700101", "19700427"
+    }:
         return None, False
     normalized = _normalize_date_text(value)
     return normalized, normalized is None

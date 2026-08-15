@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="QMT 下载器 JSON 配置；用于读取 output_root 和缺省审计区间",
     )
     parser.add_argument("--output-root", type=Path, help="覆盖配置中的 QMT 数据根目录")
+    parser.add_argument(
+        "--staging-root",
+        type=Path,
+        help="直接审计 staging 作业目录，或包含唯一 qmt_<job_key> 子目录的 staging 父目录",
+    )
     parser.add_argument("--start-date", help="覆盖配置的审计起点，格式 YYYYMMDD")
     parser.add_argument("--end-date", help="覆盖配置的审计终点，格式 YYYYMMDD")
     parser.add_argument(
@@ -61,6 +66,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=100.0,
         help="成交量相对近期中位数达到该倍数时报告统计告警，缺省 100",
+    )
+    parser.add_argument(
+        "--verify-staging-hash",
+        action="store_true",
+        help="额外计算 staging 每个批次 CSV 的 SHA-256 并与 .meta.json 比对",
     )
     return parser
 
@@ -107,6 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         result = run_full_sample_self_check(
             SelfCheckConfig(
                 output_root=output_root,
+                staging_root=args.staging_root,
                 start_date=start_date,
                 end_date=end_date,
                 calendar_csv=args.calendar_csv,
@@ -114,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                 coverage_error_threshold=args.coverage_error_threshold,
                 price_jump_warning_ratio=args.price_jump_warning_ratio,
                 volume_scale_warning_ratio=args.volume_scale_warning_ratio,
+                verify_staging_hash=args.verify_staging_hash,
             )
         )
     except (OSError, ValueError) as exc:

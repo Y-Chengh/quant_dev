@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -139,6 +141,29 @@ def _bar(
         "amount": amount,
         "suspend_flag": suspend_flag,
     }
+
+
+def _write_staging_kline(root: Path, date_value: str, rows: list[dict[str, object]]) -> None:
+    """写入一个与 QMT runner 相同的 staging 日批次及行数元数据。
+
+    参数：
+        root: staging 作业目录。
+        date_value: 八位交易日期。
+        rows: 需要写入该日期的标准日线行。
+    返回：
+        无返回值。
+    """
+
+    directory = root / ("kline_daily_" + date_value)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "batch_00000.csv"
+    pd.DataFrame(rows, columns=KLINE_COLUMNS).to_csv(
+        path, index=False, encoding="utf-8-sig", lineterminator="\n"
+    )
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    (directory / "batch_00000.meta.json").write_text(
+        json.dumps({"rows": len(rows), "sha256": digest}), encoding="utf-8"
+    )
 
 
 class QmtDataSelfCheckTests(unittest.TestCase):
@@ -428,6 +453,35 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertIn("KLINE_DATE_PARTITION_MISMATCH", set(result.issues["issue_code"]))
             coverage = result.coverage_by_date.set_index("trade_date")
             self.assertEqual(int(coverage.loc["20240102", "missing_symbols"]), 1)
+
+    def test_reads_staging_daily_directories(self) -> None:
+        """staging 日目录不含最终分区标记时也应执行完整行级审计。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            staging = root / "staging" / "qmt_job"
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [{"code": "000001.SZ", "open_date": "20240102", "expire_date": ""}],
+                ["000001.SZ"],
+            )
+            _write_staging_kline(staging, "20240102", [_bar("000001.SZ", "20240102", 10.0, 9.8)])
+            _write_staging_kline(staging, "20240103", [_bar("000001.SZ", "20240103", 10.1, 10.0)])
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    staging_root=root / "staging",
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.summary["source_mode"], "staging")
+            self.assertEqual(result.summary["expected_rows"], 2)
 
 
 if __name__ == "__main__":
