@@ -42,8 +42,9 @@ BAR_COLUMN_TYPES: dict[str, str] = {
 }
 
 #: 大 QMT 用于表达「没有这个日期」的哨兵值，全部归一化为 ``None``。
-#: 比 ``self_check`` 的集合多出 19700102~19700106 与 19700428：实测
-#: instrument_info 快照里确实出现过 19700427 与 19700428 两种取值。
+#: 与 ``quant.qmt_downloader.self_check.utils._LIFECYCLE_SENTINELS`` 保持同一份
+#: 取值列表；因分层约束（``quant.qmt_downloader`` 不得导入 ``quant`` 的其它子包）
+#: 无法共用同一个常量定义，两处修改哨兵集合时必须同步。
 LIFECYCLE_SENTINELS: frozenset[str] = frozenset(
     {
         "",

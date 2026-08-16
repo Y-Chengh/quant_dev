@@ -54,14 +54,21 @@ class _CoverageRulesMixin(_DailyCheckerState):
             "SELECT CAST(trade_date AS DATE) AS trade_date, "
             "row_number() OVER (ORDER BY trade_date) AS ordinal FROM calendar_frame"
         )
+        # open_date 缺失时取审计区间第一天为上市日回退值，口径与
+        # ``quant.qmt_downloader.self_check`` 的 ``_build_lifecycle`` 保持一致，
+        # 使两套自检对同一只证券算出同样的存续区间与覆盖率分母。
+        # CREATE VIEW 语句不支持预备参数，回退日期只来自审计区间日历（非外部输入），
+        # 拼接一个带引号的日期字面量是安全的。
+        fallback_open_date = (
+            f"DATE '{self.calendar[0].isoformat()}'" if self.calendar else "NULL"
+        )
         connection.execute(
-            """
+            f"""
             CREATE OR REPLACE TEMP VIEW scoped_life AS
-            SELECT i.code, CAST(i.open_date AS DATE) AS open_date,
+            SELECT i.code, COALESCE(CAST(i.open_date AS DATE), {fallback_open_date}) AS open_date,
                    CAST(i.expire_date AS DATE) AS expire_date
             FROM instruments i
             JOIN (SELECT DISTINCT code FROM scoped_codes) s ON s.code = i.code
-            WHERE i.open_date IS NOT NULL
             """
         )
         connection.execute(
@@ -183,7 +190,11 @@ class _CoverageRulesMixin(_DailyCheckerState):
         """检查是否存在越过上市或退市边界的行情。
 
         入库时已经按生命周期过滤，正常情况下这里应当一条都查不出；查出来说明
-        过滤依据的快照与当前 ``instruments`` 表不一致。
+        过滤依据的快照与当前 ``instruments`` 表不一致。上市前 ``suspend_flag=1``
+        的停牌占位行不算异常：这是 QMT 对尚未上市证券填充的历史占位数据，不是
+        真实行情归属错误，口径与 ``quant.qmt_downloader.self_check`` 的
+        ``DATA_BEFORE_LISTING`` 判定保持一致，避免同一份数据在两套自检里一边报错
+        一边不报错。
 
         参数：
             connection: 只读日线库连接。
@@ -197,7 +208,7 @@ class _CoverageRulesMixin(_DailyCheckerState):
                    CASE WHEN b.trade_date < l.open_date THEN 'before' ELSE 'after' END AS side
             FROM scoped_bars b
             JOIN scoped_life l ON l.code = b.code
-            WHERE b.trade_date < l.open_date
+            WHERE (b.trade_date < l.open_date AND COALESCE(b.suspend_flag, 0) != 1)
                OR (l.expire_date IS NOT NULL AND b.trade_date > l.expire_date)
             ORDER BY b.code, b.trade_date LIMIT ?
             """,

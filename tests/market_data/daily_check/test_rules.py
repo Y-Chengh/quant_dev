@@ -275,6 +275,31 @@ class DailyCheckRuleTest(unittest.TestCase):
         result = self._run(bars, instruments=instruments)
         self.assertEqual(len(_codes(result, "DAILY_DATA_BEFORE_LISTING")), 1)
 
+    def test_pre_listing_suspend_placeholder_is_not_flagged(self) -> None:
+        """上市前 suspend_flag=1 的停牌占位行不应报 DATA_BEFORE_LISTING，口径与 self_check 一致。"""
+        bars = [_bar("000001.SZ", "2024-01-02", 10.0, 9.9, suspend=1)]
+        instruments = [{
+            "code": "000001.SZ", "instrument_name": "测试", "open_date": date(2024, 1, 10),
+            "expire_date": None, "board": "main", "is_st": False,
+        }]
+        result = self._run(bars, instruments=instruments)
+        self.assertEqual(len(_codes(result, "DAILY_DATA_BEFORE_LISTING")), 0)
+
+    def test_missing_open_date_falls_back_to_calendar_start(self) -> None:
+        """open_date 缺失时取审计区间第一天为上市日，不应把该证券的行情算作缺失。"""
+        bars = [
+            _bar("000001.SZ", "2024-01-02", 10.0, 9.9),
+            _bar("000001.SZ", "2024-01-03", 10.1, 10.0),
+        ]
+        instruments = [{
+            "code": "000001.SZ", "instrument_name": "测试", "open_date": None,
+            "expire_date": None, "board": "main", "is_st": False,
+        }]
+        result = self._run(bars, instruments=instruments)
+        self.assertEqual(len(_codes(result, "DAILY_OPEN_DATE_MISSING")), 1)
+        self.assertEqual(len(_codes(result, "DAILY_MISSING_SPAN")), 0)
+        self.assertEqual(len(_codes(result, "DAILY_DATA_BEFORE_LISTING")), 0)
+
     def test_no_delisted_symbols_is_warned(self) -> None:
         """全部证券都没有退市日时应提示幸存者偏差。"""
         result = self._run([_bar("000001.SZ", "2024-01-02", 10.0, 9.9)])
