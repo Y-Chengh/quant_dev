@@ -83,6 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     if report.message:
         print(report.message)
+    if report.filtered_totals:
+        print("本次同步累计过滤（按原因）:")
+        for reason, count in report.filtered_totals:
+            print(f"  {reason}: {count} 行")
     for dataset, partition_key, reason in report.pending[:20]:
         print(f"待定分区 {dataset}/{partition_key}: {reason}")
     if len(report.pending) > 20:
