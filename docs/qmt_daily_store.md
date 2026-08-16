@@ -83,7 +83,14 @@ Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条�
 | 2015-01-05 | 5209 | 2365 | 214 |
 | 2024-01-02 | 5209 | 4996 | 4 |
 
-约 40% 是填充行。入库时按 `instruments.list_date` 过滤掉它们，否则：库体积膨胀到
+全库口径实测（2026-08-16 快照，320 个月，入库 16345427 行——比上文 71.6s 那次重建的
+1633 万多几千行，只是两次测量之间又多了几个交易日）：源合计 33598050 行，其中
+17252623 行（51.35%）落在上市日之前，涉及 4458 只证券；这些行**无一例外**是
+`open=high=low=close=0`、`volume=amount=0`、`suspend_flag=1` 的占位行，且一律从源数据
+起点 2000-01-04 一路填到各自上市日前一天（每只中位数 4194 行）。也就是说 QMT 把每只
+证券的历史都补齐到了取数区间的最左端。同一次统计里，其余六个过滤原因全部为 0。
+
+入库时按 `instruments.list_date` 过滤掉它们，否则：库体积膨胀到
 三倍；`symbols.first_date` 完全失真；**上市前那段平价零量数据会让波动率、收益率类
 因子在 IPO 当天炸出一个假跳变**。过滤之后 `suspend_flag=1` 才真正等价于「停牌」。
 
@@ -110,20 +117,38 @@ Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条�
 | `trade_date_bad_length` | 去空格后长度不是 8 | 写成了 `2024-01-02` 或截断成 7 位 |
 | `trade_date_unparsable` | 长度对但 `strptime('%Y%m%d')` 解析不出来 | `20241332` 这类非法日期、乱码 |
 | `unknown_code` | 代码不在 `instrument_info` 快照里 | 快照落后于日线，或代码写错 |
-| `before_listing` | `open_date` 非空且 `trade_date < open_date` | `fill_data=True` 的上市前占位行 |
+| `before_listing_padding` | `open_date` 非空且 `trade_date < open_date`，且 `suspend_flag = 1` | `fill_data=True` 的上市前占位行，**无害** |
+| `before_listing_with_data` | `open_date` 非空且 `trade_date < open_date`，且 `suspend_flag ≠ 1`（含缺失） | 上市前出现真实行情，**要人工核对** |
 | `after_delisting` | `expire_date` 非空且 `trade_date > expire_date` | 退市后仍被填充的占位行 |
 
 边界是闭区间：`trade_date` 正好等于 `open_date` 或 `expire_date` 的当天保留。
 `open_date` / `expire_date` 为空就不查对应那一侧。这一层**不做**价格合法性校验，也
 不去重，那些由 `python -m quant.cli.market_check` 负责。
 
-每个原因除了行数，还会带回最多 10 条**随机样例**，日志与命令行摘要都直接打印：
+上市前的行按 `suspend_flag` 分两类，是因为这两类的性质完全不同：占位填充是 QMT
+取数方式的产物，占了源数据的一半，滤掉天经地义；上市前却有真实成交则意味着上市日
+错了、代码被复用了或者行情归错了证券，混在一千多万行占位里根本发现不了。这个判据
+对齐 `quant.qmt_downloader.self_check` 的 `DATA_BEFORE_LISTING` 与
+`quant.market_data.daily_check` 的 `DAILY_DATA_BEFORE_LISTING`：在 QMT 实际只发 0/1 的
+前提下三处结论一致（`daily_check` 查的是入库后 `round()` 过的 TINYINT，所以理论上
+0.6 这种中间值两边会分到不同桶，实务上不会出现）。改判据时三处必须同步改。
+
+**总汇总会列出全部七个原因，一行都没丢弃的显式写 `0 行`**，这样才能区分「查过了是 0」
+和「压根没跑这条判据」。每月分片的日志行仍只列非零原因，否则 320 行日志会被刷屏。
+
+每个非零原因还会带回最多 10 条**随机样例**，日志与命令行摘要都直接打印：
 
 ```
 本次同步累计过滤（按原因）:
-  before_listing: 17252623 行
+  trade_date_null: 0 行
+  trade_date_bad_length: 0 行
+  trade_date_unparsable: 0 行
+  unknown_code: 0 行
+  before_listing_padding: 17252623 行
     随机样例 10 条:
       000338.SZ 20000113 open=2007-04-30 expire=- suspend=1 volume=0 close=0.0000
+  before_listing_with_data: 0 行
+  after_delisting: 0 行
 ```
 
 `suspend=1 volume=0 close=0` 正是 `fill_data` 占位行的特征，一眼就能确认滤对了。

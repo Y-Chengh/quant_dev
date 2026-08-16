@@ -31,6 +31,7 @@ from .shards import (
     FILTERED_SAMPLE_LIMIT,
     FilteredSample,
     existing_shards,
+    fill_missing_reasons,
     rewrite_month_shard,
     sort_by_reason,
     source_months,
@@ -150,14 +151,18 @@ class SyncReport:
         message: 面向用户的一句话说明。
         elapsed_seconds: 本次同步耗时秒数。
         filtered_totals: 本次同步全部重写月份按过滤原因汇总的丢弃行数，
-            ``((原因, 行数), ...)``，原因取值见 ``shards.FILTER_REASONS``；
-            未重写任何分片（无增量或 dry-run）时为空元组。
+            ``((原因, 行数), ...)``，原因取值与顺序见 ``shards.FILTER_REASONS``。
+            只要有至少一个月真读过源 CSV 并跑过过滤判定，就**含全部原因**，
+            一行都没丢弃的写 0，这样读日志的人能区分「查过了是 0」和「压根没跑
+            这条判据」；一个月都没跑过时（无增量、dry-run，或本次只删了整月源
+            分区）为空元组。
         touched_months: 本次增量涉及的月份，元素为 ``(年, 月)``，按时间升序；
             正常同步时即实际重写过的月份，``dry_run`` 时是**将要**重写的月份
             （该分支一个分片都不会写）；无增量时为空元组。
-        filtered_samples: 与 ``filtered_totals`` 同序的样例，
-            ``((原因, (样例, ...)), ...)``，每个有计数的原因带 1 到
-            ``FILTERED_SAMPLE_LIMIT`` 条。
+        filtered_samples: 按与 ``filtered_totals`` 同一套 ``FILTER_REASONS`` 顺序排列
+            的样例，``((原因, (样例, ...)), ...)``，但**只含计数非 0 的原因**，
+            每个带 1 到 ``FILTERED_SAMPLE_LIMIT`` 条。因此它比 ``filtered_totals``
+            短，两者不能按下标对齐，只能按原因名查。
             抽样分两级：每个月度分片先在本月该原因的全部丢弃行里随机抽最多同样条数，
             再从这些月度样例里随机抽最终若干条。因此**不是全库均匀抽样**——丢弃行少的
             月份会被相对高估——它只用于人工核对「过滤掉的确实该滤」，不能拿来做统计推断。
@@ -299,6 +304,9 @@ def _apply_delta(
     memory = duckdb.connect()
     filtered_totals: dict[str, int] = {}
     sample_pool: dict[str, list[FilteredSample]] = {}
+    # 真跑过过滤判定的月份数。不能拿 rewritten 代替：源分区被整月删掉的月份也会
+    # 走一遍 rewrite_month_shard，但那条路径直接删分片、一行源数据都没读。
+    filtered_months = 0
     try:
         memory.execute(f"SET threads = {_worker_threads()}")
         rewritten = 0
@@ -318,6 +326,7 @@ def _apply_delta(
                 "（已删除空分片）" if result.removed else "",
                 f" filtered=[{breakdown}]" if breakdown else "",
             )
+            filtered_months += 1 if result.filter_applied else 0
             for reason, count in result.filtered:
                 filtered_totals[reason] = filtered_totals.get(reason, 0) + count
             for reason, samples in result.filtered_samples:
@@ -401,7 +410,9 @@ def _apply_delta(
         connection.execute("CHECKPOINT")
 
     elapsed = (datetime.now() - started_at).total_seconds()
-    totals = sort_by_reason(filtered_totals.items())
+    # 真读过源数据才谈得上「过滤了多少」，此时七个原因一律列出（含 0）；一个月都
+    # 没跑过过滤时留空元组，让下游据此跳过整个过滤小节——否则「全 0」会谎称查过。
+    totals = fill_missing_reasons(filtered_totals.items()) if filtered_months else ()
     filtered_samples = _pick_filtered_samples(sample_pool)
     filtered_summary = ", ".join(f"{reason}={count}" for reason, count in totals)
     message = f"已入库: dirty={len(delta.dirty)} removed={len(delta.removed)} shards={rewritten} rows={rows_after}"

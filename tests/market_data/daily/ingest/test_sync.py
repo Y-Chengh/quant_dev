@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import random
+import shutil
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -174,8 +175,8 @@ class FilterReasonOrderingTest(unittest.TestCase):
     def test_cross_month_samples_are_capped_and_sorted(self) -> None:
         """跨月合并后条数要封顶，且只保留本原因的样例并按代码排序。"""
         pool = {
-            "before_listing": [
-                self._sample("before_listing", f"{600000 + index}.SH")
+            "before_listing_padding": [
+                self._sample("before_listing_padding", f"{600000 + index}.SH")
                 for index in range(FILTERED_SAMPLE_LIMIT * 3)
             ],
             "unknown_code": [self._sample("unknown_code", "999999.SZ")],
@@ -183,11 +184,11 @@ class FilterReasonOrderingTest(unittest.TestCase):
         }
         picked = dict(_pick_filtered_samples(pool))
         # 空列表的原因不应出现，否则摘要会打印一个没有内容的小标题。
-        self.assertEqual(set(picked), {"before_listing", "unknown_code"})
-        before = picked["before_listing"]
+        self.assertEqual(set(picked), {"before_listing_padding", "unknown_code"})
+        before = picked["before_listing_padding"]
         self.assertEqual(len(before), FILTERED_SAMPLE_LIMIT)
         self.assertEqual(len(set(sample.code for sample in before)), FILTERED_SAMPLE_LIMIT)
-        self.assertTrue(all(sample.reason == "before_listing" for sample in before))
+        self.assertTrue(all(sample.reason == "before_listing_padding" for sample in before))
         self.assertEqual([sample.code for sample in before],
                          sorted(sample.code for sample in before))
         self.assertEqual(len(picked["unknown_code"]), 1)
@@ -203,8 +204,8 @@ class FilterReasonOrderingTest(unittest.TestCase):
         全局随机流推进一格的话，复现结果会莫名其妙地变。
         """
         pool = {
-            "before_listing": [
-                self._sample("before_listing", f"{600000 + index}.SH")
+            "before_listing_padding": [
+                self._sample("before_listing_padding", f"{600000 + index}.SH")
                 for index in range(FILTERED_SAMPLE_LIMIT * 3)
             ]
         }
@@ -264,18 +265,78 @@ class DailySyncTest(unittest.TestCase):
             report = sync_daily_store(self._config(base))
             self.assertEqual(report.status, "synced")
             totals = dict(report.filtered_totals)
-            # 600000.SH 上市前的 0102 一行、300001.SZ 退市后的 0104 一行。
-            self.assertEqual(totals.get("before_listing"), 1)
+            # 600000.SH 上市前的 0102 一行（suspend_flag=1，占位）、
+            # 300001.SZ 退市后的 0104 一行。
+            self.assertEqual(totals.get("before_listing_padding"), 1)
             self.assertEqual(totals.get("after_delisting"), 1)
-            self.assertNotIn("trade_date_null", totals)
-            self.assertNotIn("trade_date_bad_length", totals)
-            self.assertNotIn("trade_date_unparsable", totals)
-            self.assertNotIn("unknown_code", totals)
+            # 没发生的原因也要显式报 0，否则读日志的人分不清「查过了」和「没查」。
+            self.assertEqual(totals.get("trade_date_null"), 0)
+            self.assertEqual(totals.get("trade_date_bad_length"), 0)
+            self.assertEqual(totals.get("trade_date_unparsable"), 0)
+            self.assertEqual(totals.get("unknown_code"), 0)
+            self.assertEqual(totals.get("before_listing_with_data"), 0)
             # 原因顺序必须跟着 FILTER_REASONS 走，而不是字母序。
             self.assertEqual(
-                [reason for reason, _ in report.filtered_totals],
-                ["before_listing", "after_delisting"],
+                [reason for reason, _ in report.filtered_totals], list(FILTER_REASONS)
             )
+
+    def test_up_to_date_sync_reports_no_filter_totals(self) -> None:
+        """一个分片都没重写时不能报「全 0」，那会谎称查过。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            _build_source(base / "qmt")
+            sync_daily_store(self._config(base))
+            again = sync_daily_store(self._config(base))
+            self.assertEqual(again.rewritten_shards, 0)
+            self.assertEqual(again.filtered_totals, ())
+            self.assertEqual(again.filtered_samples, ())
+
+    def test_non_kline_delta_reports_no_filter_totals(self) -> None:
+        """只有非日线数据集变脏时走完整入库但不重写分片，同样不能报「全 0」。
+
+        这条路径会真正进到 ``_apply_delta``，与 ``up_to_date`` 的提前返回不同；
+        守住 gate 用的是哪个计数则由 ``test_removed_month_is_not_reported_as_all_zero``
+        负责。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            _build_source(source)
+            sync_daily_store(self._config(base))
+            # 只动除权分区：touched_months() 只看 kline_1d，因此不会重写任何分片。
+            store = DailyPartitionStore(source)
+            store.write_partition(
+                "corporate_actions", "ex_date", "20240104",
+                pd.DataFrame([{
+                    "code": "000001.SZ", "ex_date": "20240104",
+                    "cash_dividend_per_share": 0.25, "bonus_share_per_share": 0.0,
+                    "capitalization_per_share": 0.0, "rights_issue_per_share": 0.0,
+                    "rights_issue_price": 0.0, "share_reform_flag": 0.0,
+                    "adjustment_factor": 1.01,
+                }], columns=ACTION_COLUMNS),
+                ACTION_COLUMNS, ["code", "ex_date"], ["code"], _SCOPE, overwrite=True,
+            )
+            report = sync_daily_store(self._config(base))
+            self.assertEqual(report.status, "synced")
+            self.assertEqual(report.rewritten_shards, 0)
+            self.assertEqual(report.filtered_totals, ())
+            self.assertEqual(report.filtered_samples, ())
+
+    def test_removed_month_is_not_reported_as_all_zero(self) -> None:
+        """整月源分区被删光只会删分片，没读过一行源数据，不能报「全 0」。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            _build_source(source)
+            sync_daily_store(self._config(base))
+            for partition in sorted((source / "kline_1d").glob("date=2024*")):
+                shutil.rmtree(partition)
+            report = sync_daily_store(self._config(base, mode="full"))
+            self.assertEqual(report.status, "synced")
+            self.assertEqual(report.rewritten_shards, 1)
+            # 分片确实被删了，但一行源数据都没读过，所以没有可汇报的过滤结果。
+            self.assertEqual(report.filtered_totals, ())
+            self.assertEqual(report.filtered_samples, ())
 
     def test_sync_report_carries_concrete_filtered_samples(self) -> None:
         """同步报告要带回每个原因的具体样例行，字段足以判断该不该滤掉。"""
@@ -284,9 +345,10 @@ class DailySyncTest(unittest.TestCase):
             _build_source(base / "qmt")
             report = sync_daily_store(self._config(base))
             samples = dict(report.filtered_samples)
-            self.assertEqual(set(samples), {"before_listing", "after_delisting"})
+            # 计数为 0 的原因不该带样例，否则摘要会打印空的样例小标题。
+            self.assertEqual(set(samples), {"before_listing_padding", "after_delisting"})
 
-            before = samples["before_listing"]
+            before = samples["before_listing_padding"]
             self.assertEqual(len(before), 1)
             self.assertEqual(before[0].code, "600000.SH")
             self.assertEqual(before[0].trade_date, "20240102")
@@ -318,9 +380,51 @@ class DailySyncTest(unittest.TestCase):
             finally:
                 connection.close()
             breakdown = dict(result.filtered)
-            self.assertEqual(breakdown.get("before_listing"), 1)
+            self.assertEqual(breakdown.get("before_listing_padding"), 1)
             self.assertEqual(breakdown.get("after_delisting"), 1)
             self.assertEqual(result.rows, 7)
+            # 分片级明细刻意保持稀疏：没发生的原因不出现，免得 320 行日志被刷屏。
+            self.assertNotIn("unknown_code", breakdown)
+
+    def test_before_listing_splits_padding_from_real_quotes(self) -> None:
+        """上市前的行要按 suspend_flag 分成占位填充与真实行情两类。
+
+        口径与 ``quant.qmt_downloader.self_check`` 的 ``DATA_BEFORE_LISTING``
+        一致：``suspend_flag=1`` 是 QMT 的占位填充，无害；不等于 1 说明上市日
+        或行情归属有问题，必须能单独看到。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            partition = source / "kline_1d" / "date=20240102"
+            partition.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame([
+                # 上市前的停牌占位行：全零、suspend_flag=1。
+                _bar("000001.SZ", "20240102", 0.0, 0.0, suspend=1.0, volume=0.0),
+                # 上市前却有真实成交，suspend_flag=0——这才是要报出来的那类。
+                _bar("600000.SH", "20240102", 7.0, 6.9, suspend=0.0, volume=1000.0),
+                # suspend_flag 缺失按 0 处理，同样算真实行情，不能悄悄归进占位。
+                dict(_bar("300001.SZ", "20240102", 5.0, 5.0), suspend_flag=None),
+            ]).to_csv(partition / "data.csv", index=False, columns=KLINE_COLUMNS)
+            lifecycle = pd.DataFrame([
+                {"code": code, "open_date": pd.Timestamp("2024-06-01"), "expire_date": pd.NaT}
+                for code in ("000001.SZ", "600000.SH", "300001.SZ")
+            ])
+            connection = duckdb.connect()
+            try:
+                result = rewrite_month_shard(connection, source, base / "daily", 2024, 1,
+                                             lifecycle)
+            finally:
+                connection.close()
+            breakdown = dict(result.filtered)
+            self.assertEqual(breakdown.get("before_listing_padding"), 1)
+            self.assertEqual(breakdown.get("before_listing_with_data"), 2)
+            samples = dict(result.filtered_samples)
+            self.assertEqual(samples["before_listing_padding"][0].code, "000001.SZ")
+            self.assertEqual(
+                [sample.code for sample in samples["before_listing_with_data"]],
+                ["300001.SZ", "600000.SH"],
+            )
 
     def _run_bad_trade_date_shard(self, base: Path) -> ShardResult:
         """写出一份含三种坏 trade_date 与一个未知代码的源分区并重建分片。
@@ -450,9 +554,11 @@ class DailySyncTest(unittest.TestCase):
                 connection.close()
             self.assertTrue(result.removed)
             self.assertEqual(result.rows, 0)
-            self.assertEqual(dict(result.filtered), {"before_listing": 1})
+            self.assertTrue(result.filter_applied)
+            self.assertEqual(dict(result.filtered), {"before_listing_with_data": 1})
             self.assertEqual(
-                dict(result.filtered_samples)["before_listing"][0].open_date, "2024-06-01"
+                dict(result.filtered_samples)["before_listing_with_data"][0].open_date,
+                "2024-06-01",
             )
 
     def test_month_without_source_reports_no_filtering(self) -> None:
@@ -472,6 +578,8 @@ class DailySyncTest(unittest.TestCase):
             self.assertTrue(result.removed)
             self.assertEqual(result.filtered, ())
             self.assertEqual(result.filtered_samples, ())
+            # 空元组只说明「没丢弃」，filter_applied 才区分「没查」和「查过是 0」。
+            self.assertFalse(result.filter_applied)
 
     def test_missing_open_date_does_not_drop_the_symbol(self) -> None:
         """open_date 缺失时不应把该证券的全部行情都过滤掉，口径与 self_check 一致。"""

@@ -48,12 +48,22 @@ _ROW_GROUP_SIZE = 200_000
 #:
 #: 前三个原因是 ``trade_date`` 字段本身的三种坏法，分开统计是为了让日志直接指出
 #: 该去查源 CSV 的哪一类问题：整列缺失、位数不对、还是位数对但不是合法日期。
+#:
+#: 上市前的行同样分两类，判据是 ``suspend_flag``：等于 1 的是 QMT 的停牌占位填充行
+#: （无害，占绝大多数），不等于 1 的是上市前出现了真实行情（要么上市日错、要么行情
+#: 归属错，必须人工核对）。缺失按 0 处理，即归入需要核对的那一类，宁可多提醒。
+#: 该判据对齐 ``quant.qmt_downloader.self_check`` 的 ``DATA_BEFORE_LISTING`` 与
+#: ``quant.market_data.daily_check`` 的 ``DAILY_DATA_BEFORE_LISTING``：在 QMT 实际
+#: 只发 0/1 的前提下三处结论一致（``daily_check`` 查的是入库后 ``round()`` 过的
+#: TINYINT，理论上 0.6 这种中间值两边会分到不同桶，实务上不会出现）。改判据时
+#: 三处必须同步改。
 FILTER_REASONS: tuple[str, ...] = (
     "trade_date_null",
     "trade_date_bad_length",
     "trade_date_unparsable",
     "unknown_code",
-    "before_listing",
+    "before_listing_padding",
+    "before_listing_with_data",
     "after_delisting",
 )
 
@@ -162,6 +172,29 @@ def sort_by_reason(
     )
 
 
+def fill_missing_reasons(
+    counts: Iterable[tuple[str, int]],
+) -> tuple[tuple[str, int], ...]:
+    """把稀疏的过滤计数补齐成 ``FILTER_REASONS`` 全集。
+
+    只在**同步结束的总汇总**处用。分片级统计刻意保持稀疏：全量重建有 320 个月，
+    每行都铺开七个原因会把日志淹掉；而总汇总只出现一次，把 0 显式写出来才能区分
+    「查过了，一行都没有」和「压根没跑这条判据」——后者正是没列 0 时读日志的人
+    会产生的误解。
+
+    参数：
+        counts: 实际发生过的 ``(原因, 行数)``；缺席的原因视为 0 行。不在
+            ``FILTER_REASONS`` 里的原因会原样保留，不会被丢掉。
+
+    返回：
+        按 ``FILTER_REASONS`` 排序、含全部原因的 ``((原因, 行数), ...)``。
+    """
+    filled = dict.fromkeys(FILTER_REASONS, 0)
+    for reason, count in counts:
+        filled[reason] = filled.get(reason, 0) + count
+    return sort_by_reason(filled.items())
+
+
 @dataclass(frozen=True, slots=True)
 class ShardResult:
     """单个月度分片的重建结果。
@@ -178,6 +211,9 @@ class ShardResult:
         filtered_samples: 与 ``filtered`` 同序、同原因集合的样例，
             ``((原因, (样例, ...)), ...)``；每个原因最多 ``FILTERED_SAMPLE_LIMIT``
             条，在该月该原因的全部丢弃行里随机抽取。
+        filter_applied: 本月是否真的读过源 CSV 并跑过过滤判定。源目录里该月一个
+            日分区都没有时为 ``False``——此时 ``filtered`` 也是空元组，但含义是
+            「没查」而不是「查过了一行没丢」，调用方不能把两者混为一谈。
     """
 
     year: int
@@ -187,6 +223,7 @@ class ShardResult:
     path: Path
     filtered: tuple[tuple[str, int], ...] = ()
     filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...] = ()
+    filter_applied: bool = False
 
 
 def shard_directory(daily_root: Path | str, year: int, month: int) -> Path:
@@ -279,7 +316,11 @@ def rewrite_month_shard(
                     WHEN l.open_date IS NOT NULL
                          AND CAST(try_strptime(k.trade_date, '%Y%m%d') AS DATE)
                              < CAST(l.open_date AS DATE)
-                        THEN 'before_listing'
+                        THEN CASE
+                            WHEN COALESCE(CAST(k.suspend_flag AS DOUBLE), 0) = 1
+                                THEN 'before_listing_padding'
+                            ELSE 'before_listing_with_data'
+                        END
                     WHEN l.expire_date IS NOT NULL
                          AND CAST(try_strptime(k.trade_date, '%Y%m%d') AS DATE)
                              > CAST(l.expire_date AS DATE)
@@ -336,7 +377,9 @@ def rewrite_month_shard(
     if rows == 0:
         temporary.unlink(missing_ok=True)
         # 整月被过滤光时更需要看到明细，因此把统计一并带进删除分支。
-        return _drop_shard(directory, target, year, month, filtered, filtered_samples)
+        return _drop_shard(
+            directory, target, year, month, filtered, filtered_samples, filter_applied=True
+        )
     temporary.replace(target)
     return ShardResult(
         year=year,
@@ -346,6 +389,7 @@ def rewrite_month_shard(
         path=target,
         filtered=filtered,
         filtered_samples=filtered_samples,
+        filter_applied=True,
     )
 
 
@@ -468,6 +512,7 @@ def _drop_shard(
     month: int,
     filtered: tuple[tuple[str, int], ...] = (),
     filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...] = (),
+    filter_applied: bool = False,
 ) -> ShardResult:
     """删除一个已经没有数据的月度分片。
 
@@ -479,6 +524,8 @@ def _drop_shard(
         filtered: 已经统计出的分原因丢弃行数；该月压根没有源文件、没跑过过滤时
             传空元组。
         filtered_samples: 与 ``filtered`` 配套的样例；缺省同上。
+        filter_applied: 本月是否真跑过过滤判定。整月被滤光走到这里时传 ``True``，
+            源目录里该月一个日分区都没有时保持缺省的 ``False``。
 
     返回：
         ``rows=0``、``removed=True`` 的 ``ShardResult``。
@@ -498,6 +545,7 @@ def _drop_shard(
         path=target,
         filtered=filtered,
         filtered_samples=filtered_samples,
+        filter_applied=filter_applied,
     )
 
 

@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from quant.cli import build_daily_store
-from quant.market_data.daily.ingest.shards import FilteredSample
+from quant.market_data.daily.ingest.shards import FILTER_REASONS, FilteredSample
 from quant.market_data.daily.ingest.sync import SyncReport
 
 
@@ -82,17 +82,29 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
             SyncReport(
                 status="synced",
                 rows_after=100,
-                filtered_totals=(("before_listing", 12), ("unknown_code", 3)),
+                filtered_totals=(("before_listing_padding", 12), ("unknown_code", 3)),
             )
         )
         self.assertIn("本次同步累计过滤（按原因）:", output)
-        self.assertIn("before_listing: 12 行", output)
+        self.assertIn("before_listing_padding: 12 行", output)
         self.assertIn("unknown_code: 3 行", output)
+
+    def test_summary_prints_zero_count_reasons(self) -> None:
+        """计数为 0 的原因也要照常打印，否则看不出这条判据到底查没查。"""
+        output, _ = self._run_main(
+            SyncReport(
+                status="synced",
+                rows_after=100,
+                filtered_totals=tuple((reason, 0) for reason in FILTER_REASONS),
+            )
+        )
+        for reason in FILTER_REASONS:
+            self.assertIn(f"{reason}: 0 行", output)
 
     def test_summary_lists_filtered_samples_under_each_reason(self) -> None:
         """每个原因下面要能直接看到具体被滤掉的行，不必再去翻源 CSV。"""
         sample = FilteredSample(
-            reason="before_listing",
+            reason="before_listing_padding",
             code="600000.SH",
             trade_date="20240102",
             open_date="2024-01-03",
@@ -105,8 +117,8 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
             SyncReport(
                 status="synced",
                 rows_after=100,
-                filtered_totals=(("before_listing", 12),),
-                filtered_samples=(("before_listing", (sample,)),),
+                filtered_totals=(("before_listing_padding", 12),),
+                filtered_samples=(("before_listing_padding", (sample,)),),
             )
         )
         self.assertIn("随机样例 1 条:", output)
@@ -121,10 +133,10 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
             SyncReport(
                 status="synced",
                 rows_after=100,
-                filtered_totals=(("before_listing", 12),),
+                filtered_totals=(("before_listing_padding", 12),),
             )
         )
-        self.assertIn("before_listing: 12 行", output)
+        self.assertIn("before_listing_padding: 12 行", output)
         self.assertNotIn("随机样例", output)
 
     def test_summary_omits_section_without_filtering(self) -> None:
@@ -138,7 +150,7 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
             SyncReport(
                 status="synced",
                 rows_after=100,
-                filtered_totals=(("before_listing", 12),),
+                filtered_totals=(("before_listing_padding", 12),),
             )
         )
         log_dir = database.parent / build_daily_store.LOG_SUBDIR
@@ -146,7 +158,7 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
         self.assertEqual(len(saved), 1)
         self.assertIn(f"日志已保存: {saved[0]}", output)
         content = saved[0].read_text(encoding="utf-8")
-        self.assertIn("before_listing: 12 行", content)
+        self.assertIn("before_listing_padding: 12 行", content)
         self.assertIn("日线库同步synced", content)
 
     def test_explicit_log_file_is_used(self) -> None:
