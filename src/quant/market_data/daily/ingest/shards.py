@@ -11,22 +11,27 @@
 
 **open_date 缺失时不按上市日过滤**：``instrument_info`` 快照个别证券可能缺失
 上市日（QMT 未返回或字段本身损坏）。缺失时不应把该证券整批数据都丢弃，而是
-放行全部历史行情，交给入库后的 ``quant-market-check``（``DAILY_OPEN_DATE_MISSING``）
-提示需要核对；口径与 ``quant.qmt_downloader.self_check`` 对同一情形的处理一致
+放行全部历史行情，交给入库后的 ``python -m quant.cli.market_check``
+（``DAILY_OPEN_DATE_MISSING``）提示需要核对；口径与
+``quant.qmt_downloader.self_check`` 对同一情形的处理一致
 （``_build_lifecycle`` 用审计区间首日兜底，同样不整体排除该证券）。
 
 **该过滤条件变化前建好的库需要全量重建**：增量同步只重写源 CSV 内容变化过的
 月份分片，不会因为过滤规则本身改了就主动重写历史分片。因此这条判据变化
 上线后，此前因 open_date 缺失被整体剔除的证券在存量库里仍会保持缺失状态，
 只有之后新落盘或被判定为脏的月份才会按新逻辑补齐，导致同一证券在库内前后
-月份口径不一致。升级到本版本后必须对已有库执行一次 ``quant-build-daily-store
---rebuild-all`` 统一口径，不能只依赖后续的增量同步。
+月份口径不一致。升级到本版本后必须对已有库执行一次
+``python -m quant.cli.build_daily_store --rebuild-all``
+统一口径，不能只依赖后续的增量同步。
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeVar
 
 import pandas as pd
 
@@ -37,14 +42,124 @@ from ..schema import sql_path
 #: 一次 ``COPY`` 写出的 Parquet 行组大小。
 _ROW_GROUP_SIZE = 200_000
 
-#: 单行被丢弃的全部原因，取值与 ``ShardResult.filtered`` 的键一致，顺序固定
-#: 便于日志和报告按同一顺序展示。``kept`` 不是丢弃原因，不出现在这里。
+#: 单行被丢弃的全部原因，取值与 ``ShardResult.filtered`` 的键一致。顺序即 SQL 里
+#: ``CASE`` 分支的判定顺序，日志与报告一律按该顺序展示；一行只会命中第一个成立的
+#: 分支，因此各原因的行数互不重叠。``kept`` 不是丢弃原因，不出现在这里。
+#:
+#: 前三个原因是 ``trade_date`` 字段本身的三种坏法，分开统计是为了让日志直接指出
+#: 该去查源 CSV 的哪一类问题：整列缺失、位数不对、还是位数对但不是合法日期。
 FILTER_REASONS: tuple[str, ...] = (
-    "invalid_trade_date",
+    "trade_date_null",
+    "trade_date_bad_length",
+    "trade_date_unparsable",
     "unknown_code",
     "before_listing",
     "after_delisting",
 )
+
+#: 每个过滤原因保留的样例行数上限。样例只用于人工核对过滤是否合理，取小值即可。
+FILTERED_SAMPLE_LIMIT = 10
+
+_ReasonValue = TypeVar("_ReasonValue")
+
+
+@dataclass(frozen=True, slots=True)
+class FilteredSample:
+    """一条被过滤掉的源行的样例，用于在日志里直接展示具体 case。
+
+    参数：
+        reason: 命中的过滤原因，取值见 ``FILTER_REASONS``。
+        code: 归一化（去空格转大写）后的证券代码；源值为空时是 ``None``。
+        trade_date: 源 CSV 里 ``trade_date`` 的**原样文本**，不做解析，以便
+            ``trade_date_*`` 三类原因能看到真正的坏值；源值为空时是 ``None``。
+        open_date: 该证券在生命周期表里的上市日，ISO 文本；缺失或代码不在表里
+            时是 ``None``。
+        expire_date: 该证券在生命周期表里的退市日，ISO 文本；缺失或代码不在表里
+            时是 ``None``。
+        suspend_flag: 源行的停牌标记，1 表示停牌；缺失时是 ``None``。
+        volume: 源行的成交量，单位股；缺失时是 ``None``。
+        close: 源行的收盘价，单位元，未复权；缺失时是 ``None``。
+    """
+
+    reason: str
+    code: str | None
+    trade_date: str | None
+    open_date: str | None
+    expire_date: str | None
+    suspend_flag: float | None
+    volume: float | None
+    close: float | None
+
+    def describe(self) -> str:
+        """返回一行可直接打印进日志或摘要的样例说明。
+
+        返回：
+            形如 ``000001.SZ 20000104 open=2001-01-01 expire=- suspend=1
+            volume=0 close=10.0000`` 的单行文本；缺失字段一律显示 ``-``。
+        """
+        return (
+            f"{_sample_text(self.code)} {_sample_text(self.trade_date)}"
+            f" open={_sample_text(self.open_date)}"
+            f" expire={_sample_text(self.expire_date)}"
+            f" suspend={_sample_number(self.suspend_flag)}"
+            f" volume={_sample_number(self.volume)}"
+            f" close={_sample_number(self.close, digits=4)}"
+        )
+
+
+def _sample_text(value: str | None) -> str:
+    """把样例里的文本字段格式化为日志片段。
+
+    参数：
+        value: 原始文本；``None`` 或去空格后为空都视为缺失。
+
+    返回：
+        去掉首尾空格的原文；缺失时返回 ``-``。
+    """
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    return text or "-"
+
+
+def _sample_number(value: float | None, digits: int = 0) -> str:
+    """把样例里的数值字段格式化为日志片段。
+
+    参数：
+        value: 原始数值；``None`` 与 ``NaN`` 都视为缺失。
+        digits: 保留的小数位数，0 表示按整数展示（价格类传 4）。
+
+    返回：
+        定点格式的数值文本；缺失时返回 ``-``。
+    """
+    if value is None:
+        return "-"
+    number = float(value)
+    if math.isnan(number) or math.isinf(number):
+        return "-"
+    return f"{number:.{digits}f}"
+
+
+def sort_by_reason(
+    items: Iterable[tuple[str, _ReasonValue]],
+) -> tuple[tuple[str, _ReasonValue], ...]:
+    """按 ``FILTER_REASONS`` 的固定顺序排列 ``(原因, 值)`` 序列。
+
+    日志、同步报告与命令行摘要都走这一个排序，保证同一次运行里各处的原因顺序
+    完全一致，也保证顺序与 SQL 判定顺序对得上。
+
+    参数：
+        items: 待排序的 ``(原因, 值)`` 序列，值可以是行数、样例元组等任意类型；
+            不在 ``FILTER_REASONS`` 里的原因排在末尾并按原因名升序，以免将来
+            新增原因时漏排。
+
+    返回：
+        排序后的元组。
+    """
+    ranks = {reason: index for index, reason in enumerate(FILTER_REASONS)}
+    return tuple(
+        sorted(items, key=lambda item: (ranks.get(item[0], len(ranks)), item[0]))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +175,9 @@ class ShardResult:
         filtered: 按 ``FILTER_REASONS`` 中的原因统计的丢弃行数，``((原因, 行数), ...)``；
             该月源文件不存在（``removed=True`` 且没有跑过过滤）时为空元组，
             跑过过滤但某个原因一行都没丢弃时该原因不出现在元组里。
+        filtered_samples: 与 ``filtered`` 同序、同原因集合的样例，
+            ``((原因, (样例, ...)), ...)``；每个原因最多 ``FILTERED_SAMPLE_LIMIT``
+            条，在该月该原因的全部丢弃行里随机抽取。
     """
 
     year: int
@@ -68,6 +186,7 @@ class ShardResult:
     removed: bool
     path: Path
     filtered: tuple[tuple[str, int], ...] = ()
+    filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...] = ()
 
 
 def shard_directory(daily_root: Path | str, year: int, month: int) -> Path:
@@ -111,9 +230,10 @@ def rewrite_month_shard(
             勘误之后的结果。
 
     返回：
-        描述本次重建结果的 ``ShardResult``，含按 ``FILTER_REASONS`` 分类的丢弃行数。
-        该月没有任何源分区、或过滤后为空时，原有分片会被删除并返回
-        ``removed=True``。
+        描述本次重建结果的 ``ShardResult``，含按 ``FILTER_REASONS`` 分类的丢弃行数
+        与每个原因最多 ``FILTERED_SAMPLE_LIMIT`` 条的随机样例。该月没有任何源分区、
+        或过滤后为空时，原有分片会被删除并返回 ``removed=True``；后者仍带回完整的
+        过滤统计，前者因为没跑过过滤而为空元组。
     """
     directory = shard_directory(daily_root, year, month)
     target = directory / "bars.parquet"
@@ -145,10 +265,15 @@ def rewrite_month_shard(
                 CAST(k.volume AS DOUBLE)              AS volume,
                 CAST(k.amount AS DOUBLE)              AS amount,
                 CAST(k.suspend_flag AS DOUBLE)        AS suspend_flag,
+                l.open_date                          AS listing_open_date,
+                l.expire_date                        AS listing_expire_date,
                 CASE
-                    WHEN k.trade_date IS NULL OR length(trim(k.trade_date)) <> 8
-                         OR try_strptime(k.trade_date, '%Y%m%d') IS NULL
-                        THEN 'invalid_trade_date'
+                    WHEN k.trade_date IS NULL
+                        THEN 'trade_date_null'
+                    WHEN length(trim(k.trade_date)) <> 8
+                        THEN 'trade_date_bad_length'
+                    WHEN try_strptime(k.trade_date, '%Y%m%d') IS NULL
+                        THEN 'trade_date_unparsable'
                     WHEN l.code IS NULL
                         THEN 'unknown_code'
                     WHEN l.open_date IS NOT NULL
@@ -166,13 +291,14 @@ def rewrite_month_shard(
             LEFT JOIN lifecycle_filter l ON upper(trim(k.code)) = l.code
             """
         )
-        filtered = tuple(
-            connection.execute(
+        filtered = sort_by_reason(
+            (str(reason), int(count))
+            for reason, count in connection.execute(
                 "SELECT filter_reason, CAST(count(*) AS BIGINT) FROM staged_rows "
-                "WHERE filter_reason != 'kept' GROUP BY filter_reason "
-                "ORDER BY filter_reason"
+                "WHERE filter_reason != 'kept' GROUP BY filter_reason"
             ).fetchall()
         )
+        filtered_samples = _collect_filtered_samples(connection)
         connection.execute(
             f"""
             COPY (
@@ -209,10 +335,111 @@ def rewrite_month_shard(
 
     if rows == 0:
         temporary.unlink(missing_ok=True)
-        return _drop_shard(directory, target, year, month)
+        # 整月被过滤光时更需要看到明细，因此把统计一并带进删除分支。
+        return _drop_shard(directory, target, year, month, filtered, filtered_samples)
     temporary.replace(target)
     return ShardResult(
-        year=year, month=month, rows=rows, removed=False, path=target, filtered=filtered
+        year=year,
+        month=month,
+        rows=rows,
+        removed=False,
+        path=target,
+        filtered=filtered,
+        filtered_samples=filtered_samples,
+    )
+
+
+def _collect_filtered_samples(
+    connection,
+    limit: int = FILTERED_SAMPLE_LIMIT,
+) -> tuple[tuple[str, tuple[FilteredSample, ...]], ...]:
+    """从 ``staged_rows`` 里为每个过滤原因随机抽取若干被丢弃的行。
+
+    用 ``arg_min(struct, random(), n)`` 而不是 ``ORDER BY random()`` 开窗：前者是
+    按组维护的定长堆，复杂度与丢弃行数成线性；后者要对全部丢弃行做排序，全量重建
+    时那是上千万行，会明显拖慢分片重写。
+
+    参数：
+        connection: 已经建好 ``staged_rows`` 临时表的 DuckDB 连接。
+        limit: 每个原因最多抽取的样例条数。
+
+    返回：
+        按 ``FILTER_REASONS`` 排序的 ``((原因, (样例, ...)), ...)``；组内按代码与
+        交易日升序，便于逐条核对。没有任何行被丢弃时返回空元组。
+    """
+    grouped = connection.execute(
+        f"""
+        SELECT filter_reason,
+               arg_min({{'code': code,
+                         'trade_date': trade_date,
+                         'open_date': listing_open_date,
+                         'expire_date': listing_expire_date,
+                         'suspend_flag': suspend_flag,
+                         'volume': volume,
+                         'close': close}}, random(), {int(limit)}) AS picked
+        FROM staged_rows
+        WHERE filter_reason != 'kept'
+        GROUP BY filter_reason
+        """
+    ).fetchall()
+    samples: list[tuple[str, tuple[FilteredSample, ...]]] = []
+    for reason, picked in grouped:
+        rows = [_build_sample(str(reason), record) for record in picked or ()]
+        rows.sort(key=lambda sample: (sample.code or "", sample.trade_date or ""))
+        samples.append((str(reason), tuple(rows)))
+    return sort_by_reason(samples)
+
+
+def _build_sample(reason: str, record: dict) -> FilteredSample:
+    """把 ``arg_min`` 返回的一个 struct 转成 ``FilteredSample``。
+
+    参数：
+        reason: 该样例命中的过滤原因。
+        record: DuckDB 返回的字段字典，日期字段是 ``datetime.date``、数值字段是
+            ``float``，缺失字段为 ``None``。
+
+    返回：
+        字段已归一化为文本与浮点数的样例对象。
+    """
+
+    def _date_text(value) -> str | None:
+        """把日期字段转成 ISO 文本。
+
+        参数：
+            value: ``datetime.date``、可转文本的值或 ``None``。
+
+        返回：
+            ISO 日期文本；缺失时返回 ``None``。
+        """
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return None
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+    def _number(value) -> float | None:
+        """把数值字段转成浮点数。
+
+        参数：
+            value: 数值或 ``None``。
+
+        返回：
+            浮点数；缺失或无法转换时返回 ``None``。
+        """
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    return FilteredSample(
+        reason=reason,
+        code=record.get("code"),
+        trade_date=record.get("trade_date"),
+        open_date=_date_text(record.get("open_date")),
+        expire_date=_date_text(record.get("expire_date")),
+        suspend_flag=_number(record.get("suspend_flag")),
+        volume=_number(record.get("volume")),
+        close=_number(record.get("close")),
     )
 
 
@@ -234,7 +461,14 @@ def _has_source_files(source_root: Path | str, year: int, month: int) -> bool:
     return any((candidate / "data.csv").is_file() for candidate in root.glob(prefix + "??"))
 
 
-def _drop_shard(directory: Path, target: Path, year: int, month: int) -> ShardResult:
+def _drop_shard(
+    directory: Path,
+    target: Path,
+    year: int,
+    month: int,
+    filtered: tuple[tuple[str, int], ...] = (),
+    filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...] = (),
+) -> ShardResult:
     """删除一个已经没有数据的月度分片。
 
     参数：
@@ -242,6 +476,9 @@ def _drop_shard(directory: Path, target: Path, year: int, month: int) -> ShardRe
         target: 分片 Parquet 文件路径。
         year: 分片年份。
         month: 分片月份。
+        filtered: 已经统计出的分原因丢弃行数；该月压根没有源文件、没跑过过滤时
+            传空元组。
+        filtered_samples: 与 ``filtered`` 配套的样例；缺省同上。
 
     返回：
         ``rows=0``、``removed=True`` 的 ``ShardResult``。
@@ -253,7 +490,15 @@ def _drop_shard(directory: Path, target: Path, year: int, month: int) -> ShardRe
         except OSError:
             # 目录非空或不存在都属于正常情况，不需要处理。
             break
-    return ShardResult(year=year, month=month, rows=0, removed=True, path=target)
+    return ShardResult(
+        year=year,
+        month=month,
+        rows=0,
+        removed=True,
+        path=target,
+        filtered=filtered,
+        filtered_samples=filtered_samples,
+    )
 
 
 def existing_shards(daily_root: Path | str) -> tuple[tuple[int, int], ...]:

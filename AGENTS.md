@@ -76,6 +76,9 @@
   | `quant-ifind-download` | `quant.cli.ifind_download` |
   | `quant-build-market-db` | `quant.market_data.build_database` |
 
+  上表是 `pyproject.toml` 的入口注册名，只用于说明「哪个模块对应哪个入口」；
+  面向用户输出命令时的写法见下文「命令行输出约定」。
+
   其中 `quant-qmt-self-check` 在外部 Python 中全量审计 QMT 日线分区、证券生命
   周期、缺失区间、停牌成交量和统计异常，输出不修改原始数据的详细报告。
   `quant-market-check` 与它分工互补：前者查 CSV 源本身是否完整，后者查**入库之后**
@@ -251,27 +254,48 @@
   这不代表本机未安装 Python。遇到此情况时，应使用上述解释器路径，或在确有
   必要时申请沙箱外执行权限后再次验证，不要建议用户重复安装 Python。
 
+## 命令行输出约定
+
+- 凡是输出给用户的命令行（对话回复、交付说明、`README.md`、`docs/`、代码里的
+  报错提示与修复建议）都尽可能写成 `python xxx` 的形式，模块入口统一用
+  `python -m <模块>`，例如
+  `python -m quant.cli.factor_demo --config configs\factor_research\example.yaml`。
+  命令默认在仓库根目录、已激活项目虚拟环境（`.venv`）的会话中执行，因此不要在
+  命令里写死 `.venv\Scripts\python.exe` 这类解释器绝对路径，让用户可以直接复制。
+  唯一例外是创建虚拟环境本身：`python -m venv .venv` 之后必须先给出激活命令
+  （见 README 安装一节），再用 `python -m pip install`。
+- 上述约束只针对可直接复制执行的命令行。正文里泛指某个工具（例如“`pip install -e .`
+  之后可用短命令”）不受影响。助手自己在未激活环境的终端里执行时可以用
+  `.venv\Scripts\python.exe`，但写给用户看的命令仍按上面的写法给出。
+- 不要直接给出 `quant-factor-demo` 这类 `console_scripts` 短命令，它们只在
+  `pip install -e .` 之后可用。短命令仅作为等价别名出现在 README 的对照表中，
+  与上文 CLI 入口表的说明保持一致。
+- Python 生态的工具一律走 `-m`：用 `python -m pip`、`python -m pytest`、
+  `python -m unittest`、`python -m ruff`、`python -m mypy`，而不是 `pip`、
+  `pytest`、`ruff` 等裸命令。只有本身不属于 Python 的可执行文件（如 `git`）
+  按原样给出。
+
 ## 验证要求
 
 首次准备环境（或依赖变化后）：
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[research,service,dev]"
+python -m pip install -e ".[research,service,dev]"
 ```
 
 修改完成后按风险执行以下检查：
 
 ```powershell
-.venv\Scripts\python.exe -m compileall -q src tests scripts
-.venv\Scripts\python.exe -m unittest discover -s tests -v
-.venv\Scripts\python.exe -m ruff check .
+python -m compileall -q src tests scripts
+python -m unittest discover -s tests -v
+python -m ruff check .
 git diff --check
 ```
 
 `python -m pytest` 与 `unittest discover` 等价，两者都能跑通全量用例。
 
 - 涉及模型或数据代码的改动，应按风险运行回测验证并核对结果：
-  `quant-factor-demo --config configs\factor_research\example.yaml`。
+  `python -m quant.cli.factor_demo --config configs\factor_research\example.yaml`。
   同一次对比实验必须始终使用同一份配置，避免前后结果不可比。
 - 不涉及模型或数据代码的修改无需运行回测。
 

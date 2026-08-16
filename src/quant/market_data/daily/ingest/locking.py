@@ -135,7 +135,10 @@ def open_catalog(database_path, *, read_only: bool):
     if not read_only:
         path.parent.mkdir(parents=True, exist_ok=True)
     elif not path.is_file():
-        raise FileNotFoundError(f"日线库不存在: {path}；请先运行 quant-build-daily-store")
+        raise FileNotFoundError(
+            f"日线库不存在: {path}；"
+            "请先运行 python -m quant.cli.build_daily_store"
+        )
     try:
         connection = duckdb.connect(str(path), read_only=read_only)
     except duckdb.Error as error:

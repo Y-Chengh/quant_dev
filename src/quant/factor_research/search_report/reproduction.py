@@ -22,11 +22,14 @@ def _reproduction_command(
         metadata: 可选包含数据库、数据起止日期、证券列表和证券数量上限的元数据。
 
     返回：
-        可直接粘贴到 PowerShell 的单行 ``quant-factor-demo`` 命令。
+        可直接粘贴到 PowerShell 的单行主实验命令，形如
+        ``python -m quant.cli.factor_demo ...``，需在仓库根目录执行。
     """
 
     parts = [
-        "quant-factor-demo",
+        "python",
+        "-m",
+        "quant.cli.factor_demo",
         "--model",
         "factor_passthrough",
         "--task",

@@ -1,8 +1,9 @@
 """同步相关命令行参数的注册与装配。
 
 按 AGENTS.md 的分层要求，参数定义放在库层，命令行模块只负责调用；这样
-``quant-build-daily-store``、``quant-market-check`` 和因子实验的日线数据源可以
-共用同一套开关，不会出现三份互相漂移的定义。
+``python -m quant.cli.build_daily_store``、
+``python -m quant.cli.market_check`` 和因子实验的日线数据源
+可以共用同一套开关，不会出现三份互相漂移的定义。
 """
 
 from __future__ import annotations

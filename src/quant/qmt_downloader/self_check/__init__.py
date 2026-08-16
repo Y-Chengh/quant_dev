@@ -15,8 +15,9 @@
 - ``summary``：摘要汇总与报告落盘。
 - ``checker``：编排层，建立共享状态并按固定顺序驱动各 mixin。
 
-本包只在外部 Python 的 ``quant-qmt-self-check`` 中使用，不在大 QMT 的导入链上，
-因此可以使用 ``from __future__ import annotations`` 等新版本语法。
+本包只在外部 Python 的 ``python -m quant.cli.qmt_self_check``
+中使用，不在大 QMT 的导入链上，因此可以使用
+``from __future__ import annotations`` 等新版本语法。
 
 公开接口与拆分前完全一致，调用方无需改动导入语句。
 """

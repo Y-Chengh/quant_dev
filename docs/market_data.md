@@ -3,10 +3,10 @@
 ## 启动网页
 
 ```powershell
-quant-market-server
+python -m quant.cli.market_server
 ```
 
-等价写法：`python -m quant.cli.market_server`；也可直接双击
+命令需在仓库根目录、已激活 `.venv` 的会话中执行；也可直接双击
 `scripts\start_market_service.bat`。可用 `--host`、`--port` 覆盖默认值。
 
 浏览器打开 <http://127.0.0.1:8000>，接口文档位于 <http://127.0.0.1:8000/docs>。

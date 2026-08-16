@@ -236,7 +236,8 @@ def _watermark_unchanged(
 
     只在 ``auto`` 模式下使用。NTFS 上目录的修改时间只在增删条目时变化，孙文件
     被原地重写不会冒泡，因此这一级可能漏掉「分区被原地修复」的情况；
-    ``--sync-mode full`` 与 ``quant-market-check`` 一律不走这条路径。
+    ``--sync-mode full`` 与 ``python -m quant.cli.market_check``
+    一律不走这条路径。
 
     参数：
         source_root: 大 QMT 落盘根目录。

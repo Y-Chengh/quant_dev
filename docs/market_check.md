@@ -2,10 +2,10 @@
 
 > 想按步骤照着做，先看 [上手指南](qmt_daily_guide.md)；本文是口径与参数的参考手册。
 
-`quant-market-check` 对**入库之后**的日线库做全样本业务校验，只读取并报告，
+`python -m quant.cli.market_check` 对**入库之后**的日线库做全样本业务校验，只读取并报告，
 不会修改、填充或删除任何数据。
 
-与 `quant-qmt-self-check` 的分工：那一侧审计大 QMT 落盘的 CSV 分区本身是否完整
+与 `python -m quant.cli.qmt_self_check` 的分工：那一侧审计大 QMT 落盘的 CSV 分区本身是否完整
 （哈希、行数、分区范围），这一侧审计转换入库后的数据在业务上是否合法，因此能发现
 转换过程引入的问题，也能与 5 分钟库交叉对账。两者共用同一套问题记录结构与报告列，
 输出可以直接拼在一起看。
@@ -13,14 +13,14 @@
 ## 用法
 
 ```powershell
-quant-market-check                                   # 审计全库
-quant-market-check --start-date 20240101 --end-date 20241231
-quant-market-check --codes 000001.SZ 600000.SH
-quant-market-check --cross-check-5m                  # 额外与 5 分钟库对账
-quant-market-check --no-auto-sync                    # 跳过启动时的自动增量检查
+python -m quant.cli.market_check                                   # 审计全库
+python -m quant.cli.market_check --start-date 20240101 --end-date 20241231
+python -m quant.cli.market_check --codes 000001.SZ 600000.SH
+python -m quant.cli.market_check --cross-check-5m                  # 额外与 5 分钟库对账
+python -m quant.cli.market_check --no-auto-sync                    # 跳过启动时的自动增量检查
 ```
 
-退出码与 `quant-qmt-self-check` 一致：0 通过，1 存在 ERROR，2 配置或执行失败。
+退出码与 `python -m quant.cli.qmt_self_check` 一致：0 通过，1 存在 ERROR，2 配置或执行失败。
 
 ## 报告
 
@@ -29,7 +29,7 @@ quant-market-check --no-auto-sync                    # 跳过启动时的自动�
 | 文件 | 内容 |
 | --- | --- |
 | `summary.md` / `summary.json` | 结论、区间、覆盖率、各类问题计数 |
-| `issues.csv` | 全部问题明细，列与 `quant-qmt-self-check` 完全一致 |
+| `issues.csv` | 全部问题明细，列与 `python -m quant.cli.qmt_self_check` 完全一致 |
 | `missing_spans.csv` | 逐证券的连续缺失区间 |
 | `coverage_by_date.csv` / `coverage_by_symbol.csv` | 逐日与逐证券覆盖率 |
 | `adjust_factor_audit.csv` | 每个除权事件的观测比例、声明因子与偏差 |

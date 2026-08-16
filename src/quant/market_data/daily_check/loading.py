@@ -28,7 +28,10 @@ class _ReferenceLoadingMixin(_DailyCheckerState):
             "SELECT min(min_date), max(max_date) FROM monthly_inventory"
         ).fetchone()
         if not row or row[0] is None:
-            raise ValueError("日线库中没有任何行情，请先运行 quant-build-daily-store")
+            raise ValueError(
+                "日线库中没有任何行情，"
+                "请先运行 python -m quant.cli.build_daily_store"
+            )
         self.start_date = _resolve_date(self.config.start_date, row[0])
         self.end_date = _resolve_date(self.config.end_date, row[1])
         if self.start_date > self.end_date:

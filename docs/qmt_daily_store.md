@@ -11,7 +11,7 @@
 <daily_root>/                                默认 D:\量化\qmt_daily
 ├─ qmt_daily.duckdb                          目录库：视图 + 小表，只有几 MB
 ├─ bars_1d/year=YYYY/month=MM/bars.parquet   唯一的大数据集，月粒度原子重写
-├─ reports/market_check/<时间戳>/            quant-market-check 报告
+├─ reports/market_check/<时间戳>/            python -m quant.cli.market_check 报告
 └─ .sync.lock                                进程间同步锁
 ```
 
@@ -34,13 +34,13 @@
 
 ```powershell
 # 首次全量入库
-quant-build-daily-store --qmt-output-root D:\qmt_kline_test1 --rebuild-all
+python -m quant.cli.build_daily_store --qmt-output-root D:\qmt_kline_test1 --rebuild-all
 # 日常增量（无增量时约 0.2 秒返回）
-quant-build-daily-store
+python -m quant.cli.build_daily_store
 # 只检查不写入
-quant-build-daily-store --dry-run
+python -m quant.cli.build_daily_store --dry-run
 # 强制完整扫描，并重算源文件摘要
-quant-build-daily-store --sync-mode full --sync-verify-hash
+python -m quant.cli.build_daily_store --sync-mode full --sync-verify-hash
 ```
 
 路径解析优先级统一为「显式传参 > 环境变量 > 下载器配置 > 内置回退」：
@@ -67,7 +67,7 @@ quant-build-daily-store --sync-mode full --sync-verify-hash
 
 Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条目时变化，**孙文件被原地
 重写不会冒泡**。因此它只用于缺省的 `auto` 模式；`--sync-mode full` 与
-`quant-market-check` 一律从 Tier 0 开始。
+`python -m quant.cli.market_check` 一律从 Tier 0 开始。
 
 全量重建实测 71.6 秒（12902 个分区 → 320 个月度分片 → 1633 万行）。其中约
 八成时间花在分片重写上；重活跑在内存连接并按 CPU 核数放开 DuckDB 线程。
@@ -94,10 +94,10 @@ Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条�
 `19700428`（共 725 行），入库时一律归一化为空。
 
 `open_date` 本身也可能缺失（QMT 未返回或字段损坏）。这种情况不按上市日过滤，
-放行该证券全部历史行情，交给 `quant-market-check` 的 `DAILY_OPEN_DATE_MISSING`
+放行该证券全部历史行情，交给 `python -m quant.cli.market_check` 的 `DAILY_OPEN_DATE_MISSING`
 提示核对，口径与 `quant.qmt_downloader.self_check` 保持一致。这条判据只在源 CSV
 内容变化触发重写的月份分片上生效；已建好的存量库不会因为规则改了就自动重写，
-升级后需要对已有库执行一次 `quant-build-daily-store --rebuild-all` 才能统一口径。
+升级后需要对已有库执行一次 `python -m quant.cli.build_daily_store --rebuild-all` 才能统一口径。
 
 ## 并发与锁
 
@@ -128,7 +128,7 @@ adjustment_factor(t) == close(t-1) / pre_close(t)      # t 为除权日
 系数一律由 `corporate_actions` 全历史累乘得到，**不**依赖查询窗口内的 `pre_close`，
 否则窗口起点不同就会算出不同的复权价。
 
-`quant-market-check` 会把 `adjustment_factor` 与行情反推的比例逐条对账，实测 2024 年
+`python -m quant.cli.market_check` 会把 `adjustment_factor` 与行情反推的比例逐条对账，实测 2024 年
 有约 3.4% 的事件两者对不上（多数只差两三分钱，约 30 条是大额分歧），报告里可以逐条查。
 
 ## Python 接口
@@ -154,5 +154,5 @@ client.get_corporate_actions(["000001.SZ"])
 只反映「库里有没有行情」，**不是**无偏池。
 
 **当前数据源的局限**：实测 `instrument_info` 快照里一只退市股都没有，
-`quant-market-check` 会以 `DAILY_NO_DELISTED_SYMBOLS` 如实报告。做长周期回测时
+`python -m quant.cli.market_check` 会以 `DAILY_NO_DELISTED_SYMBOLS` 如实报告。做长周期回测时
 需要知道结果被幸存者偏差抬高了。

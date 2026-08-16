@@ -28,7 +28,7 @@ issue 就直接归入本文件——自检报告本身可能是本仓库逻辑�
 `apply_errata_overrides`、`errata_pivot_frame`），目前有两处消费方，都在**读完源
 数据之后、产出各自结果之前**应用同一份勘误：
 
-- `quant-qmt-self-check`：逐日扫描读入某个交易日的日线分区后，先应用勘误覆盖，
+- `python -m quant.cli.qmt_self_check`：逐日扫描读入某个交易日的日线分区后，先应用勘误覆盖，
   再做缺失/异常等校验，避免已知的源数据问题被重复上报。可用
   `--errata-csv` 覆盖默认路径（`docs/qmt_source_data_errata.csv`）。
 - `quant.market_data.daily` 的增量入库（`ingest/sync.py`）：按月重建

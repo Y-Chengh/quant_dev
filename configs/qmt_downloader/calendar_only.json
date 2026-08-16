@@ -2,7 +2,7 @@
   // 只导出交易日历，不下载任何业务数据：datasets 仅含 trading_calendar 时
   // 不写整日水位，也不产生 staging，几秒即可跑完。
   // 用途：已有输出目录缺少 trading_calendar/snapshot=latest 时补一次，
-  // 让 quant-qmt-self-check 拿到权威日历。
+  // 让 python -m quant.cli.qmt_self_check 拿到权威日历。
   "output_root": "D:\\qmt_kline_test1",
   "mode": "backfill",
   // 区间需覆盖自检要审计的全部日期，多取无妨。

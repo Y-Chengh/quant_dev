@@ -45,19 +45,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 环境与命令补充
 
-解释器：仓库内 `.venv`（Python 3.11.9）。受限终端偶尔报找不到 `python`，
+解释器：仓库内 `.venv`（Python 3.11.9），下列命令都在已激活该环境的仓库根目录
+执行，写法遵循 `AGENTS.md` 命令行输出约定一节。受限终端偶尔报找不到 `python`，
 这是沙箱权限问题，见 `AGENTS.md` 本地 Python 环境一节，不要建议重装。
 
 `AGENTS.md` 验证要求之外常用的两条：
 
 ```powershell
 # 单个测试 / 单个用例
-.venv\Scripts\python.exe -m pytest tests\factor_research\test_metrics.py -q
-.venv\Scripts\python.exe -m pytest "tests\qmt_downloader\test_downloader.py::DownloaderTests::test_config_rejects_reverse_date_range" -q
+python -m pytest tests\factor_research\test_metrics.py -q
+python -m pytest "tests\qmt_downloader\test_downloader.py::DownloaderTests::test_config_rejects_reverse_date_range" -q
 
 # 类型检查（CI 中不阻断，本地可选）
-.venv\Scripts\python.exe -m mypy
+python -m mypy
 ```
 
 CI（[.github/workflows/ci.yml](.github/workflows/ci.yml)，windows-latest）依次执行
-`ruff check .` → `pytest -q` → `mypy`（`continue-on-error`）。本地至少跑通前两步。
+`python -m ruff check .` → `python -m pytest -q` → `python -m mypy`
+（`continue-on-error`）。本地至少跑通前两步。

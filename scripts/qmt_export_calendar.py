@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Export the miniQMT trading calendar to CSV for quant-qmt-self-check.
+"""Export the miniQMT trading calendar to CSV for the self check.
+
+Run the self check with "python -m quant.cli.qmt_self_check".
 
 This file must stay pure ASCII. The miniQMT editor stores pasted source as GBK,
 so any non-ASCII byte makes the utf-8 coding declaration above fail with

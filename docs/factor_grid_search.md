@@ -365,7 +365,7 @@ length_penalty_value =
 交换律算子会规范化输入顺序；默认禁止 `ts_correlation(x, x)`。所有进化和停止
 判断都只使用 selection，搜索完全结束后才计算预先指定数量候选的 holdout 指标。
 
-仓库中的 `quant-grid-search` 已使用该遗传搜索入口：主进程按固定种子进化，
+仓库中的 `python -m quant.cli.grid_search` 已使用该遗传搜索入口：主进程按固定种子进化，
 由 `SEARCH_N_JOBS` 个 worker 并行评价，最多搜索 8 代和 500 个唯一表达式。报告目录会额外生成
 `evolution_history.csv`，记录每代新增/累计评价数、合格候选数和最优适应度；Top K
 模型复验与 holdout 一样只在进化结束后运行，不参与适应度或父代选择。报告还会
@@ -376,7 +376,7 @@ holdout 起点；滚动图沿用 selection 锁定的因子方向，只用于观�
 
 `FactorGeneticSearch.run(progress_callback=...)` 支持批次级进度回调；内置串行和
 多进程会话每完成一个 `batch_size` 候选批次，就在主进程报告阶段、代次、完成数、
-失败数、selection 总预算、耗时和 ETA。`quant-grid-search` 默认启用控制台输出，
+失败数、selection 总预算、耗时和 ETA。`python -m quant.cli.grid_search` 默认启用控制台输出，
 并将 `SEARCH_BATCH_SIZE` 设为 8；减小该值会提高刷新频率，但也会增加任务调度开销。
 
 ## 8. 指标和排行榜
@@ -391,7 +391,7 @@ print(result.best_candidate.canonical)
 的 `candidates.json` 同时写出同值的 `expression_str` 字段；可直接复制到主实验：
 
 ```powershell
-quant-factor-demo --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
+python -m quant.cli.factor_demo --factors --factor-expressions 'cs_rank(delta(column(close),periods=5))'
 ```
 
 默认排序目标是 `selection_oriented_rank_ic`，并且 `objective` 强制要求以

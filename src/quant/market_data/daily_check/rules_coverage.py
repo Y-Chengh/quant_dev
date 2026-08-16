@@ -183,7 +183,10 @@ class _CoverageRulesMixin(_DailyCheckerState):
                 expected="存续期内每个交易日都应有一行（停牌日也会有 suspend_flag=1 的行）",
                 actual=f"连续缺失 {row.days} 个交易日",
                 possible_causes="源分区缺失、下载时该证券取数失败，或入库时被生命周期过滤误伤",
-                suggested_action="先用 quant-qmt-self-check 确认源侧是否也缺，再决定补下载还是重建分片",
+                suggested_action=(
+                    "先用 python -m quant.cli.qmt_self_check "
+                    "确认源侧是否也缺，再决定补下载还是重建分片"
+                ),
             )
 
     def _check_lifecycle_bounds(self, connection) -> None:
@@ -224,7 +227,10 @@ class _CoverageRulesMixin(_DailyCheckerState):
                 expected=f"上市日 {open_date} 至退市日 {expire_date} 之间",
                 actual=str(trade_date),
                 possible_causes="入库时依据的 instrument_info 快照与当前表不一致",
-                suggested_action="用 quant-build-daily-store --rebuild-all 按最新快照重建",
+                suggested_action=(
+                    "用 python -m quant.cli.build_daily_store "
+                    "--rebuild-all 按最新快照重建"
+                ),
             )
         unknown = connection.execute(
             """

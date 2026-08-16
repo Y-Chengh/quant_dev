@@ -37,8 +37,8 @@ class _SummaryMixin(_DailyCheckerState):
                 交叉校验。
 
         返回：
-            与 ``quant-qmt-self-check`` 同构的 ``AuditResult``，其 ``exit_code``
-            在存在 ERROR 时为 1。
+            与 ``python -m quant.cli.qmt_self_check`` 同构的
+            ``AuditResult``，其 ``exit_code`` 在存在 ERROR 时为 1。
         """
         report_dir.mkdir(parents=True, exist_ok=True)
         issues = _issues_frame(self.issues)

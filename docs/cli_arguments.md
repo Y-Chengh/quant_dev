@@ -1,12 +1,16 @@
 # 命令行参数说明
 
-本文档以主实验入口 `quant-factor-demo` 为主，说明当前 `argparse` 参数、默认行为和常用命令。文末附有数据构建、行情下载和单因子检查脚本的参数速查。
+本文档以主实验入口 `python -m quant.cli.factor_demo` 为主，说明当前 `argparse` 参数、默认行为和常用命令。文末附有数据构建、行情下载和单因子检查脚本的参数速查。
 
 ## 1. 基本用法
 
 ```powershell
-quant-factor-demo [通用参数] [所选模型的专属参数]
+python -m quant.cli.factor_demo [通用参数] [所选模型的专属参数]
 ```
+
+本文所有命令都写成 `python -m <模块>`，在仓库根目录、已激活 `.venv` 的会话中
+执行；`pip install -e .` 之后还可用的等价短命令别名见
+[README.md](../README.md#常用命令)。
 
 不传参数时，程序会：
 
@@ -24,9 +28,9 @@ quant-factor-demo [通用参数] [所选模型的专属参数]
 查看实际可用参数：
 
 ```powershell
-quant-factor-demo --help
-quant-factor-demo --model gradient_boosting_tree --help
-quant-factor-demo --model lightgbm --help
+python -m quant.cli.factor_demo --help
+python -m quant.cli.factor_demo --model gradient_boosting_tree --help
+python -m quant.cli.factor_demo --model lightgbm --help
 ```
 
 任务类型由 `--task` 控制：`classification`（默认）执行涨跌二分类，
@@ -144,7 +148,7 @@ NaN/无穷值样本会在日期切分前排除，与搜索 IC 的有效样本口
 ### 4.1 按默认配置运行
 
 ```powershell
-quant-factor-demo
+python -m quant.cli.factor_demo
 ```
 
 ### 4.2 设置 Top N、滑点和手续费
@@ -152,13 +156,13 @@ quant-factor-demo
 以下示例每天选择前 10 只证券，假设单边滑点 3 bps、单边手续费 1 bps：
 
 ```powershell
-quant-factor-demo --backtest-top-n 10 --slippage-bps 3 --commission-bps 1
+python -m quant.cli.factor_demo --backtest-top-n 10 --slippage-bps 3 --commission-bps 1
 ```
 
 ### 4.3 指定数据库和研究区间
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --database C:\data\market.duckdb `
   --start 2022-01-01 `
   --end 2025-01-01 `
@@ -169,45 +173,45 @@ quant-factor-demo `
 
 ```powershell
 $env:MARKET_DB_PATH = "C:\data\market.duckdb"
-quant-factor-demo
+python -m quant.cli.factor_demo
 ```
 
 ### 4.4 指定证券
 
 ```powershell
-quant-factor-demo --codes 000001.SZ 600000.SH 600519.SH
+python -m quant.cli.factor_demo --codes 000001.SZ 600000.SH 600519.SH
 ```
 
 让程序自动选择前 50 只证券：
 
 ```powershell
-quant-factor-demo --symbol-limit 50
+python -m quant.cli.factor_demo --symbol-limit 50
 ```
 
 ### 4.5 只研究部分因子
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --factors return_1d return_5d realized_vol volume_ratio_5d
 ```
 
 只研究一个搜索表达式：
 
 ```powershell
-quant-factor-demo --factors `
+python -m quant.cli.factor_demo --factors `
   --factor-expressions 'cs_rank(delta(column(close),periods=5))'
 ```
 
 因子缓存异常或需要强制重新计算时：
 
 ```powershell
-quant-factor-demo --no-factor-cache
+python -m quant.cli.factor_demo --no-factor-cache
 ```
 
 把缓存和运行产物放到指定目录：
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --factor-cache-dir D:\factor-cache `
   --log-dir D:\factor-logs
 ```
@@ -215,7 +219,7 @@ quant-factor-demo `
 ### 4.6 快速决策树基线
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --model simple_decision_tree `
   --max-depth 3 `
   --min-samples-leaf 20 `
@@ -225,7 +229,7 @@ quant-factor-demo `
 如果只想快速检查流程，可同时缩小证券数、日期范围和因子集合：
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --start 2024-01-01 `
   --validation-start 2024-10-01 `
   --symbol-limit 5 `
@@ -236,7 +240,7 @@ quant-factor-demo `
 ### 4.7 梯度提升树
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --model gradient_boosting_tree `
   --n-estimators 100 `
   --learning-rate 0.1 `
@@ -251,7 +255,7 @@ quant-factor-demo `
 偏稳健的常用起点：
 
 ```powershell
-quant-factor-demo `
+python -m quant.cli.factor_demo `
   --model lightgbm `
   --n-estimators 300 `
   --learning-rate 0.03 `
@@ -269,13 +273,13 @@ quant-factor-demo `
 ### 4.9 调试和详细日志
 
 ```powershell
-quant-factor-demo --debug
+python -m quant.cli.factor_demo --debug
 ```
 
 仅希望减少输出时：
 
 ```powershell
-quant-factor-demo --log-level WARNING
+python -m quant.cli.factor_demo --log-level WARNING
 ```
 
 ## 5. 使用注意事项
@@ -289,7 +293,7 @@ quant-factor-demo --log-level WARNING
 
 ## 6. 其他命令行脚本速查
 
-### 6.1 `quant-single-factor-test`
+### 6.1 `python -m quant.cli.single_factor_test`
 
 使用最近一个月行情检查 `return_1d` 因子。
 
@@ -302,12 +306,12 @@ quant-factor-demo --log-level WARNING
 | `--debug` | 关闭 | 开启调试标记。 |
 
 ```powershell
-quant-single-factor-test `
+python -m quant.cli.single_factor_test `
   --codes 000001.SZ 600000.SH `
   --output .\output\return_1d.csv
 ```
 
-### 6.2 `quant.market_data.build_database`
+### 6.2 `python -m quant.market_data.build_database`
 
 从年度压缩包构建标准化 Parquet 数据和 DuckDB 目录。
 
@@ -319,7 +323,7 @@ quant-single-factor-test `
 python -m quant.market_data.build_database --root D:\量化
 ```
 
-### 6.3 `quant-ifind-download`
+### 6.3 `python -m quant.cli.ifind_download`
 
 通过 iFinD 下载单只证券的分钟行情。账号密码优先从 `IFIND_USERNAME`、`IFIND_PASSWORD` 读取，缺失时交互输入。
 
@@ -336,7 +340,7 @@ python -m quant.market_data.build_database --root D:\量化
 | `--retry` | `3` | 单日请求失败时的最大尝试次数。 |
 
 ```powershell
-quant-ifind-download `
+python -m quant.cli.ifind_download `
   --code 600000.SH `
   --start 2026-03-01 `
   --end 2026-03-31 `
@@ -348,14 +352,14 @@ quant-ifind-download `
 
 > 日线数据从下载到跑实验的完整流程见 [qmt_daily_guide.md](qmt_daily_guide.md)。
 
-`quant-factor-demo` 通过 `--data-source` 选择行情来源，缺省 `market_service`
+`python -m quant.cli.factor_demo` 通过 `--data-source` 选择行情来源，缺省 `market_service`
 （本地 5 分钟库，与改动前行为完全一致）。数据源参数与模型参数一样采用两阶段解析：
 程序先读取 `--data-source`，再只注册所选数据源的专属参数，因此不同数据源可以有同名
 参数，某个数据源的专属参数不能用于另一个。
 
 ```powershell
-quant-factor-demo --help
-quant-factor-demo --data-source qmt_daily --help
+python -m quant.cli.factor_demo --help
+python -m quant.cli.factor_demo --data-source qmt_daily --help
 ```
 
 ### 7.1 `market_service`（默认，5 分钟）
@@ -390,7 +394,7 @@ quant-factor-demo --data-source qmt_daily --help
 
 ## 8. 日线库相关命令
 
-### 8.1 `quant-build-daily-store`
+### 8.1 `python -m quant.cli.build_daily_store`
 
 把大 QMT 落盘的日线 CSV 增量转成日线库。详见
 [qmt_daily_store.md](qmt_daily_store.md)。
@@ -405,7 +409,7 @@ quant-factor-demo --data-source qmt_daily --help
 
 退出码：0 正常，2 失败，3 日线库被占用而跳过。
 
-### 8.2 `quant-market-check`
+### 8.2 `python -m quant.cli.market_check`
 
 审计入库后的日线库，详见 [market_check.md](market_check.md)。
 

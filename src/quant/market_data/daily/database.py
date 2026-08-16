@@ -59,7 +59,8 @@ class DailyMarketDatabase:
         """
         if not self.path.is_file():
             raise FileNotFoundError(
-                f"日线库不存在: {self.path}；请先运行 quant-build-daily-store"
+                f"日线库不存在: {self.path}；"
+                "请先运行 python -m quant.cli.build_daily_store"
             )
         connection = duckdb.connect(str(self.path), read_only=True)
         try:

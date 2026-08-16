@@ -19,8 +19,13 @@
 ## 0. 一次性准备
 
 ```powershell
-.venv\Scripts\python.exe -m pip install -e ".[research,service,dev]"
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -e ".[research,service,dev]"
 ```
+
+必须先激活 `.venv`，`python` 才会指向仓库内的解释器；本文所有命令都假定当前
+会话已激活该环境，并在仓库根目录执行。
 
 设两个环境变量（否则用内置回退值 `D:\量化\qmt_daily\qmt_daily.duckdb` 和
 `D:\qmt_kline_test1`）：
@@ -66,7 +71,7 @@ $env:QMT_DAILY_DB_PATH = "D:\量化\qmt_daily\qmt_daily.duckdb"   # 日线库
 ## 2. 首次全量入库
 
 ```powershell
-quant-build-daily-store --rebuild-all
+python -m quant.cli.build_daily_store --rebuild-all
 ```
 
 实测参考（6450 个交易日 × 约 5200 只证券）：
@@ -92,11 +97,11 @@ D:\量化\qmt_daily\
 
 ## 3. 日常增量
 
-**平时什么都不用做。** `quant-factor-demo --data-source qmt_daily` 启动时会自动
+**平时什么都不用做。** `python -m quant.cli.factor_demo --data-source qmt_daily` 启动时会自动
 检查并入库。想手动跑：
 
 ```powershell
-quant-build-daily-store
+python -m quant.cli.build_daily_store
 ```
 
 实测耗时：
@@ -113,10 +118,10 @@ quant-build-daily-store
 常用开关：
 
 ```powershell
-quant-build-daily-store --dry-run              # 只看有没有增量，不写
-quant-build-daily-store --sync-mode full       # 跳过水位短路，完整扫描
-quant-build-daily-store --sync-verify-hash     # 额外重算源文件 SHA-256
-quant-build-daily-store --rebuild-all          # 整库重建
+python -m quant.cli.build_daily_store --dry-run              # 只看有没有增量，不写
+python -m quant.cli.build_daily_store --sync-mode full       # 跳过水位短路，完整扫描
+python -m quant.cli.build_daily_store --sync-verify-hash     # 额外重算源文件 SHA-256
+python -m quant.cli.build_daily_store --rebuild-all          # 整库重建
 ```
 
 **什么时候需要 `--rebuild-all`**：`instrument_info` 快照变了（比如终于有退市股了），
@@ -129,10 +134,10 @@ quant-build-daily-store --rebuild-all          # 整库重建
 不需要每次都跑，怀疑数据有问题时手动触发：
 
 ```powershell
-quant-market-check                                    # 全库
-quant-market-check --start-date 20240101 --end-date 20241231
-quant-market-check --codes 000001.SZ 600000.SH
-quant-market-check --cross-check-5m                   # 额外与 5 分钟库对账
+python -m quant.cli.market_check                                    # 全库
+python -m quant.cli.market_check --start-date 20240101 --end-date 20241231
+python -m quant.cli.market_check --codes 000001.SZ 600000.SH
+python -m quant.cli.market_check --cross-check-5m                   # 额外与 5 分钟库对账
 ```
 
 退出码：**0 通过 / 1 有 ERROR / 2 执行失败**，可以直接用在定时任务里。
@@ -169,13 +174,13 @@ quant-market-check --cross-check-5m                   # 额外与 5 分钟库对
 
 ```powershell
 # 用日线库
-quant-factor-demo --data-source qmt_daily
+python -m quant.cli.factor_demo --data-source qmt_daily
 
 # 现成的对照配置
-quant-factor-demo --config configs\factor_research\qmt_daily.example.yaml
+python -m quant.cli.factor_demo --config configs\factor_research\qmt_daily.example.yaml
 
 # 不写 --data-source 就还是原来的 5 分钟库，行为逐字节不变
-quant-factor-demo --config configs\factor_research\example.yaml
+python -m quant.cli.factor_demo --config configs\factor_research\example.yaml
 ```
 
 ### 复权怎么选
@@ -246,7 +251,7 @@ client.get_corporate_actions(["000001.SZ"])
 
 ## 7. 常见故障
 
-**`日线库不存在: ...；请先运行 quant-build-daily-store`**
+**`日线库不存在: ...；请先运行 python -m quant.cli.build_daily_store`**
 还没建库，或 `QMT_DAILY_DB_PATH` 指错了地方。
 
 **`证券生命周期快照缺失: ...\instrument_info\snapshot=latest\data.csv`**
@@ -270,8 +275,8 @@ ST 状态收紧到 5%——证券简称只有当前快照，历史某天是不�
 状态收紧会产生 3860 条误报，不收紧只剩 26 条。真要严格：`--apply-st-limit`。
 
 **想确认某天到底为什么缺数据**
-先跑 `quant-qmt-self-check` 看源侧 CSV 是不是也缺——那一侧查的是分区完整性
-（哈希、行数），和 `quant-market-check` 查的业务合法性是互补的。源侧就缺的话，
+先跑 `python -m quant.cli.qmt_self_check` 看源侧 CSV 是不是也缺——那一侧查的是分区完整性
+（哈希、行数），和 `python -m quant.cli.market_check` 查的业务合法性是互补的。源侧就缺的话，
 回下载器补下载；源侧有而库里没有，就 `--rebuild-all`。
 
 ---
@@ -279,12 +284,21 @@ ST 状态收紧到 5%——证券简称只有当前快照，历史某天是不�
 ## 8. 两条数据栈的关系
 
 ```
-iFinD 5 分钟 zip ──quant-build-market-db──→ market.duckdb (bars_5m)  ──┐
-                                                                       ├─→ quant-factor-demo
-大 QMT 日线 CSV ──quant-build-daily-store─→ qmt_daily.duckdb (bars_1d)─┘      --data-source
-                                                    ↑
-                                          quant-market-check
+iFinD 5 分钟 zip
+  │  python -m quant.market_data.build_database
+  ↓
+market.duckdb (bars_5m)
+  ↑
+  python -m quant.cli.factor_demo                          # 缺省 market_service
+
+大 QMT 日线 CSV
+  │  python -m quant.cli.build_daily_store
+  ↓
+qmt_daily.duckdb (bars_1d)
+  ↑
+  python -m quant.cli.factor_demo --data-source qmt_daily
+  python -m quant.cli.market_check                         # 只读审计
 ```
 
-两个库**完全独立**，互不影响。`quant-market-check --cross-check-5m` 会把 5 分钟
+两个库**完全独立**，互不影响。`python -m quant.cli.market_check --cross-check-5m` 会把 5 分钟
 行情聚合成日频跟日线对账——两者来自完全不同的数据源，对得上是很强的正确性证据。

@@ -61,7 +61,10 @@ class _IntegrityRulesMixin(_DailyCheckerState):
                 expected="每个 (code, trade_date) 只有一行",
                 actual=f"{hits} 行",
                 possible_causes="月度分片重写时源分区里存在重复主键，或分片文件残留",
-                suggested_action="用 quant-build-daily-store --rebuild-all 重建该月分片",
+                suggested_action=(
+                    "用 python -m quant.cli.build_daily_store "
+                    "--rebuild-all 重建该月分片"
+                ),
             )
 
     def _check_null_fields(self, connection) -> None:
@@ -134,7 +137,10 @@ class _IntegrityRulesMixin(_DailyCheckerState):
             expected="high >= max(open, close, low) 且 low <= min(open, close, high)",
             actual_expression="'ohlc=' || open || '/' || high || '/' || low || '/' || close",
             possible_causes="源行情本身有误；下载器的行级修正未覆盖到该行",
-            suggested_action="对照 quant-qmt-self-check 的 line_correct 报告确认源数据",
+            suggested_action=(
+                "对照 python -m quant.cli.qmt_self_check "
+                "的 line_correct 报告确认源数据"
+            ),
         )
 
     def _check_quantity_sanity(self, connection) -> None:

@@ -344,7 +344,7 @@ def write_grid_search_report(
         "",
         f"```text\n{best.canonical}\n```",
         "",
-        "可把上面的字符串直接加入 `quant-factor-demo`：",
+        "可把上面的字符串直接加入 `python -m quant.cli.factor_demo`：",
         "",
         "```powershell\n"
         f"{_reproduction_command(best.expression_str, context, metadata)}\n```",
@@ -411,7 +411,7 @@ def write_grid_search_report(
         "复现命令：",
         "",
         "```powershell",
-        "quant-grid-search",
+        "python -m quant.cli.grid_search",
         "```",
     ]
     report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
