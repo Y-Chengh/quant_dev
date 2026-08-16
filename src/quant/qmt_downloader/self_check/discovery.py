@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..config import normalize_partition_scope
 from .base import _CheckerState
 from .utils import _csv_row_count, _file_sha256, _select_paths_in_range
 
@@ -91,6 +92,9 @@ class _PartitionDiscoveryMixin(_CheckerState):
             if metadata is not None:
                 scope = metadata.get("partition_scope")
                 if isinstance(scope, dict):
+                    # 归一化后再比较：未下载财务数据的分区之间，财务回看起点和财务
+                    # 字段清单不影响日线内容，取值不同不应判为口径不符。
+                    scope = normalize_partition_scope(scope)
                     if self.reference_scope is None:
                         self.reference_scope = scope
                     elif scope != self.reference_scope:

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from .config import normalize_partition_scope
 from .dates import normalize_date
 
 
@@ -117,7 +118,8 @@ class DailyPartitionStore(object):
             partition_scope: 包含证券池、财务回看和字段版本的抽取范围字典。
 
         返回：
-            分区完整且完成元数据中的范围完全一致时返回 ``True``。
+            分区完整且完成元数据中的范围归一化后完全一致时返回 ``True``；归一化会
+            剔除未下载财务数据时无意义的财务键，见 ``normalize_partition_scope``。
         """
         if not self.is_partition_complete(dataset_path, partition_name, partition_value):
             return False
@@ -125,7 +127,9 @@ class DailyPartitionStore(object):
         try:
             with (directory / "_SUCCESS.json").open("r", encoding="utf-8") as handle:
                 metadata = json.load(handle)
-            return metadata.get("partition_scope") == partition_scope
+            return normalize_partition_scope(
+                metadata.get("partition_scope")
+            ) == normalize_partition_scope(partition_scope)
         except (OSError, ValueError, json.JSONDecodeError):
             return False
 
@@ -166,7 +170,9 @@ class DailyPartitionStore(object):
             with success_path.open("r", encoding="utf-8") as handle:
                 existing_metadata = json.load(handle)
             requested_scope = (metadata or {}).get("partition_scope")
-            if existing_metadata.get("partition_scope") != requested_scope:
+            if normalize_partition_scope(
+                existing_metadata.get("partition_scope")
+            ) != normalize_partition_scope(requested_scope):
                 raise ValueError(
                     "分区已由不同证券池或数据范围写入，请使用 repair 或独立输出目录: {0}".format(
                         directory

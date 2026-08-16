@@ -33,6 +33,8 @@ class _CheckerState:
     #: 各业务数据集名称到其分区根目录的映射。
     partition_paths: dict[str, Path]
     #: 首个已完成分区的证券池范围，作为后续分区的一致性基准；无基准时为 None。
+    #: 存入前已由 ``config.normalize_partition_scope`` 归一化，因此未下载财务数据时
+    #: 不含财务口径键；``symbols`` 等其余键保持原样，可直接供下游读取证券池。
     reference_scope: dict[str, Any] | None
     #: 已登记过生命周期问题的 ``(证券代码, 问题码)``，用于抑制重复告警。
     _lifecycle_issue_keys: set[tuple[str, str]]

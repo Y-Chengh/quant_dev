@@ -17,6 +17,10 @@ SUPPORTED_MODES = ("backfill", "incremental", "repair")
 # 交易日历只是整体覆盖的运行时快照，不按交易日分区，也不影响任何业务分区的内容，
 # 因此单独成名并在任务键、分区范围和整日水位范围中排除，见 BUSINESS_DATASETS。
 CALENDAR_DATASET = "trading_calendar"
+# 新增财务类数据集必须以 finance 开头命名，并同步加入下面的 FINANCE_DATASETS，否则
+# 该数据集的分区会在财务口径变化时被静默判为一致并跳过，混入两个回看窗口的数据。
+# 测试按 finance 前缀双向核对两份清单；确需其他命名时该核对不再可靠（只有已登记的
+# 才会被测出），必须改用显式清单。
 BUSINESS_DATASETS = (
     "kline_1d",
     "finance_raw",
@@ -24,6 +28,11 @@ BUSINESS_DATASETS = (
     "corporate_actions",
 )
 SUPPORTED_DATASETS = BUSINESS_DATASETS + (CALENDAR_DATASET,)
+# 只有下载这两个数据集时，财务回看起点和财务字段清单才会影响分区内容；未选择它们时
+# 这两项对 kline_1d、corporate_actions 分区没有任何作用，见 normalize_partition_scope。
+FINANCE_DATASETS = ("finance_raw", "finance_daily")
+# partition_scope 中只服务于财务数据集的键，未下载财务数据时不参与口径比较。
+FINANCE_SCOPE_KEYS = ("finance_lookback_start", "finance_fields")
 try:
     _SHANGHAI_TZ = ZoneInfo("Asia/Shanghai") if ZoneInfo is not None else None
 except (OSError, ValueError, KeyError):
@@ -32,6 +41,46 @@ except (OSError, ValueError, KeyError):
     _SHANGHAI_TZ = None
 if _SHANGHAI_TZ is None:
     _SHANGHAI_TZ = timezone(timedelta(hours=8), name="CST")
+
+
+def normalize_partition_scope(scope):
+    """把分区完成标记里的抽取范围归一化为可跨运行比较的形式。
+
+    ``partition_scope`` 由全部数据集共用同一份字典，因此财务回看起点和财务字段清单
+    也会被写进 ``kline_1d``、``corporate_actions`` 等非财务分区的完成标记。这两项只在
+    真正下载 ``finance_raw``/``finance_daily`` 时才影响分区内容；没下载财务数据却因为
+    它们取值不同就判定分区口径不符，属于误报，会让下载器拒绝写入、自检报出
+    ``PARTITION_SCOPE_MISMATCH``。本函数在比较前剔除这种情况下的财务键，处理原则与
+    ``save_instrument_history`` 不进入范围一致。
+
+    归一化只作用于比较，不回写任何文件：旧版本写出的分区（带财务键）与新版本写出的
+    分区（不带财务键）归一化后相等，既有输出目录无需重建或 repair。
+
+    ``datasets`` 缺失或不是列表时原样返回。此时无法确认本次是否下载了财务数据，
+    宁可维持严格比较，也不放过真实的口径变化。
+
+    参数：
+        scope: 完成标记中的 ``partition_scope`` 字典，通常包含 ``schema_version``、
+            ``datasets``、``symbols`` 及财务口径键；传入非字典时原样返回，便于调用方
+            直接把 ``metadata.get("partition_scope")`` 的结果交给本函数。
+
+    返回：
+        剔除无效财务键后的新字典；无需改动时返回原对象本身，不做多余复制。
+    """
+    if not isinstance(scope, dict):
+        return scope
+    datasets = scope.get("datasets")
+    if not isinstance(datasets, (list, tuple)):
+        return scope
+    names = set(str(name) for name in datasets)
+    if names.intersection(FINANCE_DATASETS):
+        return scope
+    if not any(key in scope for key in FINANCE_SCOPE_KEYS):
+        return scope
+    normalized = dict(scope)
+    for key in FINANCE_SCOPE_KEYS:
+        normalized.pop(key, None)
+    return normalized
 
 
 def strip_jsonc(text):

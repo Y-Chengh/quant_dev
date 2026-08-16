@@ -14,8 +14,11 @@ from unittest.mock import patch
 import pandas as pd
 
 from quant.qmt_downloader.config import (
+    BUSINESS_DATASETS,
+    FINANCE_DATASETS,
     DownloaderConfig,
     _resolve_incremental_lag_days,
+    normalize_partition_scope,
     strip_jsonc,
 )
 from quant.qmt_downloader.finance import materialize_finance_daily
@@ -1000,6 +1003,128 @@ class DownloaderTests(unittest.TestCase):
                     }
                 )
 
+    def test_finance_datasets_cover_every_business_finance_dataset(self):
+        """财务数据集清单必须与业务数据集中的财务表双向对应，不允许任一方向遗漏。"""
+        # 只断言子集发现不了"新增财务表却忘记登记"，而那正是会让新分区不写财务键、
+        # 改一次回看起点就被静默判为一致并跳过、混入两个回看窗口数据的方向。
+        # 因此按 finance 前缀锁住两个方向。该核对依赖 config.py 声明的命名约定：
+        # 已登记但不以 finance 开头的数据集会让这条失败，逼作者回去重新决定；
+        # 但既不用该前缀又漏登记时测不出来，此时只能改用显式清单。
+        self.assertEqual(
+            set(FINANCE_DATASETS),
+            set(name for name in BUSINESS_DATASETS if name.startswith("finance")),
+        )
+
+    def test_normalize_partition_scope_drops_finance_keys_without_finance(self):
+        """未选择财务数据集时，财务口径键不参与分区范围比较。"""
+        base = {
+            "schema_version": 2,
+            "datasets": ["corporate_actions", "kline_1d"],
+            "symbols": ["000001.SZ"],
+        }
+        earlier = dict(base, finance_lookback_start="19900101", finance_fields={"a": []})
+        later = dict(base, finance_lookback_start="20000101", finance_fields={"b": []})
+        self.assertEqual(
+            normalize_partition_scope(earlier), normalize_partition_scope(later)
+        )
+        # 归一化只服务于比较，不得就地修改调用方传入的字典。
+        self.assertEqual(earlier["finance_lookback_start"], "19900101")
+        self.assertEqual(normalize_partition_scope(earlier), base)
+        # 已经不含财务键的新版本范围与旧版本范围必须互相兼容。
+        self.assertEqual(normalize_partition_scope(base), base)
+
+    def test_normalize_partition_scope_keeps_finance_keys_when_selected(self):
+        """选择了财务数据集时，财务口径键仍必须参与比较。"""
+        for dataset in ("finance_raw", "finance_daily"):
+            scope = {
+                "schema_version": 2,
+                "datasets": sorted(["kline_1d", dataset]),
+                "symbols": ["000001.SZ"],
+                "finance_lookback_start": "19900101",
+            }
+            other = dict(scope, finance_lookback_start="20000101")
+            self.assertEqual(normalize_partition_scope(scope), scope)
+            self.assertNotEqual(
+                normalize_partition_scope(scope), normalize_partition_scope(other)
+            )
+
+    def test_normalize_partition_scope_keeps_scope_without_datasets(self):
+        """``datasets`` 缺失或非列表时无法判断口径，必须维持严格比较。"""
+        legacy = {"symbols": ["000001.SZ"], "finance_lookback_start": "19900101"}
+        self.assertEqual(normalize_partition_scope(legacy), legacy)
+        broken = dict(legacy, datasets="kline_1d")
+        self.assertEqual(normalize_partition_scope(broken), broken)
+        self.assertIsNone(normalize_partition_scope(None))
+
+    def test_finance_lookback_change_reuses_kline_only_partition(self):
+        """未下载财务数据时，只改财务回看起点不得让已完成分区失配。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = DailyPartitionStore(directory)
+            frame = pd.DataFrame([{"code": "000001.SZ", "trade_date": "20240102"}])
+            common = (
+                "kline_1d", "date", "20240102", frame, list(frame.columns),
+                ["code", "trade_date"], ["code"],
+            )
+            legacy_scope = {
+                "schema_version": 2,
+                "datasets": ["corporate_actions", "kline_1d"],
+                "symbols": ["000001.SZ"],
+                "finance_lookback_start": "19900101",
+                "finance_fields": {"balance": ["code"]},
+            }
+            store.write_partition(*common, metadata={"partition_scope": legacy_scope})
+            # 旧目录里带财务键的分区必须能被新版本不带财务键的范围直接复用。
+            current_scope = {
+                "schema_version": 2,
+                "datasets": ["corporate_actions", "kline_1d"],
+                "symbols": ["000001.SZ"],
+            }
+            self.assertTrue(
+                store.partition_matches_scope(
+                    "kline_1d", "date", "20240102", current_scope
+                )
+            )
+            result = store.write_partition(
+                *common, metadata={"partition_scope": current_scope}
+            )
+            self.assertEqual(result["status"], "skipped")
+            # 证券池仍然变化时必须照旧报错，归一化不得放宽这条守卫。
+            with self.assertRaises(ValueError):
+                store.write_partition(
+                    *common,
+                    metadata={
+                        "partition_scope": dict(
+                            current_scope, symbols=["000001.SZ", "600000.SH"]
+                        )
+                    }
+                )
+
+    def test_finance_lookback_change_still_blocks_finance_partition(self):
+        """下载了财务数据集时，改动财务回看起点仍必须拒绝写入。"""
+        with tempfile.TemporaryDirectory() as directory:
+            store = DailyPartitionStore(directory)
+            frame = pd.DataFrame([{"code": "000001.SZ", "trade_date": "20240102"}])
+            common = (
+                "kline_1d", "date", "20240102", frame, list(frame.columns),
+                ["code", "trade_date"], ["code"],
+            )
+            scope = {
+                "schema_version": 2,
+                "datasets": ["finance_daily", "kline_1d"],
+                "symbols": ["000001.SZ"],
+                "finance_lookback_start": "19900101",
+            }
+            store.write_partition(*common, metadata={"partition_scope": scope})
+            with self.assertRaises(ValueError):
+                store.write_partition(
+                    *common,
+                    metadata={
+                        "partition_scope": dict(
+                            scope, finance_lookback_start="20000101"
+                        )
+                    }
+                )
+
     def test_same_scope_key_change_rewrites_completed_partition(self):
         """范围一致但主键集合变化时应原地重写；范围不同时必须仍然报错。"""
         with tempfile.TemporaryDirectory() as directory:
@@ -1778,6 +1903,72 @@ class DownloaderTests(unittest.TestCase):
             self.assertEqual(
                 saved["calendar_symbol"].tolist(),
                 ["399001.SZ", "399001.SZ", "000001.SH", "000001.SH"],
+            )
+
+    def test_kline_only_run_omits_finance_scope_keys(self):
+        """不下载财务数据集时，分区范围不得写入财务回看起点和字段清单。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["datasets"] = ["kline_1d", "corporate_actions"]
+            runner = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            )
+            runner.run()
+            with (
+                Path(directory) / "kline_1d" / "date=20240102" / "_SUCCESS.json"
+            ).open("r", encoding="utf-8") as handle:
+                scope = json.load(handle)["partition_scope"]
+            self.assertNotIn("finance_lookback_start", scope)
+            self.assertNotIn("finance_fields", scope)
+            self.assertEqual(scope["datasets"], ["corporate_actions", "kline_1d"])
+
+            # 把已写好的分区改回旧版本格式（范围里带财务键），模拟用户既有输出目录，
+            # 再用新版本改一次财务回看起点重跑：必须整目录续跑并跳过该分区，
+            # 既不报口径不符，也不重写历史文件。
+            success_path = (
+                Path(directory) / "kline_1d" / "date=20240102" / "_SUCCESS.json"
+            )
+            with success_path.open("r", encoding="utf-8") as handle:
+                legacy = json.load(handle)
+            legacy["partition_scope"] = dict(
+                scope,
+                finance_lookback_start="19900101",
+                finance_fields={"balance": ["code"]},
+            )
+            with success_path.open("w", encoding="utf-8") as handle:
+                json.dump(legacy, handle, ensure_ascii=False, sort_keys=True)
+
+            values["finance_lookback_start"] = "20000101"
+            values["mode"] = "incremental"
+            values["start_date"] = "20240102"
+            values["end_date"] = "20240103"
+            second = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            )
+            second.run()
+            self.assertNotIn("finance_lookback_start", second.partition_scope)
+            with success_path.open("r", encoding="utf-8") as handle:
+                reused = json.load(handle)
+            # 完成标记未被重写，说明旧格式分区确实被判为口径一致而跳过。
+            self.assertEqual(
+                reused["partition_scope"]["finance_lookback_start"], "19900101"
+            )
+
+    def test_finance_run_keeps_finance_scope_keys(self):
+        """下载财务数据集时，财务回看起点和字段清单仍必须进入分区范围。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            runner = _build_runner(
+                DownloaderConfig(values), FakeContext(), lambda *args: None
+            )
+            runner.run()
+            with (
+                Path(directory) / "kline_1d" / "date=20240102" / "_SUCCESS.json"
+            ).open("r", encoding="utf-8") as handle:
+                scope = json.load(handle)["partition_scope"]
+            self.assertEqual(scope["finance_lookback_start"], "20230101")
+            self.assertEqual(
+                sorted(scope["finance_fields"]), sorted(FINANCE_FIELDS)
             )
 
     def test_trading_calendar_toggle_keeps_job_key_and_scope(self):

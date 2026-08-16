@@ -25,6 +25,7 @@ class _RunnerState(object):
         symbols: 本次任务实际使用的证券代码列表，已按配置解析和排序。
         batches: 证券池按 ``batch_size`` 切分后的批次列表。
         job_key: 由日期范围、模式、数据集和证券池派生的任务键，用于断点匹配。
-        partition_scope: 各数据集分区的证券池范围，用于跳过前的一致性核验。
+        partition_scope: 各数据集分区的证券池范围，用于跳过前的一致性核验；只有
+            选择了财务数据集时才包含 ``finance_lookback_start`` 与 ``finance_fields``。
         started_at: ``run`` 入口的时间戳（``time.time()`` 秒）；未开始时为 ``None``。
     """

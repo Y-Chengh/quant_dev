@@ -5,6 +5,7 @@ import json
 import time
 from datetime import datetime
 
+from ..config import FINANCE_DATASETS
 from ..gateway import FINANCE_FIELDS
 from ..storage import IssueCollector
 from .corporate_actions import _CorporateActionMixin
@@ -94,11 +95,18 @@ class QmtDailyDownloader(
             # 打开落表就会让已完成分区的范围核验失败并拒绝写入。
             "datasets": sorted(self.config.business_datasets),
             "symbols": list(self.symbols),
-            "finance_lookback_start": self.config.finance_lookback_start,
-            "finance_fields": {
-                name: list(fields) for name, fields in sorted(FINANCE_FIELDS.items())
-            },
         }
+        # 财务回看起点与财务字段清单只在下载财务数据集时才影响分区内容。未选择财务
+        # 数据集时不写入这两项，避免仅仅调整财务参数就把 kline_1d、corporate_actions
+        # 分区判为口径不符，处理原则与 save_instrument_history 一致。既有分区带着这
+        # 两项也仍能匹配：比较双方都先经过 config.normalize_partition_scope 归一化。
+        if set(self.config.business_datasets).intersection(FINANCE_DATASETS):
+            self.partition_scope["finance_lookback_start"] = (
+                self.config.finance_lookback_start
+            )
+            self.partition_scope["finance_fields"] = {
+                name: list(fields) for name, fields in sorted(FINANCE_FIELDS.items())
+            }
         self.batches = list(_iter_batches(self.symbols, self.config.batch_size))
         self.job_key = _make_job_key(self.config, self.symbols)
         run_id = "{0}_{1}".format(

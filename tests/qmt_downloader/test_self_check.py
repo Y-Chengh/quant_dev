@@ -110,6 +110,36 @@ def _write_kline(
     )
 
 
+def _write_kline_with_scope(
+    store: DailyPartitionStore,
+    date_value: str,
+    rows: list[dict[str, object]],
+    scope: dict[str, object],
+) -> None:
+    """按指定 ``partition_scope`` 写出一个测试日线分区。
+
+    参数：
+        store: 指向临时 QMT 根目录的日分区存储器。
+        date_value: 当前分区的八位交易日期。
+        rows: 当前日期各证券的标准 OHLCV 与停牌记录。
+        scope: 直接写入完成标记的抽取范围字典，用于构造分区之间的口径差异场景。
+
+    返回：
+        无返回值。
+    """
+
+    store.write_partition(
+        "kline_1d",
+        "date",
+        date_value,
+        pd.DataFrame(rows),
+        KLINE_COLUMNS,
+        ["code", "trade_date"],
+        ["code"],
+        {"partition_scope": scope},
+    )
+
+
 def _bar(
     code: str,
     date_value: str,
@@ -260,6 +290,112 @@ class QmtDataSelfCheckTests(unittest.TestCase):
             self.assertTrue((result.report_dir / "warnings.csv").is_file())
             self.assertTrue((result.report_dir / "info.csv").is_file())
             self.assertTrue((result.report_dir / "coverage_by_symbol.csv").is_file())
+
+    def test_finance_lookback_difference_is_not_scope_mismatch(self) -> None:
+        """未下载财务数据时，分区之间的财务回看差异不得报口径不符。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [
+                    {"code": "000001.SZ", "open_date": "19910403", "expire_date": ""},
+                    {"code": "600000.SH", "open_date": "19991110", "expire_date": ""},
+                ],
+                SYMBOLS,
+            )
+            base_scope = {
+                "schema_version": 2,
+                "datasets": ["corporate_actions", "kline_1d"],
+                "symbols": SYMBOLS,
+            }
+            # 回溯用 19900101、增量用 20000101，且第二天已按新版本不再写财务键。
+            _write_kline_with_scope(
+                store,
+                "20240102",
+                [
+                    _bar("000001.SZ", "20240102", 10.0, 9.8),
+                    _bar("600000.SH", "20240102", 20.0, 19.8),
+                ],
+                dict(
+                    base_scope,
+                    finance_lookback_start="19900101",
+                    finance_fields={"balance": ["code"]},
+                ),
+            )
+            _write_kline_with_scope(
+                store,
+                "20240103",
+                [
+                    _bar("000001.SZ", "20240103", 10.1, 10.0),
+                    _bar("600000.SH", "20240103", 20.1, 20.0),
+                ],
+                base_scope,
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            self.assertNotIn(
+                "PARTITION_SCOPE_MISMATCH", set(result.issues["issue_code"])
+            )
+            self.assertEqual(result.exit_code, 0)
+
+    def test_finance_lookback_difference_is_scope_mismatch_with_finance(self) -> None:
+        """下载了财务数据集时，财务回看差异仍必须报口径不符。"""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DailyPartitionStore(root)
+            calendar = _write_calendar(root, ["20240102", "20240103"])
+            _write_instruments(
+                store,
+                [
+                    {"code": "000001.SZ", "open_date": "19910403", "expire_date": ""},
+                    {"code": "600000.SH", "open_date": "19991110", "expire_date": ""},
+                ],
+                SYMBOLS,
+            )
+            base_scope = {
+                "schema_version": 2,
+                "datasets": ["finance_daily", "kline_1d"],
+                "symbols": SYMBOLS,
+            }
+            _write_kline_with_scope(
+                store,
+                "20240102",
+                [
+                    _bar("000001.SZ", "20240102", 10.0, 9.8),
+                    _bar("600000.SH", "20240102", 20.0, 19.8),
+                ],
+                dict(base_scope, finance_lookback_start="19900101"),
+            )
+            _write_kline_with_scope(
+                store,
+                "20240103",
+                [
+                    _bar("000001.SZ", "20240103", 10.1, 10.0),
+                    _bar("600000.SH", "20240103", 20.1, 20.0),
+                ],
+                dict(base_scope, finance_lookback_start="20000101"),
+            )
+
+            result = run_full_sample_self_check(
+                SelfCheckConfig(
+                    output_root=root,
+                    calendar_csv=calendar,
+                    report_dir=root / "audit",
+                )
+            )
+
+            self.assertIn("PARTITION_SCOPE_MISMATCH", set(result.issues["issue_code"]))
 
     def test_errata_csv_suppresses_known_source_data_issue(self) -> None:
         """勘误表覆盖 suspend_flag 后，源数据本身的已知问题不应再报错。
