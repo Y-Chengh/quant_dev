@@ -128,6 +128,48 @@ class MyFactorFactory(FactorFactory):
         return daily["close"] / daily["open"] - 1
 ```
 
+### 因子必须对价格尺度零次齐次
+
+上面这个因子是收盘价与开盘价的比值，把当天全部价格乘以同一个正常数后取值不变，
+这就是零次齐次。日线库只存原始不复权价、在读取层按 `--adjust` 复权，而后复权系数
+`hfq(code, t)` 是**逐证券**的：持有 20 年高分红股的系数可能是 50，次新股是 1.0。
+于是任何带价格量纲的因子（收盘价水平、`MA20`、`ATR`）在横截面上会主要由
+「上市时长 × 分红历史」决定，而不是由信号决定，而且因子值看上去完全正常，
+不会触发任何异常检测。
+
+这里的「不变」针对更换**前复权基准日**：`qfq(s | anchor) = hfq(s) / hfq(anchor)`，
+分母对该证券是常数。它不意味着 `--adjust none` 与 `--adjust hfq` 会算出同一个值——
+`hfq(code, t)` 跨除权日会跳档，两者本就不同，而且只有复权后的取值才是对的。
+
+确需偏离时在因子自己的模块里声明 `price_homogeneity`：整数 `k` 表示
+`g(c·P) = c**k · g(P)`，`None` 表示不满足任何齐次度。未声明按 `0` 处理。该属性
+不能上提到 `FactorFactory` 基类，否则会作废全部因子的历史缓存。
+
+```python
+from quant.factor_research.factor_factories.capabilities import (
+    dimensional_factor_names,     # k 为非零整数：带价格量纲，可按 c**k 解析换算
+    non_homogeneous_factor_names, # k 为 None：无解析形式，需个案评估
+)
+
+dimensional_factor_names()      # frozenset()
+non_homogeneous_factor_names()  # frozenset({'alpha_001'})
+```
+
+`alpha_001` 忠实复刻 WorldQuant 原式，在 `SignedPower` 里混用了一次齐次的 `close`
+和零次齐次的 `stddev(returns, 20)`，因此没有齐次度可言。翻转门槛约为「日收益率
+波动率 / 价格水平」，真实后复权系数恒为正且通常不小于 1，`close` 项始终压倒波动率
+项，所以它在实践中取值稳定——但这是个案结论，不能推广成 `k = 0`。
+
+`tests/factor_research/test_scale_invariance.py` 用逐证券缩放校验这些声明。注意扰动
+必须逐证券取不同系数：全截面统一乘一个常数时，横截面排名与 z-score 恒等不变，反而
+会给带价格量纲的因子发出假的合格证。
+
+另外，复权只作用于 `open`/`high`/`low`/`close`/`pre_close`，`amount` 恒不复权、
+`volume` 仅在 `--adjust-volume` 时反向调整。因子层目前只拿得到
+`open`/`high`/`low`/`close`/`volume`（`_prepare_daily_bars` 会丢掉 `amount`），
+所以同一表达式里 `close` 与成交量的相对尺度会随该开关变化，`close * volume` 这类
+近似成交额的写法在两种配置下口径不同。
+
 指定窗口和股票：
 
 ```powershell

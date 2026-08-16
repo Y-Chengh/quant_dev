@@ -27,6 +27,16 @@ class Alpha001Factory(FactorFactory):
 
     name = "alpha_001"
 
+    #: 原式在 ``SignedPower`` 内混用了一次齐次的 ``close`` 与零次齐次的
+    #: ``stddev(returns, 20)``，因此整体不满足任何齐次度：缩放价格会改变两支
+    #: 分量的相对大小，进而改变 ``Ts_ArgMax`` 选中的位置。翻转门槛在
+    #: ``c · close ≈ stddev(returns, 20)`` 处，即缩放系数约等于日收益率波动率
+    #: 除以价格水平（十元级股价、2% 日波动对应 1e-3 量级）。真实后复权系数恒为
+    #: 正且通常不小于 1，``close`` 项始终压倒波动率项，所以实践中取值稳定，
+    #: 但不能声明为 ``k = 0``。属性只声明在具体因子模块里，不能上提到
+    #: ``FactorFactory`` 基类，否则会作废全部因子缓存。
+    price_homogeneity = None
+
     def compute(self, bars: pd.DataFrame, daily: pd.DataFrame) -> pd.Series:
         # 先按证券和日期排序完成全部时序计算，最后恢复 daily 的原始行顺序。
         ordered = daily[["code", "trade_date", "close"]].copy()

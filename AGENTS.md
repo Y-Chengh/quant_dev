@@ -145,6 +145,30 @@
   `factor_factories/base.py` 的文件字节，改动基类会作废全部已有因子缓存。
   同理，`_build_daily_bars`、`_input_fingerprint` 和 `factor_dsl/` 下的文件也不得
   为了无关目的改动。
+- 因子默认必须对价格尺度零次齐次，即把窗口内全部价格乘以同一个正常数后取值不
+  变。后复权系数逐证券不同，带价格量纲的因子在横截面上会主要由「上市时长 ×
+  分红历史」决定，而不是由信号决定。确需偏离时在**自身模块**声明
+  `price_homogeneity`：整数 `k` 表示 `g(c·P) = c**k · g(P)`，`None` 表示不满足
+  任何齐次度（例如同一表达式里混用一次齐次的价格与零次齐次的收益率）。该属性
+  同样由 `factor_factories/capabilities.py` 用 `getattr` 读取，未声明按 `0` 处理，
+  且与 `requires_intraday` 一样**不得**上提到 `FactorFactory` 基类。汇总入口是
+  `dimensional_factor_names()`（`k` 为非零整数，可按 `c**k` 解析换算）与
+  `non_homogeneous_factor_names()`（`k` 为 `None`，无解析形式，只能个案评估）。
+  这里说的「不变」针对更换前复权基准日，因为 `qfq(s|anchor) = hfq(s)/hfq(anchor)`
+  的分母对该证券是常数；它**不**意味着 `--adjust` 选 `none` 与 `hfq` 结果相同，
+  `hfq(code, t)` 跨除权日会跳档，且只有复权后的取值才是对的。
+- 上一条由 `tests/factor_research/test_scale_invariance.py` 用**逐证券**缩放校验。
+  绝不能改成全截面统一缩放：那样横截面排名与 z-score 恒等不变，会给带价格量纲的
+  因子发出假的合格证。缩放系数还必须跨越多个数量级且不与样本价位同向单调，否则
+  横截面顺序不被打乱，用例会空转；该文件用一条独立用例守数量级跨度，并在横截面
+  排名用例里以前提断言守单调性。
+- 因子不得混用复权价与未复权量。日线库只复权 `open`/`high`/`low`/`close`/
+  `pre_close`，`amount` 恒不复权，`volume` 仅在 `adjust_volume=True` 时反向调整。
+  因此同一个表达式里 `close` 与成交量类字段的齐次度会随该开关变化，`close * volume`
+  这类近似成交额的写法在两种配置下口径不同。当前 `_prepare_daily_bars` 只保留
+  `open`/`high`/`low`/`close`/`volume`，日频因子拿不到 `amount`；若将来把它加入基础
+  列，`amount / volume` 推出的 VWAP 与已复权的 `close` 不同尺度，直接相比会在每个
+  除权日产生虚假跳变。
 - 新增或修改因子后，更新自动注册集合测试，并增加具体数值和边界条件测试。
 - 正式因子可以调用 `factor_dsl` 的基础算子，但搜索产生的临时候选不得注册到
   `FACTOR_FACTORIES`，避免改变 `DEFAULT_FEATURES`。
@@ -167,7 +191,9 @@
   Rank；每个等价类只保留节点数最少者参与父代选择、排行榜和后续 holdout，全部
   已评价表达式仍应保留在候选附件中供审计。
 - 选中的表达式只有在转为独立 `FactorFactory` 并补齐测试后，才能进入正式默认
-  因子集合。
+  因子集合；转正前必须按上文的逐证券缩放校验确认它对价格尺度零次齐次。DSL 允许
+  写出 `close` 这类带价格量纲的表达式，`rank`/`zscore` 也**不能**把它救回来——
+  横截面归一化只对全截面统一缩放不变，对逐证券的后复权系数并不免疫。
 - 搜索输出的 `canonical`/`expression_str` 可以通过主实验的
   `factor_expressions` 配置作为临时候选复用；解析必须走 DSL 白名单，不得使用
   `eval`，且不得把临时候选注册到 `FACTOR_FACTORIES`。
