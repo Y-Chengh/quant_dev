@@ -6,7 +6,8 @@
 
 **必须按上市日过滤**：大 QMT 的 ``fill_data=True`` 会给还没上市的证券也造一行
 （``suspend_flag=1``、``volume=0``、开高低收全等）。实测 2000-01-04 那天源文件
-5209 行里只有 750 行是真实行情。不过滤的话，库会膨胀到三倍，而且每只证券在 IPO
+5209 行里只有 750 行是真实行情。不过滤的话，库里的行数会翻一倍（全库实测源 3360 万行
+对入库 1635 万行，早年占比更高），而且每只证券在 IPO
 当天都会出现一个由平价段跳到真实价的假跳变，直接污染波动率与收益类因子。
 
 **open_date 缺失时不按上市日过滤**：``instrument_info`` 快照个别证券可能缺失
@@ -23,176 +24,26 @@
 月份口径不一致。升级到本版本后必须对已有库执行一次
 ``python -m quant.cli.build_daily_store --rebuild-all``
 统一口径，不能只依赖后续的增量同步。
+
+过滤原因的取值、每个原因的说明文案与汇总渲染在同包的 ``filter_reasons``；本模块
+只负责判定与落盘，单向依赖它。
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeVar
 
 import pandas as pd
 
 from quant.qmt_downloader import errata as qmt_errata
 
 from ..schema import sql_path
+from .filter_reasons import FILTERED_SAMPLE_LIMIT, FilteredSample, sort_by_reason
 
 #: 一次 ``COPY`` 写出的 Parquet 行组大小。
 _ROW_GROUP_SIZE = 200_000
-
-#: 单行被丢弃的全部原因，取值与 ``ShardResult.filtered`` 的键一致。顺序即 SQL 里
-#: ``CASE`` 分支的判定顺序，日志与报告一律按该顺序展示；一行只会命中第一个成立的
-#: 分支，因此各原因的行数互不重叠。``kept`` 不是丢弃原因，不出现在这里。
-#:
-#: 前三个原因是 ``trade_date`` 字段本身的三种坏法，分开统计是为了让日志直接指出
-#: 该去查源 CSV 的哪一类问题：整列缺失、位数不对、还是位数对但不是合法日期。
-#:
-#: 上市前的行同样分两类，判据是 ``suspend_flag``：等于 1 的是 QMT 的停牌占位填充行
-#: （无害，占绝大多数），不等于 1 的是上市前出现了真实行情（要么上市日错、要么行情
-#: 归属错，必须人工核对）。缺失按 0 处理，即归入需要核对的那一类，宁可多提醒。
-#: 该判据对齐 ``quant.qmt_downloader.self_check`` 的 ``DATA_BEFORE_LISTING`` 与
-#: ``quant.market_data.daily_check`` 的 ``DAILY_DATA_BEFORE_LISTING``：在 QMT 实际
-#: 只发 0/1 的前提下三处结论一致（``daily_check`` 查的是入库后 ``round()`` 过的
-#: TINYINT，理论上 0.6 这种中间值两边会分到不同桶，实务上不会出现）。改判据时
-#: 三处必须同步改。
-FILTER_REASONS: tuple[str, ...] = (
-    "trade_date_null",
-    "trade_date_bad_length",
-    "trade_date_unparsable",
-    "unknown_code",
-    "before_listing_padding",
-    "before_listing_with_data",
-    "after_delisting",
-)
-
-#: 每个过滤原因保留的样例行数上限。样例只用于人工核对过滤是否合理，取小值即可。
-FILTERED_SAMPLE_LIMIT = 10
-
-_ReasonValue = TypeVar("_ReasonValue")
-
-
-@dataclass(frozen=True, slots=True)
-class FilteredSample:
-    """一条被过滤掉的源行的样例，用于在日志里直接展示具体 case。
-
-    参数：
-        reason: 命中的过滤原因，取值见 ``FILTER_REASONS``。
-        code: 归一化（去空格转大写）后的证券代码；源值为空时是 ``None``。
-        trade_date: 源 CSV 里 ``trade_date`` 的**原样文本**，不做解析，以便
-            ``trade_date_*`` 三类原因能看到真正的坏值；源值为空时是 ``None``。
-        open_date: 该证券在生命周期表里的上市日，ISO 文本；缺失或代码不在表里
-            时是 ``None``。
-        expire_date: 该证券在生命周期表里的退市日，ISO 文本；缺失或代码不在表里
-            时是 ``None``。
-        suspend_flag: 源行的停牌标记，1 表示停牌；缺失时是 ``None``。
-        volume: 源行的成交量，单位股；缺失时是 ``None``。
-        close: 源行的收盘价，单位元，未复权；缺失时是 ``None``。
-    """
-
-    reason: str
-    code: str | None
-    trade_date: str | None
-    open_date: str | None
-    expire_date: str | None
-    suspend_flag: float | None
-    volume: float | None
-    close: float | None
-
-    def describe(self) -> str:
-        """返回一行可直接打印进日志或摘要的样例说明。
-
-        返回：
-            形如 ``000001.SZ 20000104 open=2001-01-01 expire=- suspend=1
-            volume=0 close=10.0000`` 的单行文本；缺失字段一律显示 ``-``。
-        """
-        return (
-            f"{_sample_text(self.code)} {_sample_text(self.trade_date)}"
-            f" open={_sample_text(self.open_date)}"
-            f" expire={_sample_text(self.expire_date)}"
-            f" suspend={_sample_number(self.suspend_flag)}"
-            f" volume={_sample_number(self.volume)}"
-            f" close={_sample_number(self.close, digits=4)}"
-        )
-
-
-def _sample_text(value: str | None) -> str:
-    """把样例里的文本字段格式化为日志片段。
-
-    参数：
-        value: 原始文本；``None`` 或去空格后为空都视为缺失。
-
-    返回：
-        去掉首尾空格的原文；缺失时返回 ``-``。
-    """
-    if value is None:
-        return "-"
-    text = str(value).strip()
-    return text or "-"
-
-
-def _sample_number(value: float | None, digits: int = 0) -> str:
-    """把样例里的数值字段格式化为日志片段。
-
-    参数：
-        value: 原始数值；``None`` 与 ``NaN`` 都视为缺失。
-        digits: 保留的小数位数，0 表示按整数展示（价格类传 4）。
-
-    返回：
-        定点格式的数值文本；缺失时返回 ``-``。
-    """
-    if value is None:
-        return "-"
-    number = float(value)
-    if math.isnan(number) or math.isinf(number):
-        return "-"
-    return f"{number:.{digits}f}"
-
-
-def sort_by_reason(
-    items: Iterable[tuple[str, _ReasonValue]],
-) -> tuple[tuple[str, _ReasonValue], ...]:
-    """按 ``FILTER_REASONS`` 的固定顺序排列 ``(原因, 值)`` 序列。
-
-    日志、同步报告与命令行摘要都走这一个排序，保证同一次运行里各处的原因顺序
-    完全一致，也保证顺序与 SQL 判定顺序对得上。
-
-    参数：
-        items: 待排序的 ``(原因, 值)`` 序列，值可以是行数、样例元组等任意类型；
-            不在 ``FILTER_REASONS`` 里的原因排在末尾并按原因名升序，以免将来
-            新增原因时漏排。
-
-    返回：
-        排序后的元组。
-    """
-    ranks = {reason: index for index, reason in enumerate(FILTER_REASONS)}
-    return tuple(
-        sorted(items, key=lambda item: (ranks.get(item[0], len(ranks)), item[0]))
-    )
-
-
-def fill_missing_reasons(
-    counts: Iterable[tuple[str, int]],
-) -> tuple[tuple[str, int], ...]:
-    """把稀疏的过滤计数补齐成 ``FILTER_REASONS`` 全集。
-
-    只在**同步结束的总汇总**处用。分片级统计刻意保持稀疏：全量重建有 320 个月，
-    每行都铺开七个原因会把日志淹掉；而总汇总只出现一次，把 0 显式写出来才能区分
-    「查过了，一行都没有」和「压根没跑这条判据」——后者正是没列 0 时读日志的人
-    会产生的误解。
-
-    参数：
-        counts: 实际发生过的 ``(原因, 行数)``；缺席的原因视为 0 行。不在
-            ``FILTER_REASONS`` 里的原因会原样保留，不会被丢掉。
-
-    返回：
-        按 ``FILTER_REASONS`` 排序、含全部原因的 ``((原因, 行数), ...)``。
-    """
-    filled = dict.fromkeys(FILTER_REASONS, 0)
-    for reason, count in counts:
-        filled[reason] = filled.get(reason, 0) + count
-    return sort_by_reason(filled.items())
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,7 +11,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from quant.cli import build_daily_store
-from quant.market_data.daily.ingest.shards import FILTER_REASONS, FilteredSample
+from quant.market_data.daily.ingest.filter_reasons import (
+    FILTER_REASONS,
+    FilteredSample,
+    describe_reason,
+)
 from quant.market_data.daily.ingest.sync import SyncReport
 
 
@@ -100,6 +104,40 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
         )
         for reason in FILTER_REASONS:
             self.assertIn(f"{reason}: 0 行", output)
+
+    def test_summary_explains_every_reason_and_gives_verdict(self) -> None:
+        """摘要要逐个原因给出判定、含义、处理，并在末尾下结论。"""
+        output, _ = self._run_main(
+            SyncReport(
+                status="synced",
+                rows_after=100,
+                filtered_totals=tuple(
+                    (reason, 12 if reason == "before_listing_padding" else 0)
+                    for reason in FILTER_REASONS
+                ),
+            )
+        )
+        for reason in FILTER_REASONS:
+            info = describe_reason(reason)
+            self.assertIn(f"判定: {info.condition}", output)
+            self.assertIn(f"含义: {info.meaning}", output)
+            self.assertIn(f"处理: {info.action}", output)
+        self.assertIn("本次过滤全部落在预期原因内，无需人工核对。", output)
+
+    def test_summary_flags_reasons_needing_review(self) -> None:
+        """命中需核对的原因时，终端最后一行要点名，不能埋在几十行说明里。"""
+        output, _ = self._run_main(
+            SyncReport(
+                status="synced",
+                rows_after=100,
+                filtered_totals=tuple(
+                    (reason, 5 if reason == "before_listing_with_data" else 0)
+                    for reason in FILTER_REASONS
+                ),
+            )
+        )
+        self.assertIn("需人工核对: before_listing_with_data(5 行)", output)
+        self.assertNotIn("全部落在预期原因内", output)
 
     def test_summary_lists_filtered_samples_under_each_reason(self) -> None:
         """每个原因下面要能直接看到具体被滤掉的行，不必再去翻源 CSV。"""

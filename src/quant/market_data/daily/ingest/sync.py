@@ -26,16 +26,15 @@ from quant.qmt_downloader import errata as qmt_errata
 from ..schema import SCHEMA_VERSION, apply_schema
 from . import aux_tables, catalog, state
 from .detect import SourceDelta, detect_changes, watermark_values
-from .locking import DailyStoreLockedError, open_catalog, sync_lock
-from .shards import (
+from .filter_reasons import (
     FILTERED_SAMPLE_LIMIT,
     FilteredSample,
-    existing_shards,
     fill_missing_reasons,
-    rewrite_month_shard,
+    format_filter_summary,
     sort_by_reason,
-    source_months,
 )
+from .locking import DailyStoreLockedError, open_catalog, sync_lock
+from .shards import existing_shards, rewrite_month_shard, source_months
 from .source import DATASET_ACTIONS, DATASET_CALENDAR, resolve_source_root
 
 logger = logging.getLogger(__name__)
@@ -151,7 +150,7 @@ class SyncReport:
         message: 面向用户的一句话说明。
         elapsed_seconds: 本次同步耗时秒数。
         filtered_totals: 本次同步全部重写月份按过滤原因汇总的丢弃行数，
-            ``((原因, 行数), ...)``，原因取值与顺序见 ``shards.FILTER_REASONS``。
+            ``((原因, 行数), ...)``，原因取值与顺序见 ``filter_reasons.FILTER_REASONS``。
             只要有至少一个月真读过源 CSV 并跑过过滤判定，就**含全部原因**，
             一行都没丢弃的写 0，这样读日志的人能区分「查过了是 0」和「压根没跑
             这条判据」；一个月都没跑过时（无增量、dry-run，或本次只删了整月源
@@ -414,12 +413,10 @@ def _apply_delta(
     # 没跑过过滤时留空元组，让下游据此跳过整个过滤小节——否则「全 0」会谎称查过。
     totals = fill_missing_reasons(filtered_totals.items()) if filtered_months else ()
     filtered_samples = _pick_filtered_samples(sample_pool)
-    filtered_summary = ", ".join(f"{reason}={count}" for reason, count in totals)
     message = f"已入库: dirty={len(delta.dirty)} removed={len(delta.removed)} shards={rewritten} rows={rows_after}"
     logger.info("[daily-sync] %s 用时 %.1fs", message, elapsed)
-    if filtered_summary:
-        logger.info("[daily-sync] 本次同步累计过滤: %s", filtered_summary)
-        _log_filtered_samples(dict(totals), filtered_samples)
+    for line in format_filter_summary(totals, filtered_samples):
+        logger.info("[daily-sync] %s", line)
     if delta.pending:
         logger.warning("[daily-sync] %d 个分区无法判定，已跳过", len(delta.pending))
     return SyncReport(
@@ -468,32 +465,6 @@ def _pick_filtered_samples(
         chosen.sort(key=lambda sample: (sample.code or "", sample.trade_date or ""))
         picked.append((reason, tuple(chosen)))
     return sort_by_reason(picked)
-
-
-def _log_filtered_samples(
-    totals: dict[str, int],
-    filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...],
-) -> None:
-    """把最终样例逐行写进日志。
-
-    参数：
-        totals: ``{原因: 本次同步该原因的丢弃总行数}``，只用于在标题行里回显总量。
-        filtered_samples: ``_pick_filtered_samples`` 的返回值。
-
-    返回：
-        无返回值。
-    """
-    for reason, samples in filtered_samples:
-        if not samples:
-            continue
-        logger.info(
-            "[daily-sync] 过滤样例 %s（共 %d 行，随机 %d 条）:",
-            reason,
-            totals.get(reason, 0),
-            len(samples),
-        )
-        for sample in samples:
-            logger.info("[daily-sync]   %s", sample.describe())
 
 
 def _ensure_schema(database: Path, daily_root: Path) -> None:

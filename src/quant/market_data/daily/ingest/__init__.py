@@ -5,6 +5,7 @@
 - ``source``：只读扫描 QMT 落盘目录，解析源根目录、枚举分区、读取完成标记。
 - ``state``：``ingest_state`` 与 ``dataset_metadata`` 的读写。
 - ``detect``：四级轻量增量检查，产出 ``SourceDelta``。
+- ``filter_reasons``：入库过滤原因的取值、说明文案与汇总渲染。
 - ``shards``：``bars_1d`` 月度 Parquet 的重建与原子替换，含上市日过滤。
 - ``aux_tables``：证券生命周期、交易日历与除权送转三张辅助表的刷新。
 - ``catalog``：``bars_1d`` 视图、月度库存、证券库存与同步运行记录。

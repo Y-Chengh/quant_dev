@@ -19,15 +19,20 @@ import pandas as pd
 
 from quant.market_data.daily import AdjustMode, DailyMarketClient
 from quant.market_data.daily.ingest import DailySyncConfig, aux_tables, sync_daily_store
-from quant.market_data.daily.ingest.locking import DailyStoreLockedError, sync_lock
-from quant.market_data.daily.ingest.shards import (
+from quant.market_data.daily.ingest.filter_reasons import (
+    FILTER_REASON_INFO,
     FILTER_REASONS,
     FILTERED_SAMPLE_LIMIT,
     FilteredSample,
+    describe_reason,
+    format_filter_summary,
+    sort_by_reason,
+)
+from quant.market_data.daily.ingest.locking import DailyStoreLockedError, sync_lock
+from quant.market_data.daily.ingest.shards import (
     ShardResult,
     rewrite_month_shard,
     shard_directory,
-    sort_by_reason,
 )
 from quant.market_data.daily.ingest.sync import _pick_filtered_samples
 from quant.market_data.daily.schema import apply_schema
@@ -217,6 +222,92 @@ class FilterReasonOrderingTest(unittest.TestCase):
         state = random.getstate()
         _pick_filtered_samples(pool)
         self.assertEqual(random.getstate(), state)
+
+
+class FilterSummaryFormatTest(unittest.TestCase):
+    """过滤汇总的渲染：说明是否齐全、结论是否正确。"""
+
+    def _sample(self, reason: str, code: str) -> FilteredSample:
+        """构造一条只填了必要字段的样例。
+
+        参数：
+            reason: 该样例命中的过滤原因。
+            code: 证券代码。
+
+        返回：
+            其余字段一律为空的 ``FilteredSample``。
+        """
+        return FilteredSample(
+            reason=reason, code=code, trade_date="20240102", open_date=None,
+            expire_date=None, suspend_flag=None, volume=None, close=None,
+        )
+
+    def test_every_reason_has_registered_explanation(self) -> None:
+        """七个原因都必须登记说明，不能靠兜底文案糊弄过去。"""
+        self.assertEqual(set(FILTER_REASON_INFO), set(FILTER_REASONS))
+        for reason in FILTER_REASONS:
+            info = describe_reason(reason)
+            self.assertTrue(info.condition.strip())
+            self.assertTrue(info.meaning.strip())
+            self.assertTrue(info.action.strip())
+        # 只有占位填充行是「非 0 也正常」的，其余六个正常都应为 0。
+        self.assertEqual(
+            {reason for reason in FILTER_REASONS if not describe_reason(reason).needs_review},
+            {"before_listing_padding"},
+        )
+
+    def test_unknown_reason_falls_back_instead_of_raising(self) -> None:
+        """漏登记说明时要走兜底，不能让整段日志输出崩掉。"""
+        info = describe_reason("brand_new_reason")
+        self.assertTrue(info.needs_review)
+        self.assertIn("没有登记判定说明", info.condition)
+        lines = format_filter_summary((("brand_new_reason", 3),))
+        self.assertIn("  brand_new_reason: 3 行", lines)
+
+    def test_summary_carries_condition_meaning_and_action(self) -> None:
+        """每个原因下面都要带判定、含义、处理三行，0 行的也不例外。"""
+        totals = tuple((reason, 0) for reason in FILTER_REASONS)
+        lines = format_filter_summary(totals)
+        for reason in FILTER_REASONS:
+            info = describe_reason(reason)
+            self.assertIn(f"  {reason}: 0 行", lines)
+            self.assertIn(f"    判定: {info.condition}", lines)
+            self.assertIn(f"    含义: {info.meaning}", lines)
+            self.assertIn(f"    处理: {info.action}", lines)
+
+    def test_verdict_says_expected_when_only_padding_hit(self) -> None:
+        """只命中占位填充时结论应是「无需人工核对」。"""
+        totals = tuple(
+            (reason, 17252623 if reason == "before_listing_padding" else 0)
+            for reason in FILTER_REASONS
+        )
+        self.assertEqual(
+            format_filter_summary(totals)[-1], "本次过滤全部落在预期原因内，无需人工核对。"
+        )
+
+    def test_verdict_names_reasons_needing_review(self) -> None:
+        """命中需核对的原因时，结论要点名是哪几个、各多少行。"""
+        totals = tuple(
+            (reason, {"before_listing_padding": 100, "unknown_code": 7,
+                      "before_listing_with_data": 3}.get(reason, 0))
+            for reason in FILTER_REASONS
+        )
+        verdict = format_filter_summary(totals)[-1]
+        self.assertEqual(verdict, "需人工核对: unknown_code(7 行)、before_listing_with_data(3 行)")
+        # 占位填充行数再多也不该被点名。
+        self.assertNotIn("before_listing_padding", verdict)
+
+    def test_samples_are_nested_under_their_reason(self) -> None:
+        """样例要挂在对应原因的说明之后，而不是全堆在末尾。"""
+        totals = (("unknown_code", 2), ("after_delisting", 0))
+        samples = (("unknown_code", (self._sample("unknown_code", "999999.SZ"),)),)
+        lines = format_filter_summary(totals, samples)
+        self.assertLess(lines.index("  unknown_code: 2 行"), lines.index("    随机样例 1 条:"))
+        self.assertLess(lines.index("    随机样例 1 条:"), lines.index("  after_delisting: 0 行"))
+
+    def test_empty_totals_render_nothing(self) -> None:
+        """没跑过过滤时整节都不输出，免得空标题误导。"""
+        self.assertEqual(format_filter_summary(()), ())
 
 
 class DailySyncTest(unittest.TestCase):

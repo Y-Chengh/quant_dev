@@ -10,6 +10,7 @@ from pathlib import Path
 from quant.config import default_qmt_daily_database
 from quant.market_data.daily.ingest import DailySyncConfig, sync_daily_store
 from quant.market_data.daily.ingest.cli_support import add_sync_arguments
+from quant.market_data.daily.ingest.filter_reasons import format_filter_summary
 
 DEFAULT_LOG_FORMAT = "%(asctime)s %(levelname)-8s %(name)s - %(message)s"
 
@@ -215,16 +216,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     if report.message:
         _emit(lines, report.message)
-    if report.filtered_totals:
-        _emit(lines, "本次同步累计过滤（按原因）:")
-        samples_by_reason = dict(report.filtered_samples)
-        for reason, count in report.filtered_totals:
-            _emit(lines, f"  {reason}: {count} 行")
-            samples = samples_by_reason.get(reason, ())
-            if samples:
-                _emit(lines, f"    随机样例 {len(samples)} 条:")
-            for sample in samples:
-                _emit(lines, f"      {sample.describe()}")
+    for line in format_filter_summary(report.filtered_totals, report.filtered_samples):
+        _emit(lines, line)
     for dataset, partition_key, reason in report.pending[:20]:
         _emit(lines, f"待定分区 {dataset}/{partition_key}: {reason}")
     if len(report.pending) > 20:
