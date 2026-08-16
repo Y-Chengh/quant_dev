@@ -76,6 +76,7 @@ VS Code 会把带注释的 `.json` 标红，`.vscode/settings.json` 已把 `conf
 D:\qmt_data\
 ├─ kline_1d\date=20260812\data.csv
 ├─ instrument_info\snapshot=latest\data.csv
+├─ instrument_info\observed_date=20260812\data.csv
 ├─ trading_calendar\snapshot=latest\data.csv
 ├─ finance_raw\table=income\announce_date=20260812\data.csv
 ├─ finance_daily\date=20260812\data.csv
@@ -94,6 +95,7 @@ D:\qmt_data\
 | --- | --- | --- |
 | `kline_1d\` | `date=YYYYMMDD` | 日 K 线，一个交易日一个分区，列为 `code,trade_date,open,high,low,close,pre_close,volume,amount,suspend_flag`。非交易日不建目录，因此日期序列本身带有节假日跳跃。 |
 | `instrument_info\` | `snapshot=latest` | 标的基础信息，不按日期分区而是整体覆盖为最新状态，列为 `code,instrument_name,open_date,expire_date,is_trading,instrument_status`。 |
+| `instrument_info\` | `observed_date=YYYYMMDD` | 与快照同列同内容的**观测日**副本，累积证券简称等状态的历史，见下文“证券名称历史”。由 `save_instrument_history` 控制，缺省开启。分区名不是 `date`，因为它是观测日而非交易日。 |
 | `trading_calendar\` | `snapshot=latest` | 大 QMT 交易日历，同样整体覆盖为最新状态，列为 `trade_date,calendar_symbol`。仅当 `datasets` 含 `trading_calendar` 时生成。 |
 | `finance_raw\` | `table=<来源表>\announce_date=YYYYMMDD` | 原始财务，先按来源表再按实际公告日两级分区；公告日缺失的记录落到 `announce_date=unknown`。 |
 | `finance_daily\` | `date=YYYYMMDD` | 日级财务快照，每天每只股票一行。 |
@@ -185,6 +187,20 @@ D:\qmt_data\
 落表失败按所选数据集失败处理：记 `ERROR`、不推进整日水位，重跑时已完成的业务分区会因范围一致而快速跳过。
 
 `quant-qmt-self-check` 会自动读取这份快照作为权威交易日历，无需再传 `--calendar-csv`；没有权威日历时自检只能用已有分区日期推导，会直接报 `CALENDAR_INFERRED_FROM_PARTITIONS` 错误，因为那种退化模式发现不了整个交易日分区完全缺失。手工导出到 `trading_calendar/data.csv` 的扁平单列文件仍然被识别。
+
+## 证券名称历史
+
+`instrument_info/snapshot=latest` 每次运行整体覆盖，只保留**当前**的证券简称，因此还原不了「某只票 2019 年叫什么名字」，也就还原不了历史 ST 状态——而大 QMT 没有任何接口能补回过去的名称，这份信息一旦没存就永久丢失。为此下载器在写快照的同时，会把同一份内容按观测日再存一份到 `instrument_info/observed_date=YYYYMMDD/`，列与快照完全一致，从此累积出可审计的名称历史。
+
+分区键是**观测日**而不是交易日或 `end_date`：回补 2020 年行情时，大 QMT 返回的仍是今天的简称，按请求区间归档等于凭空造出一段假历史。按观测日归档只声明「这一天我们看到的是这些名称」，回补、重跑和跨年长任务都不会污染其它日期。日期取配置读取时刻的 Asia/Shanghai 日历日，日志和 `describe()` 中的 `observation_date` 就是它。分区名刻意不叫 `date`：同一根目录下 `kline_1d/date=` 是交易日，两者语义不同，同名迟早会被下游当成一回事。
+
+**不是每次运行都会产生观测日分区**：它随 `instrument_info` 一起写，而后者只在 `datasets` 含 `kline_1d` 时收集，且排在 `no_work`（增量已是最新）、区间无交易日、交易日历失败这三条提前返回之后。因此只跑财务或日历的任务不会留下当天的记录；周末和节假日则取决于水位——自动增量已是最新时不写，而固定区间的 `backfill`/`repair` 任务在周末跑照样会写下当天的观测记录。名称历史序列本身带空洞是正常的，按前一个有记录的观测日向前填充即可，不要当成缺陷。
+
+同一观测日重复运行时与已有分区**求并集**而不是直接覆盖，本次结果优先，本次没有返回的代码保留已有行。正常情况下窄证券池的任务也不会让内容缩水——查询池已经并入了上一份快照中未退市的代码——但以下三种情况会让当日快照真的变小：快照被删除或损坏时它退化成只有本次证券池；因详情读取失败被移出快照的代码随之消失；`end_date` 靠前的回补任务会按 `end_date` 前一日裁掉更早退市的代码。求并集是这些情况下唯一的兜底。已有分区存在、非空却读不出来时**放弃写入**并记 `WARNING`，绝不覆盖：那份文件里可能还有当天唯一的一份名称。
+
+用 `save_instrument_history` 关闭，缺省开启。全市场一天的 `data.csv` 约几百 KB，但每个分区还有一份内嵌完整证券池的 `_SUCCESS.json`（实测约 106 KB），合计一年约 130 MB。该开关不参与任务键、分区范围和整日水位范围的计算，随时开关都不会让断点失效或触发范围冲突。落表失败只记 `WARNING` 不中断任务：它是纯增量的旁路数据，没有下游流程依赖，此时快照本身已经写成功。
+
+这份历史目前只负责积累，`quant-qmt-self-check` 和日线入库都仍然只读 `snapshot=latest`，历史涨跌停校验的 ST 口径限制见 [market_check.md](market_check.md)。
 
 ## 财务日期口径
 

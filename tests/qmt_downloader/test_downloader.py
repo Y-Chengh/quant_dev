@@ -19,7 +19,11 @@ from quant.qmt_downloader.config import (
     strip_jsonc,
 )
 from quant.qmt_downloader.finance import materialize_finance_daily
-from quant.qmt_downloader.gateway import FINANCE_FIELDS, QmtGateway
+from quant.qmt_downloader.gateway import (
+    FINANCE_FIELDS,
+    INSTRUMENT_INFO_COLUMNS,
+    QmtGateway,
+)
 from quant.qmt_downloader.logging_setup import (
     configure_logging,
     log_run_configuration,
@@ -27,6 +31,7 @@ from quant.qmt_downloader.logging_setup import (
 )
 from quant.qmt_downloader.runner import QmtDailyDownloader
 from quant.qmt_downloader.runner.helpers import _format_elapsed, _make_job_key
+from quant.qmt_downloader.runner.instruments import INSTRUMENT_HISTORY_PARTITION
 from quant.qmt_downloader.state import CheckpointStore
 from quant.qmt_downloader.storage import DailyPartitionStore
 from quant.qmt_downloader.validation import (
@@ -1817,6 +1822,216 @@ class DownloaderTests(unittest.TestCase):
             self.assertFalse((root / "kline_1d").exists())
             self.assertFalse((root / "run_complete").exists())
 
+    def test_instrument_history_writes_observation_date_partition(self):
+        """证券详情除快照外还应按观测日再落一份同列同内容的分区。"""
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            _build_runner(config, FakeContext(), lambda *args: None).run()
+            root = Path(directory)
+            history = _history_directory(root, config)
+            self.assertTrue((history / "data.csv").is_file())
+            self.assertTrue((history / "_SUCCESS.json").is_file())
+            snapshot = pd.read_csv(
+                str(root / "instrument_info" / "snapshot=latest" / "data.csv"),
+                dtype=str,
+            )
+            saved = pd.read_csv(str(history / "data.csv"), dtype=str)
+            self.assertEqual(saved["code"].tolist(), ["000001.SZ", "600000.SH"])
+            # 列顺序与取值都必须与快照一致，下游才能把两者当同一张表读。
+            pd.testing.assert_frame_equal(saved, snapshot)
+            # 分区键必须是观测日而不是请求区间终点，否则回补历史会造出假名称历史。
+            self.assertNotEqual(config.observation_date, config.end_date)
+
+    def test_instrument_history_merges_same_observation_day(self):
+        """同一观测日重复运行应与已有分区求并集，且不改写本次取值。"""
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            runner = _build_runner(config, FakeContext(), lambda *args: None)
+            runner.symbols = ["000001.SZ", "600000.SH"]
+            runner.partition_scope = {}
+            # 按生产形状构造：已有分区一定是分区写入层补齐过的完整六列。
+            existing = pd.DataFrame(
+                [
+                    {
+                        "code": "000001.SZ",
+                        "instrument_name": "旧名",
+                        "open_date": "20240101",
+                        "expire_date": "",
+                        "is_trading": "True",
+                        "instrument_status": "0",
+                    },
+                    {
+                        "code": "888888.SZ",
+                        "instrument_name": "本次未覆盖",
+                        "open_date": "20200101",
+                        "expire_date": "",
+                        "is_trading": "True",
+                        "instrument_status": "0",
+                    },
+                ]
+            )
+            _write_history_partition(runner.store, config, existing)
+            frame, failed = runner._collect_instrument_info()
+            self.assertFalse(failed)
+            self.assertEqual(len(frame), 2)
+            saved = pd.read_csv(
+                str(_history_directory(Path(directory), config) / "data.csv"), dtype=str
+            )
+            self.assertEqual(
+                saved["code"].tolist(), ["000001.SZ", "600000.SH", "888888.SZ"]
+            )
+            names = dict(zip(saved["code"], saved["instrument_name"]))
+            # 本次返回的代码以本次名称为准，本次没有返回的代码原样保留。
+            self.assertEqual(names["000001.SZ"], "000001.SZ")
+            self.assertEqual(names["888888.SZ"], "本次未覆盖")
+            # 合并不得改写本次取值。缺列导致的整数列提升由退化场景用例覆盖，
+            # 这里守的是生产形状下合并结果与快照逐格一致。
+            snapshot = pd.read_csv(
+                str(Path(directory) / "instrument_info" / "snapshot=latest" / "data.csv"),
+                dtype=str,
+            )
+            refreshed = saved[saved["code"].isin(snapshot["code"])].reset_index(drop=True)
+            pd.testing.assert_frame_equal(refreshed, snapshot)
+
+    def test_instrument_history_same_day_rerun_is_idempotent(self):
+        """当日重跑代码集合不变时，观测日分区应逐字节不变且不出现重复代码。"""
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            _build_runner(config, FakeContext(), lambda *args: None).run()
+            history = _history_directory(Path(directory), config) / "data.csv"
+            first = history.read_bytes()
+            _build_runner(config, FakeContext(), lambda *args: None).run()
+            self.assertEqual(history.read_bytes(), first)
+            saved = pd.read_csv(str(history), dtype=str)
+            self.assertEqual(saved["code"].tolist(), ["000001.SZ", "600000.SH"])
+
+    def test_instrument_history_merge_handles_degenerate_existing_partitions(self):
+        """已有分区为空、缺 code 列或缺列时合并都不得改写本次取值。"""
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            runner = _build_runner(config, FakeContext(), lambda *args: None)
+            frame = pd.DataFrame(
+                [
+                    {
+                        "code": "000001.SZ",
+                        "instrument_name": "平安银行",
+                        "open_date": "19910403",
+                        "expire_date": None,
+                        "is_trading": True,
+                        "instrument_status": 0,
+                    }
+                ]
+            )
+            cases = {
+                "分区不存在": None,
+                "空分区": pd.DataFrame(columns=["code", "instrument_name"]),
+                "缺 code 列": pd.DataFrame([{"instrument_name": "无主行"}]),
+                # 生产不可达，但列一旦扩容就可能出现；不能让它把本次取值改写掉。
+                "少列": pd.DataFrame([{"code": "888888.SZ", "instrument_name": "旧行"}]),
+            }
+            for label, existing in cases.items():
+                with self.subTest(label):
+                    shutil.rmtree(
+                        _history_directory(Path(directory), config), ignore_errors=True
+                    )
+                    if existing is not None:
+                        _write_history_partition(
+                            runner.store, config, existing, list(existing.columns)
+                        )
+                    merged = runner._merge_instrument_history(
+                        frame, config.observation_date
+                    )
+                    row = merged[merged["code"] == "000001.SZ"].iloc[0]
+                    # 按落盘文本断言：合并给缺列补 NaN 会把整数列提升成浮点，
+                    # 归档下来的 instrument_status 就从 0 变成 0.0。
+                    self.assertEqual(str(row["instrument_status"]), "0")
+                    self.assertEqual(str(row["is_trading"]), "True")
+
+    def test_instrument_history_refuses_to_overwrite_unreadable_partition(self):
+        """已有观测日分区读不出来时必须放弃写入，不能覆盖掉当天唯一的名称。"""
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            runner = _build_runner(config, FakeContext(), lambda *args: None)
+            runner.symbols = ["000001.SZ"]
+            runner.partition_scope = {}
+            history = _history_directory(Path(directory), config)
+            history.mkdir(parents=True, exist_ok=True)
+            # 造一份 pandas 读不出来的 data.csv：正文含非 UTF-8 字节。
+            corrupted = b"\xef\xbb\xbfcode\n\xff\xfe bad\n"
+            (history / "data.csv").write_bytes(corrupted)
+            _, failed = runner._collect_instrument_info()
+            self.assertFalse(failed)
+            self.assertEqual((history / "data.csv").read_bytes(), corrupted)
+            warnings = [
+                item
+                for item in runner.issues.items
+                if item["dataset"] == "instrument_info" and item["level"] == "WARNING"
+            ]
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("拒绝覆盖", warnings[0]["message"])
+
+    def test_instrument_history_can_be_disabled(self):
+        """关闭开关后只写快照，不得生成任何观测日分区。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            values["save_instrument_history"] = False
+            config = DownloaderConfig(values)
+            self.assertFalse(config.save_instrument_history)
+            _build_runner(config, FakeContext(), lambda *args: None).run()
+            instrument_root = Path(directory) / "instrument_info"
+            self.assertTrue((instrument_root / "snapshot=latest" / "data.csv").is_file())
+            self.assertEqual(list(instrument_root.glob("observed_date=*")), [])
+
+    def test_instrument_history_failure_only_warns(self):
+        """名称历史落表失败只记警告，不影响快照与本次日线收集。"""
+        with tempfile.TemporaryDirectory() as directory:
+            config = _config(directory)
+            runner = _build_runner(config, FakeContext(), lambda *args: None)
+            runner.symbols = ["000001.SZ"]
+            runner.partition_scope = {}
+
+            def _explode(frame, observation_date):
+                raise OSError("磁盘写满")
+
+            runner._merge_instrument_history = _explode
+            _, failed = runner._collect_instrument_info()
+            self.assertFalse(failed)
+            self.assertTrue(
+                (
+                    Path(directory) / "instrument_info" / "snapshot=latest" / "data.csv"
+                ).is_file()
+            )
+            warnings = [
+                item
+                for item in runner.issues.items
+                if item["dataset"] == "instrument_info" and item["level"] == "WARNING"
+            ]
+            self.assertEqual(len(warnings), 1)
+            self.assertEqual(warnings[0]["date"], config.observation_date)
+
+    def test_instrument_history_toggle_keeps_job_key_and_scope(self):
+        """开关名称历史不得改变任务键、水位范围和分区抽取范围。"""
+        with tempfile.TemporaryDirectory() as directory:
+            values = _config_values(directory)
+            enabled = DownloaderConfig(values)
+            values["save_instrument_history"] = False
+            disabled = DownloaderConfig(values)
+            self.assertTrue(enabled.save_instrument_history)
+            self.assertEqual(
+                _make_job_key(enabled, ["000001.SZ"]),
+                _make_job_key(disabled, ["000001.SZ"]),
+            )
+            self.assertEqual(enabled.watermark_scope, disabled.watermark_scope)
+            self.assertRegex(enabled.observation_date, r"^\d{8}$")
+            runner = _build_runner(enabled, FakeContext(), lambda *args: None)
+            runner.run()
+            with (
+                Path(directory) / "kline_1d" / "date=20240102" / "_SUCCESS.json"
+            ).open("r", encoding="utf-8") as handle:
+                metadata = json.load(handle)
+            self.assertNotIn("save_instrument_history", metadata["partition_scope"])
+            self.assertNotIn("observation_date", metadata["partition_scope"])
+
     def test_expired_sectors_join_sector_symbol_pool(self):
         """过期板块应并入板块证券池，让回测能看到已退市标的。"""
         gateway = _build_gateway(FakeContext())
@@ -2153,6 +2368,48 @@ def _config_values(directory):
         "datasets": ["kline_1d", "finance_raw", "finance_daily", "corporate_actions"],
         "finance_lookback_start": "20230101",
     }
+
+
+def _history_directory(root, config):
+    """定位证券名称历史的观测日分区目录。
+
+    参数：
+        root: 下载输出根目录。
+        config: 当前 ``DownloaderConfig``，提供观测日。
+
+    返回：
+        ``instrument_info/observed_date=YYYYMMDD`` 目录的 ``Path``；不保证已存在。
+    """
+    return (
+        Path(root)
+        / "instrument_info"
+        / f"{INSTRUMENT_HISTORY_PARTITION}={config.observation_date}"
+    )
+
+
+def _write_history_partition(store, config, frame, columns=None):
+    """预置一份同观测日的名称历史分区，用于验证合并行为。
+
+    参数：
+        store: 目标 ``DailyPartitionStore``。
+        config: 当前 ``DownloaderConfig``，提供观测日。
+        frame: 待写入的已有记录表。
+        columns: 规范列顺序；缺省按生产形状补齐全部 ``INSTRUMENT_INFO_COLUMNS``。
+
+    返回：
+        分区存储层返回的写入结果字典。
+    """
+    return store.write_partition(
+        "instrument_info",
+        INSTRUMENT_HISTORY_PARTITION,
+        config.observation_date,
+        frame,
+        INSTRUMENT_INFO_COLUMNS if columns is None else columns,
+        ["code"] if "code" in frame.columns else [],
+        ["code"] if "code" in frame.columns else [],
+        {},
+        overwrite=True,
+    )
 
 
 def _gateway_logger_name(context):

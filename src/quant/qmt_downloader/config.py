@@ -130,6 +130,10 @@ class DownloaderConfig(object):
         self.incremental_lag_days = _resolve_incremental_lag_days(
             lag_value, self.incremental_lag_decision_time, self.incremental_lag_auto_cutoff
         )
+        # 本次运行**观测**到证券名称等快照信息的日期，复用上面的配置读取时刻，保证
+        # 同一次运行内取值稳定。它是观测日而不是交易日：回补 2020 年行情时，大 QMT
+        # 返回的仍是今天的证券简称，按 end_date 归档等于凭空伪造一段历史。
+        self.observation_date = self.incremental_lag_decision_time.strftime("%Y%m%d")
         self.no_work = False
         self.symbols = tuple(str(item).strip() for item in values.get("symbols", []) if str(item).strip())
         self.sector = str(values.get("sector", "")).strip()
@@ -164,6 +168,12 @@ class DownloaderConfig(object):
         self.business_datasets = tuple(
             name for name in self.datasets if name != CALENDAR_DATASET
         )
+        # instrument_info 只写 snapshot=latest 时会被每次运行整体覆盖，历史证券简称
+        # （也就是历史 ST 状态）无法回溯，而大 QMT 没有任何接口能补回过去的名称。
+        # 打开本开关会在快照之外按观测日再存一份，从此逐日累积出可审计的名称历史。
+        # 它刻意不进入 job_key、partition_scope 与 watermark_scope：这份数据不改变
+        # 任何业务分区的内容，纳入范围只会让开关一切换就把已有分区判为口径不符。
+        self.save_instrument_history = bool(values.get("save_instrument_history", True))
         self.allow_partial_finance = bool(values.get("allow_partial_finance", False))
         self.calendar_symbol = str(values.get("calendar_symbol", "000001.SH")).strip().upper()
         self.watermark_scope = {
@@ -233,6 +243,7 @@ class DownloaderConfig(object):
                 "incremental_lag_decision_time",
                 self.incremental_lag_decision_time.strftime("%Y-%m-%d %H:%M:%S %z"),
             ),
+            ("observation_date", self.observation_date),
             ("no_work", str(self.no_work)),
             ("symbol_count", str(len(self.symbols))),
             ("symbols", ", ".join(self.symbols)),
@@ -251,6 +262,7 @@ class DownloaderConfig(object):
             ("datasets", ", ".join(str(name) for name in self.datasets)),
             ("save_trading_calendar", str(self.save_trading_calendar)),
             ("business_datasets", ", ".join(self.business_datasets)),
+            ("save_instrument_history", str(self.save_instrument_history)),
             ("allow_partial_finance", str(self.allow_partial_finance)),
             ("calendar_symbol", self.calendar_symbol),
             (
