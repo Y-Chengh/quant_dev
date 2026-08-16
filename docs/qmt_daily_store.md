@@ -93,6 +93,12 @@ Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条�
 另注：`expire_date` 的 QMT 哨兵不止 `99999999`，实测快照里还有 `19700427` 与
 `19700428`（共 725 行），入库时一律归一化为空。
 
+`open_date` 本身也可能缺失（QMT 未返回或字段损坏）。这种情况不按上市日过滤，
+放行该证券全部历史行情，交给 `quant-market-check` 的 `DAILY_OPEN_DATE_MISSING`
+提示核对，口径与 `quant.qmt_downloader.self_check` 保持一致。这条判据只在源 CSV
+内容变化触发重写的月份分片上生效；已建好的存量库不会因为规则改了就自动重写，
+升级后需要对已有库执行一次 `quant-build-daily-store --rebuild-all` 才能统一口径。
+
 ## 并发与锁
 
 DuckDB 是**单写多读**，一个活跃的写连接会同时挡住其它进程的读。为此：

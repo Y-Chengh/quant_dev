@@ -8,6 +8,19 @@
 （``suspend_flag=1``、``volume=0``、开高低收全等）。实测 2000-01-04 那天源文件
 5209 行里只有 750 行是真实行情。不过滤的话，库会膨胀到三倍，而且每只证券在 IPO
 当天都会出现一个由平价段跳到真实价的假跳变，直接污染波动率与收益类因子。
+
+**open_date 缺失时不按上市日过滤**：``instrument_info`` 快照个别证券可能缺失
+上市日（QMT 未返回或字段本身损坏）。缺失时不应把该证券整批数据都丢弃，而是
+放行全部历史行情，交给入库后的 ``quant-market-check``（``DAILY_OPEN_DATE_MISSING``）
+提示需要核对；口径与 ``quant.qmt_downloader.self_check`` 对同一情形的处理一致
+（``_build_lifecycle`` 用审计区间首日兜底，同样不整体排除该证券）。
+
+**该过滤条件变化前建好的库需要全量重建**：增量同步只重写源 CSV 内容变化过的
+月份分片，不会因为过滤规则本身改了就主动重写历史分片。因此这条判据变化
+上线后，此前因 open_date 缺失被整体剔除的证券在存量库里仍会保持缺失状态，
+只有之后新落盘或被判定为脏的月份才会按新逻辑补齐，导致同一证券在库内前后
+月份口径不一致。升级到本版本后必须对已有库执行一次 ``quant-build-daily-store
+--rebuild-all`` 统一口径，不能只依赖后续的增量同步。
 """
 
 from __future__ import annotations
@@ -126,8 +139,8 @@ def rewrite_month_shard(
                     ON upper(trim(k.code)) = e.code AND trim(k.trade_date) = e.trade_date
                 WHERE k.trade_date IS NOT NULL
                   AND length(trim(k.trade_date)) = 8
-                  AND l.open_date IS NOT NULL
-                  AND CAST(strptime(k.trade_date, '%Y%m%d') AS DATE) >= CAST(l.open_date AS DATE)
+                  AND (l.open_date IS NULL
+                       OR CAST(strptime(k.trade_date, '%Y%m%d') AS DATE) >= CAST(l.open_date AS DATE))
                   AND (l.expire_date IS NULL
                        OR CAST(strptime(k.trade_date, '%Y%m%d') AS DATE) <= CAST(l.expire_date AS DATE))
                 ORDER BY trade_date, code

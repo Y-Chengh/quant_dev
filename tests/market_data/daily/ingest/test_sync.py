@@ -162,6 +162,56 @@ class DailySyncTest(unittest.TestCase):
             self.assertNotIn(("300001.SZ", "2024-01-04"), pairs)
             self.assertIn(("000001.SZ", "2024-01-02"), pairs)
 
+    def test_missing_open_date_does_not_drop_the_symbol(self) -> None:
+        """open_date 缺失时不应把该证券的全部行情都过滤掉，口径与 self_check 一致。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            _build_source(source)
+            store = DailyPartitionStore(source)
+            instruments = pd.DataFrame([
+                {"code": "000001.SZ", "instrument_name": "平安银行", "open_date": "",
+                 "expire_date": "", "is_trading": "", "instrument_status": "0"},
+                {"code": "600000.SH", "instrument_name": "浦发银行", "open_date": "20240103",
+                 "expire_date": "19700427", "is_trading": "", "instrument_status": "0"},
+                {"code": "300001.SZ", "instrument_name": "*ST特锐", "open_date": "20240101",
+                 "expire_date": "20240103", "is_trading": "", "instrument_status": "0"},
+            ])
+            store.write_partition("instrument_info", "snapshot", "latest", instruments,
+                                  INSTRUMENT_COLUMNS, ["code"], ["code"], _SCOPE, overwrite=True)
+            report = sync_daily_store(self._config(base))
+            self.assertEqual(report.status, "synced")
+            client = DailyMarketClient(base / "daily" / "qmt_daily.duckdb")
+            bars = client.get_klines_1d(["000001.SZ"], date(2024, 1, 1), date(2024, 1, 31),
+                                        include_suspended=True)
+            self.assertEqual(len(bars), 3)
+
+    def test_missing_open_date_still_filters_by_expire_date(self) -> None:
+        """open_date 缺失只放开下界，退市日过滤上界必须照常生效。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            _build_source(source)
+            store = DailyPartitionStore(source)
+            instruments = pd.DataFrame([
+                {"code": "000001.SZ", "instrument_name": "平安银行", "open_date": "",
+                 "expire_date": "", "is_trading": "", "instrument_status": "0"},
+                {"code": "600000.SH", "instrument_name": "浦发银行", "open_date": "20240103",
+                 "expire_date": "19700427", "is_trading": "", "instrument_status": "0"},
+                {"code": "300001.SZ", "instrument_name": "*ST特锐", "open_date": "",
+                 "expire_date": "20240103", "is_trading": "", "instrument_status": "0"},
+            ])
+            store.write_partition("instrument_info", "snapshot", "latest", instruments,
+                                  INSTRUMENT_COLUMNS, ["code"], ["code"], _SCOPE, overwrite=True)
+            report = sync_daily_store(self._config(base))
+            self.assertEqual(report.status, "synced")
+            client = DailyMarketClient(base / "daily" / "qmt_daily.duckdb")
+            bars = client.get_klines_1d(["300001.SZ"], date(2024, 1, 1), date(2024, 1, 31),
+                                        include_suspended=True)
+            pairs = set(bars["trade_date"].astype(str))
+            # open_date 缺失放开了下界，但 expire_date=20240103 之后的 0104 仍应被过滤。
+            self.assertEqual(pairs, {"2024-01-02", "2024-01-03"})
+
     def test_second_sync_is_a_no_op(self) -> None:
         """源目录没有变化时应报告无增量，且不重写任何分片。"""
         with tempfile.TemporaryDirectory() as directory:
