@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +27,14 @@ from ..schema import SCHEMA_VERSION, apply_schema
 from . import aux_tables, catalog, state
 from .detect import SourceDelta, detect_changes, watermark_values
 from .locking import DailyStoreLockedError, open_catalog, sync_lock
-from .shards import existing_shards, rewrite_month_shard, source_months
+from .shards import (
+    FILTERED_SAMPLE_LIMIT,
+    FilteredSample,
+    existing_shards,
+    rewrite_month_shard,
+    sort_by_reason,
+    source_months,
+)
 from .source import DATASET_ACTIONS, DATASET_CALENDAR, resolve_source_root
 
 logger = logging.getLogger(__name__)
@@ -36,6 +44,10 @@ SYNC_MODES = ("auto", "full", "rebuild")
 
 #: 重活跑在内存连接上时留给 DuckDB 的最大线程数上限。
 _MAX_WORKER_THREADS = 16
+
+#: 抽取过滤样例专用的随机源。刻意用独立实例而不是 ``random`` 模块级函数，避免
+#: 入库过程扰动进程内共享的全局随机状态（同一进程里可能正在跑遗传搜索）。
+_SAMPLE_RANDOM = random.Random()
 
 
 def _worker_threads() -> int:
@@ -140,6 +152,15 @@ class SyncReport:
         filtered_totals: 本次同步全部重写月份按过滤原因汇总的丢弃行数，
             ``((原因, 行数), ...)``，原因取值见 ``shards.FILTER_REASONS``；
             未重写任何分片（无增量或 dry-run）时为空元组。
+        touched_months: 本次增量涉及的月份，元素为 ``(年, 月)``，按时间升序；
+            正常同步时即实际重写过的月份，``dry_run`` 时是**将要**重写的月份
+            （该分支一个分片都不会写）；无增量时为空元组。
+        filtered_samples: 与 ``filtered_totals`` 同序的样例，
+            ``((原因, (样例, ...)), ...)``，每个有计数的原因带 1 到
+            ``FILTERED_SAMPLE_LIMIT`` 条。
+            抽样分两级：每个月度分片先在本月该原因的全部丢弃行里随机抽最多同样条数，
+            再从这些月度样例里随机抽最终若干条。因此**不是全库均匀抽样**——丢弃行少的
+            月份会被相对高估——它只用于人工核对「过滤掉的确实该滤」，不能拿来做统计推断。
     """
 
     status: str
@@ -154,6 +175,7 @@ class SyncReport:
     elapsed_seconds: float = 0.0
     touched_months: tuple[tuple[int, int], ...] = field(default=())
     filtered_totals: tuple[tuple[str, int], ...] = field(default=())
+    filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...] = field(default=())
 
 
 def sync_daily_store(config: DailySyncConfig) -> SyncReport:
@@ -276,6 +298,7 @@ def _apply_delta(
     months = sorted(delta.touched_months())
     memory = duckdb.connect()
     filtered_totals: dict[str, int] = {}
+    sample_pool: dict[str, list[FilteredSample]] = {}
     try:
         memory.execute(f"SET threads = {_worker_threads()}")
         rewritten = 0
@@ -297,6 +320,8 @@ def _apply_delta(
             )
             for reason, count in result.filtered:
                 filtered_totals[reason] = filtered_totals.get(reason, 0) + count
+            for reason, samples in result.filtered_samples:
+                sample_pool.setdefault(reason, []).extend(samples)
         logger.info("[daily-sync] 分片重写完成，开始统计库存")
         inventory = catalog.collect_inventory(memory, daily_root)
         symbols = catalog.collect_symbols(memory, daily_root)
@@ -376,13 +401,14 @@ def _apply_delta(
         connection.execute("CHECKPOINT")
 
     elapsed = (datetime.now() - started_at).total_seconds()
-    filtered_summary = ", ".join(
-        f"{reason}={count}" for reason, count in sorted(filtered_totals.items())
-    )
+    totals = sort_by_reason(filtered_totals.items())
+    filtered_samples = _pick_filtered_samples(sample_pool)
+    filtered_summary = ", ".join(f"{reason}={count}" for reason, count in totals)
     message = f"已入库: dirty={len(delta.dirty)} removed={len(delta.removed)} shards={rewritten} rows={rows_after}"
     logger.info("[daily-sync] %s 用时 %.1fs", message, elapsed)
     if filtered_summary:
         logger.info("[daily-sync] 本次同步累计过滤: %s", filtered_summary)
+        _log_filtered_samples(dict(totals), filtered_samples)
     if delta.pending:
         logger.warning("[daily-sync] %d 个分区无法判定，已跳过", len(delta.pending))
     return SyncReport(
@@ -395,10 +421,68 @@ def _apply_delta(
         rows_after=rows_after,
         pending=delta.pending,
         message=message,
-        filtered_totals=tuple(sorted(filtered_totals.items())),
+        filtered_totals=totals,
+        filtered_samples=filtered_samples,
         elapsed_seconds=elapsed,
         touched_months=tuple(months),
     )
+
+
+def _pick_filtered_samples(
+    pool: dict[str, list[FilteredSample]],
+) -> tuple[tuple[str, tuple[FilteredSample, ...]], ...]:
+    """把各月的过滤样例合并成每个原因最多若干条的最终样例。
+
+    每个月度分片已经在本月该原因的全部丢弃行里随机抽过一次，这里在这些月度样例
+    里再随机抽一次。两级抽样都不按行数加权，所以结果只适合人工核对具体 case，
+    不能当成全库的均匀抽样。
+
+    参数：
+        pool: ``{原因: [该原因在各月抽到的样例, ...]}``；调用方保证列表非空的键
+            一定出现在过滤计数里。
+
+    返回：
+        按 ``FILTER_REASONS`` 排序的 ``((原因, (样例, ...)), ...)``；组内按代码与
+        交易日升序。池子为空时返回空元组。
+    """
+    picked: list[tuple[str, tuple[FilteredSample, ...]]] = []
+    for reason, samples in pool.items():
+        if not samples:
+            continue
+        chosen = (
+            list(samples)
+            if len(samples) <= FILTERED_SAMPLE_LIMIT
+            else _SAMPLE_RANDOM.sample(samples, FILTERED_SAMPLE_LIMIT)
+        )
+        chosen.sort(key=lambda sample: (sample.code or "", sample.trade_date or ""))
+        picked.append((reason, tuple(chosen)))
+    return sort_by_reason(picked)
+
+
+def _log_filtered_samples(
+    totals: dict[str, int],
+    filtered_samples: tuple[tuple[str, tuple[FilteredSample, ...]], ...],
+) -> None:
+    """把最终样例逐行写进日志。
+
+    参数：
+        totals: ``{原因: 本次同步该原因的丢弃总行数}``，只用于在标题行里回显总量。
+        filtered_samples: ``_pick_filtered_samples`` 的返回值。
+
+    返回：
+        无返回值。
+    """
+    for reason, samples in filtered_samples:
+        if not samples:
+            continue
+        logger.info(
+            "[daily-sync] 过滤样例 %s（共 %d 行，随机 %d 条）:",
+            reason,
+            totals.get(reason, 0),
+            len(samples),
+        )
+        for sample in samples:
+            logger.info("[daily-sync]   %s", sample.describe())
 
 
 def _ensure_schema(database: Path, daily_root: Path) -> None:

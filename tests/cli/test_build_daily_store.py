@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from quant.cli import build_daily_store
+from quant.market_data.daily.ingest.shards import FilteredSample
 from quant.market_data.daily.ingest.sync import SyncReport
 
 
@@ -87,6 +88,44 @@ class BuildDailyStoreSummaryTest(unittest.TestCase):
         self.assertIn("本次同步累计过滤（按原因）:", output)
         self.assertIn("before_listing: 12 行", output)
         self.assertIn("unknown_code: 3 行", output)
+
+    def test_summary_lists_filtered_samples_under_each_reason(self) -> None:
+        """每个原因下面要能直接看到具体被滤掉的行，不必再去翻源 CSV。"""
+        sample = FilteredSample(
+            reason="before_listing",
+            code="600000.SH",
+            trade_date="20240102",
+            open_date="2024-01-03",
+            expire_date=None,
+            suspend_flag=1.0,
+            volume=0.0,
+            close=7.0,
+        )
+        output, _ = self._run_main(
+            SyncReport(
+                status="synced",
+                rows_after=100,
+                filtered_totals=(("before_listing", 12),),
+                filtered_samples=(("before_listing", (sample,)),),
+            )
+        )
+        self.assertIn("随机样例 1 条:", output)
+        self.assertIn(
+            "600000.SH 20240102 open=2024-01-03 expire=- suspend=1 volume=0 close=7.0000",
+            output,
+        )
+
+    def test_summary_omits_sample_line_without_samples(self) -> None:
+        """只有计数、没有样例时不应打印空的样例小标题。"""
+        output, _ = self._run_main(
+            SyncReport(
+                status="synced",
+                rows_after=100,
+                filtered_totals=(("before_listing", 12),),
+            )
+        )
+        self.assertIn("before_listing: 12 行", output)
+        self.assertNotIn("随机样例", output)
 
     def test_summary_omits_section_without_filtering(self) -> None:
         """一行都没过滤时不应打印空的过滤小节。"""

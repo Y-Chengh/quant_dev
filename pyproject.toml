@@ -20,14 +20,19 @@ dependencies = [
 # 因子研究：数据集构建、模型训练与报告
 research = [
     "pyarrow>=14.0",
-    "duckdb>=1.0",
+    # 1.1 起才有三参 arg_min(arg, val, n)，日线入库靠它抽过滤样例；1.0 会直接
+    # 抛 BinderException 让整次分片重写失败。这里只标定该算子的可用下限（实测
+    # 1.0.0 报错、1.1.0 可用），不代表整套测试在 1.1 上跑得通——pip 默认装最新版，
+    # 实际验证跑在当前最新的 1.5.x 上。
+    "duckdb>=1.1",
     "scikit-learn>=1.4",
     "lightgbm>=4.3",
     "PyYAML>=6.0",
 ]
 # 本地行情服务：HTTP 接口与网页
 service = [
-    "duckdb>=1.0",
+    # 与 research 同一下限，原因见上。
+    "duckdb>=1.1",
     "fastapi>=0.110",
     "uvicorn>=0.27",
 ]

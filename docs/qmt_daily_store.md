@@ -99,6 +99,45 @@ Tier −1 有一个已知局限：NTFS 上目录的修改时间只在增删条�
 内容变化触发重写的月份分片上生效；已建好的存量库不会因为规则改了就自动重写，
 升级后需要对已有库执行一次 `python -m quant.cli.build_daily_store --rebuild-all` 才能统一口径。
 
+## 过滤原因与样例
+
+每行源数据都会被打上一个过滤原因。判定写成一条 `CASE`，**一行只命中第一个成立的
+分支**，因此下表的顺序就是优先级，各原因的行数互不重叠：
+
+| 原因 | 判定条件 | 典型来源 |
+| --- | --- | --- |
+| `trade_date_null` | `trade_date` 为 NULL | 该行是空字段，或同月某个日分区文件缺这一列（该月全部文件都缺则读 CSV 直接报错，走不到这里） |
+| `trade_date_bad_length` | 去空格后长度不是 8 | 写成了 `2024-01-02` 或截断成 7 位 |
+| `trade_date_unparsable` | 长度对但 `strptime('%Y%m%d')` 解析不出来 | `20241332` 这类非法日期、乱码 |
+| `unknown_code` | 代码不在 `instrument_info` 快照里 | 快照落后于日线，或代码写错 |
+| `before_listing` | `open_date` 非空且 `trade_date < open_date` | `fill_data=True` 的上市前占位行 |
+| `after_delisting` | `expire_date` 非空且 `trade_date > expire_date` | 退市后仍被填充的占位行 |
+
+边界是闭区间：`trade_date` 正好等于 `open_date` 或 `expire_date` 的当天保留。
+`open_date` / `expire_date` 为空就不查对应那一侧。这一层**不做**价格合法性校验，也
+不去重，那些由 `python -m quant.cli.market_check` 负责。
+
+每个原因除了行数，还会带回最多 10 条**随机样例**，日志与命令行摘要都直接打印：
+
+```
+本次同步累计过滤（按原因）:
+  before_listing: 17252623 行
+    随机样例 10 条:
+      000338.SZ 20000113 open=2007-04-30 expire=- suspend=1 volume=0 close=0.0000
+```
+
+`suspend=1 volume=0 close=0` 正是 `fill_data` 占位行的特征，一眼就能确认滤对了。
+样例分两级抽取：每个月度分片先在本月该原因的全部丢弃行里随机抽最多 10 条，同步
+结束时再从这些月度样例里随机抽最终 10 条。两级都不按行数加权，所以它**不是全库
+均匀抽样**，只用于人工核对具体 case，不能拿来做统计推断。
+
+样例展示的是**勘误前**的源值：勘误在写 Parquet 那一步才 `COALESCE`，而勘误既不改
+`code`/`trade_date`，也不参与过滤判定，所以原始值才是判断「该不该滤」的正确依据。
+
+抽样用 `arg_min(struct, random(), 10)` 的定长堆而不是 `ORDER BY random()` 开窗，
+避免对上千万丢弃行做全排序。在真实源数据上取 2000-01、2005-06、2015-01、2024-01
+四个月各跑 5 轮取最小值，分片重写整体从 0.965s 变成 1.000s，慢约 4%。
+
 ## 并发与锁
 
 DuckDB 是**单写多读**，一个活跃的写连接会同时挡住其它进程的读。为此：

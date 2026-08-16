@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import random
 import tempfile
 import unittest
 from datetime import date, datetime, timedelta
@@ -18,7 +19,16 @@ import pandas as pd
 from quant.market_data.daily import AdjustMode, DailyMarketClient
 from quant.market_data.daily.ingest import DailySyncConfig, aux_tables, sync_daily_store
 from quant.market_data.daily.ingest.locking import DailyStoreLockedError, sync_lock
-from quant.market_data.daily.ingest.shards import rewrite_month_shard, shard_directory
+from quant.market_data.daily.ingest.shards import (
+    FILTER_REASONS,
+    FILTERED_SAMPLE_LIMIT,
+    FilteredSample,
+    ShardResult,
+    rewrite_month_shard,
+    shard_directory,
+    sort_by_reason,
+)
+from quant.market_data.daily.ingest.sync import _pick_filtered_samples
 from quant.market_data.daily.schema import apply_schema
 from quant.qmt_downloader.storage import DailyPartitionStore
 
@@ -124,6 +134,90 @@ def _build_source(root: Path, days=("20240102", "20240103", "20240104")) -> None
         )
 
 
+class FilterReasonOrderingTest(unittest.TestCase):
+    """过滤原因的排序与跨月样例合并这两段纯逻辑。"""
+
+    def _sample(self, reason: str, code: str) -> FilteredSample:
+        """构造一条只填了必要字段的样例。
+
+        参数：
+            reason: 该样例命中的过滤原因。
+            code: 证券代码，同时用作排序断言的抓手。
+
+        返回：
+            其余字段一律为空的 ``FilteredSample``。
+        """
+        return FilteredSample(
+            reason=reason, code=code, trade_date="20240102", open_date=None,
+            expire_date=None, suspend_flag=None, volume=None, close=None,
+        )
+
+    def test_sort_by_reason_follows_case_branch_order(self) -> None:
+        """排序必须跟 SQL 判定顺序一致，未知原因兜底排在最后。"""
+        ordered = sort_by_reason([
+            ("zzz_unknown", 1),
+            ("after_delisting", 2),
+            ("aaa_unknown", 3),
+            ("trade_date_null", 4),
+        ])
+        self.assertEqual(
+            [reason for reason, _ in ordered],
+            ["trade_date_null", "after_delisting", "aaa_unknown", "zzz_unknown"],
+        )
+        # 全量原因按原顺序进出，保证排序本身不会打乱既定顺序。
+        self.assertEqual(
+            [reason for reason, _ in sort_by_reason(
+                (reason, 0) for reason in reversed(FILTER_REASONS))],
+            list(FILTER_REASONS),
+        )
+
+    def test_cross_month_samples_are_capped_and_sorted(self) -> None:
+        """跨月合并后条数要封顶，且只保留本原因的样例并按代码排序。"""
+        pool = {
+            "before_listing": [
+                self._sample("before_listing", f"{600000 + index}.SH")
+                for index in range(FILTERED_SAMPLE_LIMIT * 3)
+            ],
+            "unknown_code": [self._sample("unknown_code", "999999.SZ")],
+            "after_delisting": [],
+        }
+        picked = dict(_pick_filtered_samples(pool))
+        # 空列表的原因不应出现，否则摘要会打印一个没有内容的小标题。
+        self.assertEqual(set(picked), {"before_listing", "unknown_code"})
+        before = picked["before_listing"]
+        self.assertEqual(len(before), FILTERED_SAMPLE_LIMIT)
+        self.assertEqual(len(set(sample.code for sample in before)), FILTERED_SAMPLE_LIMIT)
+        self.assertTrue(all(sample.reason == "before_listing" for sample in before))
+        self.assertEqual([sample.code for sample in before],
+                         sorted(sample.code for sample in before))
+        self.assertEqual(len(picked["unknown_code"]), 1)
+
+    def test_empty_pool_yields_no_samples(self) -> None:
+        """一行都没过滤时不应产出任何样例。"""
+        self.assertEqual(_pick_filtered_samples({}), ())
+
+    def test_sampling_does_not_disturb_global_random_state(self) -> None:
+        """抽样例必须走自带随机源，不能消耗全局 RNG。
+
+        同一进程里可能正在跑按固定种子复现的遗传搜索，入库顺手抽几条样例就把
+        全局随机流推进一格的话，复现结果会莫名其妙地变。
+        """
+        pool = {
+            "before_listing": [
+                self._sample("before_listing", f"{600000 + index}.SH")
+                for index in range(FILTERED_SAMPLE_LIMIT * 3)
+            ]
+        }
+        # 固定种子只是让本用例自身可复现，跑完必须还原，免得把后续用例的全局
+        # 随机流也钉死。
+        original = random.getstate()
+        self.addCleanup(random.setstate, original)
+        random.seed(20240102)
+        state = random.getstate()
+        _pick_filtered_samples(pool)
+        self.assertEqual(random.getstate(), state)
+
+
 class DailySyncTest(unittest.TestCase):
     """增量入库的主要行为。"""
 
@@ -173,8 +267,42 @@ class DailySyncTest(unittest.TestCase):
             # 600000.SH 上市前的 0102 一行、300001.SZ 退市后的 0104 一行。
             self.assertEqual(totals.get("before_listing"), 1)
             self.assertEqual(totals.get("after_delisting"), 1)
-            self.assertNotIn("invalid_trade_date", totals)
+            self.assertNotIn("trade_date_null", totals)
+            self.assertNotIn("trade_date_bad_length", totals)
+            self.assertNotIn("trade_date_unparsable", totals)
             self.assertNotIn("unknown_code", totals)
+            # 原因顺序必须跟着 FILTER_REASONS 走，而不是字母序。
+            self.assertEqual(
+                [reason for reason, _ in report.filtered_totals],
+                ["before_listing", "after_delisting"],
+            )
+
+    def test_sync_report_carries_concrete_filtered_samples(self) -> None:
+        """同步报告要带回每个原因的具体样例行，字段足以判断该不该滤掉。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            _build_source(base / "qmt")
+            report = sync_daily_store(self._config(base))
+            samples = dict(report.filtered_samples)
+            self.assertEqual(set(samples), {"before_listing", "after_delisting"})
+
+            before = samples["before_listing"]
+            self.assertEqual(len(before), 1)
+            self.assertEqual(before[0].code, "600000.SH")
+            self.assertEqual(before[0].trade_date, "20240102")
+            self.assertEqual(before[0].open_date, "2024-01-03")
+            # 19700427 是 QMT 的「无退市日」哨兵，样例里应显示为缺失。
+            self.assertIsNone(before[0].expire_date)
+            self.assertEqual(
+                before[0].describe(),
+                "600000.SH 20240102 open=2024-01-03 expire=- suspend=1 volume=1000 close=7.0000",
+            )
+
+            after = samples["after_delisting"]
+            self.assertEqual(len(after), 1)
+            self.assertEqual(after[0].code, "300001.SZ")
+            self.assertEqual(after[0].trade_date, "20240104")
+            self.assertEqual(after[0].expire_date, "2024-01-03")
 
     def test_shard_result_reports_reason_breakdown(self) -> None:
         """单个分片的过滤明细应能独立取到，不必跑完整个同步。"""
@@ -194,32 +322,156 @@ class DailySyncTest(unittest.TestCase):
             self.assertEqual(breakdown.get("after_delisting"), 1)
             self.assertEqual(result.rows, 7)
 
-    def test_shard_result_classifies_invalid_date_and_unknown_code(self) -> None:
-        """非法 trade_date 与不在生命周期表里的代码要各自归到对应的过滤原因。"""
+    def _run_bad_trade_date_shard(self, base: Path) -> ShardResult:
+        """写出一份含三种坏 trade_date 与一个未知代码的源分区并重建分片。
+
+        参数：
+            base: 临时根目录，其下建立 ``qmt`` 源目录与 ``daily`` 库目录。
+
+        返回：
+            ``rewrite_month_shard`` 的 ``ShardResult``。
+        """
+        source = base / "qmt"
+        daily_root = base / "daily"
+        partition = source / "kline_1d" / "date=20240102"
+        partition.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame([
+            _bar("000001.SZ", "20240102", 10.0, 9.5),
+            # 空字段被 read_csv 读成 NULL，对应 trade_date_null。
+            _bar("000001.SZ", "", 10.0, 9.5),
+            # 七位数字，长度不足八位，对应 trade_date_bad_length。
+            _bar("000001.SZ", "2024010", 10.0, 9.5),
+            # 八位但不是合法日期，对应 trade_date_unparsable。
+            _bar("000001.SZ", "abcdefgh", 10.0, 9.5),
+            _bar("999999.SZ", "20240102", 1.0, 1.0),
+        ]).to_csv(partition / "data.csv", index=False, columns=KLINE_COLUMNS)
+        lifecycle = pd.DataFrame([
+            {"code": "000001.SZ", "open_date": pd.Timestamp("2024-01-01"),
+             "expire_date": pd.NaT},
+        ])
+        connection = duckdb.connect()
+        try:
+            return rewrite_month_shard(connection, source, daily_root, 2024, 1, lifecycle)
+        finally:
+            connection.close()
+
+    def test_shard_result_splits_trade_date_failures_by_kind(self) -> None:
+        """trade_date 的三种坏法必须各自成为独立原因，不再混成一个总类。"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = self._run_bad_trade_date_shard(Path(directory))
+            breakdown = dict(result.filtered)
+            self.assertEqual(breakdown.get("trade_date_null"), 1)
+            self.assertEqual(breakdown.get("trade_date_bad_length"), 1)
+            self.assertEqual(breakdown.get("trade_date_unparsable"), 1)
+            self.assertEqual(breakdown.get("unknown_code"), 1)
+            self.assertNotIn("invalid_trade_date", breakdown)
+            self.assertEqual(result.rows, 1)
+            # 判定顺序即展示顺序：坏日期三类在前，代码与生命周期在后。
+            self.assertEqual(
+                [reason for reason, _ in result.filtered],
+                [
+                    "trade_date_null",
+                    "trade_date_bad_length",
+                    "trade_date_unparsable",
+                    "unknown_code",
+                ],
+            )
+
+    def test_shard_samples_keep_raw_trade_date_text(self) -> None:
+        """坏 trade_date 的样例要保留源文本，否则无从判断到底坏在哪。"""
+        with tempfile.TemporaryDirectory() as directory:
+            result = self._run_bad_trade_date_shard(Path(directory))
+            samples = dict(result.filtered_samples)
+            self.assertIsNone(samples["trade_date_null"][0].trade_date)
+            self.assertEqual(samples["trade_date_bad_length"][0].trade_date, "2024010")
+            self.assertEqual(samples["trade_date_unparsable"][0].trade_date, "abcdefgh")
+            # 生命周期表里没有这个代码，上市与退市日都应为空。
+            unknown = samples["unknown_code"][0]
+            self.assertEqual(unknown.code, "999999.SZ")
+            self.assertIsNone(unknown.open_date)
+            self.assertIsNone(unknown.expire_date)
+            self.assertEqual(
+                unknown.describe(),
+                "999999.SZ 20240102 open=- expire=- suspend=0 volume=1000 close=1.0000",
+            )
+
+    def test_shard_samples_are_capped_per_reason(self) -> None:
+        """同一原因丢弃行很多时，样例条数必须封顶，且都来自该原因。"""
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             source = base / "qmt"
-            daily_root = base / "daily"
             partition = source / "kline_1d" / "date=20240102"
             partition.mkdir(parents=True, exist_ok=True)
-            pd.DataFrame([
-                _bar("000001.SZ", "20240102", 10.0, 9.5),
-                _bar("000001.SZ", "abcdefgh", 10.0, 9.5),
-                _bar("999999.SZ", "20240102", 1.0, 1.0),
-            ]).to_csv(partition / "data.csv", index=False, columns=KLINE_COLUMNS)
+            # 刻意避开 000001.SZ，让这批代码全部落进 unknown_code。
+            codes = [f"{900000 + index:06d}.SZ" for index in range(FILTERED_SAMPLE_LIMIT + 5)]
+            pd.DataFrame(
+                [_bar("000001.SZ", "20240102", 10.0, 9.5)]
+                + [_bar(code, "20240102", 1.0, 1.0) for code in codes]
+            ).to_csv(partition / "data.csv", index=False, columns=KLINE_COLUMNS)
             lifecycle = pd.DataFrame([
                 {"code": "000001.SZ", "open_date": pd.Timestamp("2024-01-01"),
                  "expire_date": pd.NaT},
             ])
             connection = duckdb.connect()
             try:
-                result = rewrite_month_shard(connection, source, daily_root, 2024, 1, lifecycle)
+                result = rewrite_month_shard(connection, source, base / "daily", 2024, 1,
+                                             lifecycle)
             finally:
                 connection.close()
-            breakdown = dict(result.filtered)
-            self.assertEqual(breakdown.get("invalid_trade_date"), 1)
-            self.assertEqual(breakdown.get("unknown_code"), 1)
-            self.assertEqual(result.rows, 1)
+            samples = dict(result.filtered_samples)
+            self.assertEqual(dict(result.filtered)["unknown_code"], len(codes))
+            self.assertEqual(len(samples["unknown_code"]), FILTERED_SAMPLE_LIMIT)
+            self.assertTrue(
+                {sample.code for sample in samples["unknown_code"]} <= set(codes)
+            )
+            self.assertTrue(
+                all(sample.reason == "unknown_code" for sample in samples["unknown_code"])
+            )
+
+    def test_fully_filtered_month_still_reports_reasons(self) -> None:
+        """整月被过滤光时分片会被删除，但过滤明细必须保留下来。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            partition = source / "kline_1d" / "date=20240102"
+            partition.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame([
+                _bar("000001.SZ", "20240102", 10.0, 9.5),
+            ]).to_csv(partition / "data.csv", index=False, columns=KLINE_COLUMNS)
+            lifecycle = pd.DataFrame([
+                {"code": "000001.SZ", "open_date": pd.Timestamp("2024-06-01"),
+                 "expire_date": pd.NaT},
+            ])
+            connection = duckdb.connect()
+            try:
+                result = rewrite_month_shard(connection, source, base / "daily", 2024, 1,
+                                             lifecycle)
+            finally:
+                connection.close()
+            self.assertTrue(result.removed)
+            self.assertEqual(result.rows, 0)
+            self.assertEqual(dict(result.filtered), {"before_listing": 1})
+            self.assertEqual(
+                dict(result.filtered_samples)["before_listing"][0].open_date, "2024-06-01"
+            )
+
+    def test_month_without_source_reports_no_filtering(self) -> None:
+        """源目录里压根没有该月分区时不算「过滤了 0 行」，应返回空明细。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            lifecycle = pd.DataFrame([
+                {"code": "000001.SZ", "open_date": pd.Timestamp("2024-01-01"),
+                 "expire_date": pd.NaT},
+            ])
+            connection = duckdb.connect()
+            try:
+                result = rewrite_month_shard(connection, base / "qmt", base / "daily",
+                                             2024, 1, lifecycle)
+            finally:
+                connection.close()
+            self.assertTrue(result.removed)
+            self.assertEqual(result.filtered, ())
+            self.assertEqual(result.filtered_samples, ())
 
     def test_missing_open_date_does_not_drop_the_symbol(self) -> None:
         """open_date 缺失时不应把该证券的全部行情都过滤掉，口径与 self_check 一致。"""

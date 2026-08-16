@@ -265,8 +265,8 @@ def rewrite_month_shard(
                 CAST(k.volume AS DOUBLE)              AS volume,
                 CAST(k.amount AS DOUBLE)              AS amount,
                 CAST(k.suspend_flag AS DOUBLE)        AS suspend_flag,
-                l.open_date                          AS listing_open_date,
-                l.expire_date                        AS listing_expire_date,
+                CAST(l.open_date AS DATE)             AS listing_open_date,
+                CAST(l.expire_date AS DATE)           AS listing_expire_date,
                 CASE
                     WHEN k.trade_date IS NULL
                         THEN 'trade_date_null'
