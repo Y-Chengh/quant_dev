@@ -29,6 +29,7 @@ quant/
 
 ```powershell
 python -m venv .venv
+# 若提示"禁止运行脚本"，先执行 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[research,service,dev]"
 ```

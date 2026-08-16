@@ -253,6 +253,9 @@
 - 对话内的受限终端可能因沙箱权限无法访问用户目录，从而误报找不到 `python`；
   这不代表本机未安装 Python。遇到此情况时，应使用上述解释器路径，或在确有
   必要时申请沙箱外执行权限后再次验证，不要建议用户重复安装 Python。
+- 项目依赖只装在仓库内的 `.venv` 里，因此跑验证命令时优先激活 `.venv` 或直接用
+  `.venv\Scripts\python.exe`；上面那个系统解释器路径只用于确认本机确实装了
+  Python，用它跑 `pytest` 会因为缺少依赖而 `ImportError`。
 
 ## 命令行输出约定
 
@@ -262,8 +265,9 @@
   `python -m quant.cli.factor_demo --config configs\factor_research\example.yaml`。
   命令默认在仓库根目录、已激活项目虚拟环境（`.venv`）的会话中执行，因此不要在
   命令里写死 `.venv\Scripts\python.exe` 这类解释器绝对路径，让用户可以直接复制。
-  唯一例外是创建虚拟环境本身：`python -m venv .venv` 之后必须先给出激活命令
-  （见 README 安装一节），再用 `python -m pip install`。
+  唯一需要额外交代的是创建虚拟环境本身：`python -m venv .venv` 之后必须先给出
+  激活命令（见 README 安装一节），再用 `python -m pip install`，否则 `python`
+  仍指向系统解释器。
 - 上述约束只针对可直接复制执行的命令行。正文里泛指某个工具（例如“`pip install -e .`
   之后可用短命令”）不受影响。助手自己在未激活环境的终端里执行时可以用
   `.venv\Scripts\python.exe`，但写给用户看的命令仍按上面的写法给出。
@@ -293,6 +297,8 @@ git diff --check
 ```
 
 `python -m pytest` 与 `unittest discover` 等价，两者都能跑通全量用例。
+上面的写法遵循「命令行输出约定」，假定会话已激活 `.venv`；助手自己所在的终端
+未激活时，把 `python` 换成 `.venv\Scripts\python.exe` 再执行。
 
 - 涉及模型或数据代码的改动，应按风险运行回测验证并核对结果：
   `python -m quant.cli.factor_demo --config configs\factor_research\example.yaml`。
