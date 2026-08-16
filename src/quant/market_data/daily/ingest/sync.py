@@ -137,6 +137,9 @@ class SyncReport:
         pending: 无法判定的分区，元素为 ``(dataset, partition_key, 原因)``。
         message: 面向用户的一句话说明。
         elapsed_seconds: 本次同步耗时秒数。
+        filtered_totals: 本次同步全部重写月份按过滤原因汇总的丢弃行数，
+            ``((原因, 行数), ...)``，原因取值见 ``shards.FILTER_REASONS``；
+            未重写任何分片（无增量或 dry-run）时为空元组。
     """
 
     status: str
@@ -150,6 +153,7 @@ class SyncReport:
     message: str = ""
     elapsed_seconds: float = 0.0
     touched_months: tuple[tuple[int, int], ...] = field(default=())
+    filtered_totals: tuple[tuple[str, int], ...] = field(default=())
 
 
 def sync_daily_store(config: DailySyncConfig) -> SyncReport:
@@ -271,6 +275,7 @@ def _apply_delta(
     errata_frame = qmt_errata.errata_pivot_frame(errata_overrides)
     months = sorted(delta.touched_months())
     memory = duckdb.connect()
+    filtered_totals: dict[str, int] = {}
     try:
         memory.execute(f"SET threads = {_worker_threads()}")
         rewritten = 0
@@ -279,15 +284,19 @@ def _apply_delta(
                 memory, source_root, daily_root, year, month, lifecycle, errata_frame
             )
             rewritten += 1
+            breakdown = ", ".join(f"{reason}={count}" for reason, count in result.filtered)
             logger.info(
-                "[daily-sync] 重写月度分片 %d/%d %04d-%02d rows=%d%s",
+                "[daily-sync] 重写月度分片 %d/%d %04d-%02d rows=%d%s%s",
                 index,
                 len(months),
                 year,
                 month,
                 result.rows,
                 "（已删除空分片）" if result.removed else "",
+                f" filtered=[{breakdown}]" if breakdown else "",
             )
+            for reason, count in result.filtered:
+                filtered_totals[reason] = filtered_totals.get(reason, 0) + count
         logger.info("[daily-sync] 分片重写完成，开始统计库存")
         inventory = catalog.collect_inventory(memory, daily_root)
         symbols = catalog.collect_symbols(memory, daily_root)
@@ -367,8 +376,13 @@ def _apply_delta(
         connection.execute("CHECKPOINT")
 
     elapsed = (datetime.now() - started_at).total_seconds()
+    filtered_summary = ", ".join(
+        f"{reason}={count}" for reason, count in sorted(filtered_totals.items())
+    )
     message = f"已入库: dirty={len(delta.dirty)} removed={len(delta.removed)} shards={rewritten} rows={rows_after}"
     logger.info("[daily-sync] %s 用时 %.1fs", message, elapsed)
+    if filtered_summary:
+        logger.info("[daily-sync] 本次同步累计过滤: %s", filtered_summary)
     if delta.pending:
         logger.warning("[daily-sync] %d 个分区无法判定，已跳过", len(delta.pending))
     return SyncReport(
@@ -381,6 +395,7 @@ def _apply_delta(
         rows_after=rows_after,
         pending=delta.pending,
         message=message,
+        filtered_totals=tuple(sorted(filtered_totals.items())),
         elapsed_seconds=elapsed,
         touched_months=tuple(months),
     )

@@ -37,6 +37,15 @@ from ..schema import sql_path
 #: 一次 ``COPY`` 写出的 Parquet 行组大小。
 _ROW_GROUP_SIZE = 200_000
 
+#: 单行被丢弃的全部原因，取值与 ``ShardResult.filtered`` 的键一致，顺序固定
+#: 便于日志和报告按同一顺序展示。``kept`` 不是丢弃原因，不出现在这里。
+FILTER_REASONS: tuple[str, ...] = (
+    "invalid_trade_date",
+    "unknown_code",
+    "before_listing",
+    "after_delisting",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ShardResult:
@@ -48,6 +57,9 @@ class ShardResult:
         rows: 写入 Parquet 的行数；为 0 表示该月过滤后没有任何行情。
         removed: 是否因为没有数据而删除了原有分片文件。
         path: 最终 Parquet 路径；``removed`` 为 ``True`` 时指向已删除的位置。
+        filtered: 按 ``FILTER_REASONS`` 中的原因统计的丢弃行数，``((原因, 行数), ...)``；
+            该月源文件不存在（``removed=True`` 且没有跑过过滤）时为空元组，
+            跑过过滤但某个原因一行都没丢弃时该原因不出现在元组里。
     """
 
     year: int
@@ -55,6 +67,7 @@ class ShardResult:
     rows: int
     removed: bool
     path: Path
+    filtered: tuple[tuple[str, int], ...] = ()
 
 
 def shard_directory(daily_root: Path | str, year: int, month: int) -> Path:
@@ -98,8 +111,9 @@ def rewrite_month_shard(
             勘误之后的结果。
 
     返回：
-        描述本次重建结果的 ``ShardResult``。该月没有任何源分区、或过滤后为空时，
-        原有分片会被删除并返回 ``removed=True``。
+        描述本次重建结果的 ``ShardResult``，含按 ``FILTER_REASONS`` 分类的丢弃行数。
+        该月没有任何源分区、或过滤后为空时，原有分片会被删除并返回
+        ``removed=True``。
     """
     directory = shard_directory(daily_root, year, month)
     target = directory / "bars.parquet"
@@ -115,34 +129,69 @@ def rewrite_month_shard(
     directory.mkdir(parents=True, exist_ok=True)
     temporary = directory / "bars.parquet.part"
     try:
+        # 先给每一行分类打上过滤原因（含保留原因 'kept'），再从同一份分类结果
+        # 里既统计各原因的丢弃行数、又筛出 kept 行落盘，源 CSV 只读一遍。
+        connection.execute(
+            f"""
+            CREATE OR REPLACE TEMP TABLE staged_rows AS
+            SELECT
+                CAST(upper(trim(k.code)) AS VARCHAR) AS code,
+                k.trade_date                         AS trade_date,
+                CAST(k.open AS DOUBLE)                AS open,
+                CAST(k.high AS DOUBLE)                AS high,
+                CAST(k.low AS DOUBLE)                 AS low,
+                CAST(k.close AS DOUBLE)               AS close,
+                CAST(k.pre_close AS DOUBLE)           AS pre_close,
+                CAST(k.volume AS DOUBLE)              AS volume,
+                CAST(k.amount AS DOUBLE)              AS amount,
+                CAST(k.suspend_flag AS DOUBLE)        AS suspend_flag,
+                CASE
+                    WHEN k.trade_date IS NULL OR length(trim(k.trade_date)) <> 8
+                         OR try_strptime(k.trade_date, '%Y%m%d') IS NULL
+                        THEN 'invalid_trade_date'
+                    WHEN l.code IS NULL
+                        THEN 'unknown_code'
+                    WHEN l.open_date IS NOT NULL
+                         AND CAST(try_strptime(k.trade_date, '%Y%m%d') AS DATE)
+                             < CAST(l.open_date AS DATE)
+                        THEN 'before_listing'
+                    WHEN l.expire_date IS NOT NULL
+                         AND CAST(try_strptime(k.trade_date, '%Y%m%d') AS DATE)
+                             > CAST(l.expire_date AS DATE)
+                        THEN 'after_delisting'
+                    ELSE 'kept'
+                END AS filter_reason
+            FROM read_csv('{sql_path(pattern)}', header=true, all_varchar=true,
+                          hive_partitioning=false, union_by_name=true) k
+            LEFT JOIN lifecycle_filter l ON upper(trim(k.code)) = l.code
+            """
+        )
+        filtered = tuple(
+            connection.execute(
+                "SELECT filter_reason, CAST(count(*) AS BIGINT) FROM staged_rows "
+                "WHERE filter_reason != 'kept' GROUP BY filter_reason "
+                "ORDER BY filter_reason"
+            ).fetchall()
+        )
         connection.execute(
             f"""
             COPY (
-                SELECT CAST(upper(trim(k.code)) AS VARCHAR)                    AS code,
-                       CAST(strptime(k.trade_date, '%Y%m%d') AS DATE)          AS trade_date,
-                       CAST(COALESCE(e.open, CAST(k.open AS DOUBLE)) AS DOUBLE)         AS open,
-                       CAST(COALESCE(e.high, CAST(k.high AS DOUBLE)) AS DOUBLE)         AS high,
-                       CAST(COALESCE(e.low, CAST(k.low AS DOUBLE)) AS DOUBLE)           AS low,
-                       CAST(COALESCE(e.close, CAST(k.close AS DOUBLE)) AS DOUBLE)       AS close,
-                       CAST(COALESCE(e.pre_close, CAST(k.pre_close AS DOUBLE)) AS DOUBLE)
-                                                                               AS pre_close,
-                       CAST(round(COALESCE(e.volume, CAST(k.volume AS DOUBLE))) AS BIGINT)
-                                                                               AS volume,
-                       CAST(COALESCE(e.amount, CAST(k.amount AS DOUBLE)) AS DOUBLE)     AS amount,
+                SELECT s.code                                                  AS code,
+                       CAST(try_strptime(s.trade_date, '%Y%m%d') AS DATE)      AS trade_date,
+                       CAST(COALESCE(e.open, s.open) AS DOUBLE)                AS open,
+                       CAST(COALESCE(e.high, s.high) AS DOUBLE)                AS high,
+                       CAST(COALESCE(e.low, s.low) AS DOUBLE)                  AS low,
+                       CAST(COALESCE(e.close, s.close) AS DOUBLE)              AS close,
+                       CAST(COALESCE(e.pre_close, s.pre_close) AS DOUBLE)      AS pre_close,
+                       CAST(round(COALESCE(e.volume, s.volume)) AS BIGINT)     AS volume,
+                       CAST(COALESCE(e.amount, s.amount) AS DOUBLE)            AS amount,
                        CAST(COALESCE(e.suspend_flag,
-                                     COALESCE(round(CAST(k.suspend_flag AS DOUBLE)), 0)) AS TINYINT)
-                                                                               AS suspend_flag
-                FROM read_csv('{sql_path(pattern)}', header=true, all_varchar=true,
-                              hive_partitioning=false, union_by_name=true) k
-                JOIN lifecycle_filter l ON upper(trim(k.code)) = l.code
+                                     COALESCE(round(s.suspend_flag), 0)) AS TINYINT)
+                                                                                AS suspend_flag
+                FROM staged_rows s
                 LEFT JOIN errata_overrides e
-                    ON upper(trim(k.code)) = e.code AND trim(k.trade_date) = e.trade_date
-                WHERE k.trade_date IS NOT NULL
-                  AND length(trim(k.trade_date)) = 8
-                  AND (l.open_date IS NULL
-                       OR CAST(strptime(k.trade_date, '%Y%m%d') AS DATE) >= CAST(l.open_date AS DATE))
-                  AND (l.expire_date IS NULL
-                       OR CAST(strptime(k.trade_date, '%Y%m%d') AS DATE) <= CAST(l.expire_date AS DATE))
+                    ON s.code = e.code AND trim(s.trade_date) = e.trade_date
+                WHERE s.filter_reason = 'kept'
                 ORDER BY trade_date, code
             ) TO '{sql_path(temporary)}'
               (FORMAT PARQUET, COMPRESSION ZSTD, COMPRESSION_LEVEL 3, ROW_GROUP_SIZE {_ROW_GROUP_SIZE})
@@ -154,6 +203,7 @@ def rewrite_month_shard(
             ).fetchone()[0]
         )
     finally:
+        connection.execute("DROP TABLE IF EXISTS staged_rows")
         connection.unregister("lifecycle_filter")
         connection.unregister("errata_overrides")
 
@@ -161,7 +211,9 @@ def rewrite_month_shard(
         temporary.unlink(missing_ok=True)
         return _drop_shard(directory, target, year, month)
     temporary.replace(target)
-    return ShardResult(year=year, month=month, rows=rows, removed=False, path=target)
+    return ShardResult(
+        year=year, month=month, rows=rows, removed=False, path=target, filtered=filtered
+    )
 
 
 def _has_source_files(source_root: Path | str, year: int, month: int) -> bool:

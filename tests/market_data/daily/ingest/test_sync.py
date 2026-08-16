@@ -18,7 +18,7 @@ import pandas as pd
 from quant.market_data.daily import AdjustMode, DailyMarketClient
 from quant.market_data.daily.ingest import DailySyncConfig, aux_tables, sync_daily_store
 from quant.market_data.daily.ingest.locking import DailyStoreLockedError, sync_lock
-from quant.market_data.daily.ingest.shards import shard_directory
+from quant.market_data.daily.ingest.shards import rewrite_month_shard, shard_directory
 from quant.market_data.daily.schema import apply_schema
 from quant.qmt_downloader.storage import DailyPartitionStore
 
@@ -161,6 +161,65 @@ class DailySyncTest(unittest.TestCase):
             self.assertNotIn(("600000.SH", "2024-01-02"), pairs)
             self.assertNotIn(("300001.SZ", "2024-01-04"), pairs)
             self.assertIn(("000001.SZ", "2024-01-02"), pairs)
+
+    def test_sync_report_lists_filter_reasons_and_counts(self) -> None:
+        """同步报告应按原因汇总本次实际丢弃的行数，供排查用。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            _build_source(base / "qmt")
+            report = sync_daily_store(self._config(base))
+            self.assertEqual(report.status, "synced")
+            totals = dict(report.filtered_totals)
+            # 600000.SH 上市前的 0102 一行、300001.SZ 退市后的 0104 一行。
+            self.assertEqual(totals.get("before_listing"), 1)
+            self.assertEqual(totals.get("after_delisting"), 1)
+            self.assertNotIn("invalid_trade_date", totals)
+            self.assertNotIn("unknown_code", totals)
+
+    def test_shard_result_reports_reason_breakdown(self) -> None:
+        """单个分片的过滤明细应能独立取到，不必跑完整个同步。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            daily_root = base / "daily"
+            _build_source(source)
+            lifecycle = aux_tables.load_lifecycle_frame(source)
+            connection = duckdb.connect()
+            try:
+                result = rewrite_month_shard(connection, source, daily_root, 2024, 1, lifecycle)
+            finally:
+                connection.close()
+            breakdown = dict(result.filtered)
+            self.assertEqual(breakdown.get("before_listing"), 1)
+            self.assertEqual(breakdown.get("after_delisting"), 1)
+            self.assertEqual(result.rows, 7)
+
+    def test_shard_result_classifies_invalid_date_and_unknown_code(self) -> None:
+        """非法 trade_date 与不在生命周期表里的代码要各自归到对应的过滤原因。"""
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            source = base / "qmt"
+            daily_root = base / "daily"
+            partition = source / "kline_1d" / "date=20240102"
+            partition.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame([
+                _bar("000001.SZ", "20240102", 10.0, 9.5),
+                _bar("000001.SZ", "abcdefgh", 10.0, 9.5),
+                _bar("999999.SZ", "20240102", 1.0, 1.0),
+            ]).to_csv(partition / "data.csv", index=False, columns=KLINE_COLUMNS)
+            lifecycle = pd.DataFrame([
+                {"code": "000001.SZ", "open_date": pd.Timestamp("2024-01-01"),
+                 "expire_date": pd.NaT},
+            ])
+            connection = duckdb.connect()
+            try:
+                result = rewrite_month_shard(connection, source, daily_root, 2024, 1, lifecycle)
+            finally:
+                connection.close()
+            breakdown = dict(result.filtered)
+            self.assertEqual(breakdown.get("invalid_trade_date"), 1)
+            self.assertEqual(breakdown.get("unknown_code"), 1)
+            self.assertEqual(result.rows, 1)
 
     def test_missing_open_date_does_not_drop_the_symbol(self) -> None:
         """open_date 缺失时不应把该证券的全部行情都过滤掉，口径与 self_check 一致。"""
