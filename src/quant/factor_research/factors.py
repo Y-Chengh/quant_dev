@@ -20,6 +20,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_FEATURES = sorted(FACTOR_FACTORIES)
 KEY_COLUMNS = ["code", "trade_date"]
 
+#: 因子工厂与 DSL 表达式在日频表上能看到的基础列宇宙。
+#:
+#: 分钟路径与日频路径必须给出**完全相同**的这一组列，否则同一个因子换数据源
+#: 就会 ``KeyError``。``adjust_factor`` 是当前复权口径乘到价格上的那个正系数，
+#: 于是 ``close / adjust_factor`` 在任何口径下都还原为原始不复权价；分钟库没有
+#: 复权概念，那条路径上恒为 1.0。
+BASE_DAILY_COLUMNS = (
+    *KEY_COLUMNS,
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "adjust_factor",
+)
+
 
 def available_factors() -> list[str]:
     """返回当前已注册正式因子的稳定排序名称列表。"""
@@ -97,9 +113,10 @@ def aggregate_daily_bars(bars: pd.DataFrame) -> pd.DataFrame:
     """
 
     validated = validate_bars(bars)
-    return _build_daily_bars(validated).sort_values(
-        ["trade_date", "code"]
-    ).reset_index(drop=True)
+    daily = _build_daily_bars(validated)
+    # 与 ``build_daily_features`` 保持同一套基础列：分钟库无复权概念，系数恒为 1.0。
+    daily["adjust_factor"] = 1.0
+    return daily.sort_values(["trade_date", "code"]).reset_index(drop=True)
 
 
 def _input_fingerprint(bars: pd.DataFrame) -> str:
@@ -391,10 +408,21 @@ class FactorCache:
 def _prepare_daily_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
     """把外部日频行情整理成与分钟聚合结果同构的基础日线表。
 
-    只保留 ``_build_daily_bars`` 会产出的那七列并按相同规则排序，让日频数据源
-    与分钟数据源在因子工厂眼里完全一致。``amount``、``pre_close``、
-    ``suspend_flag``、``adjust_factor`` 等额外列必须在这里丢掉，否则
-    ``build_daily_features`` 的基础列守卫和每个表达式看到的列宇宙都会变。
+    只保留 ``BASE_DAILY_COLUMNS`` 并按相同规则排序，让日频数据源与分钟数据源
+    在因子工厂眼里完全一致。``amount``、``pre_close``、``suspend_flag`` 等额外列
+    必须在这里丢掉，否则 ``build_daily_features`` 的基础列守卫和每个表达式看到的
+    列宇宙都会变。
+
+    ``adjust_factor`` 是当前复权口径乘到价格上的那个正系数，因此
+    ``close / adjust_factor`` 在 ``none``/``hfq``/``qfq`` 三种口径下都还原为同一个
+    原始不复权价。输入没有该列时按 1.0 补齐，含义是「这份行情未经复权」；缺列与
+    列内缺失是两回事，后者由 ``validate_daily_bars`` 报错拦截。
+
+    **未来数据泄漏警告**：``hfq`` 与 ``none`` 下 ``adjust_factor(t)`` 只由不晚于 ``t``
+    的除权事件累乘而来，是因果的；但 ``qfq`` 下它等于 ``hfq(t) / hfq(anchor)``，当
+    ``anchor`` 晚于 ``t`` 时分母含有 ``t`` 之后才发生的分红送转。因此在 ``qfq`` 口径
+    下**只能**把它用作还原原始价的分母（比值里 ``hfq(anchor)`` 自动约掉），不得
+    把它本身或它的时序变化直接当特征。
 
     本函数刻意与 ``_build_daily_bars`` 分开实现：后者的源码文本参与因子缓存的
     实现指纹计算，改动它会作废全部既有缓存。
@@ -403,16 +431,20 @@ def _prepare_daily_bars(daily_bars: pd.DataFrame) -> pd.DataFrame:
         daily_bars: 已通过日频行情契约校验的表。
 
     返回：
-        列为 ``code``、``trade_date``、``open``、``high``、``low``、``close``、
-        ``volume``，并按证券与交易日升序排列的基础日线表。
+        列为 ``BASE_DAILY_COLUMNS``、按证券与交易日升序排列的基础日线表。
     """
 
-    columns = [*KEY_COLUMNS, "open", "high", "low", "close", "volume"]
-    return (
-        daily_bars.loc[:, columns]
-        .sort_values(["code", "trade_date"])
-        .reset_index(drop=True)
+    columns = [column for column in BASE_DAILY_COLUMNS if column != "adjust_factor"]
+    result = daily_bars.loc[:, columns].copy()
+    # 统一取成 numpy ``float64``：输入可能是可空扩展 dtype（``Float64``）或整数，
+    # 而 ``_daily_input_fingerprint`` 会把列 dtype 拌进哈希，dtype 漂移会让同一份
+    # 数据算出不同指纹、缓存永远命中不了。
+    result["adjust_factor"] = (
+        pd.to_numeric(daily_bars["adjust_factor"], errors="coerce").to_numpy(dtype=float)
+        if "adjust_factor" in daily_bars.columns
+        else 1.0
     )
+    return result.sort_values(["code", "trade_date"]).reset_index(drop=True)
 
 
 def _daily_input_fingerprint(daily_bars: pd.DataFrame, namespace: str) -> str:
@@ -420,16 +452,18 @@ def _daily_input_fingerprint(daily_bars: pd.DataFrame, namespace: str) -> str:
 
     指纹里必须拌进 ``namespace``：同一段日期在不复权与后复权两种口径下的取值
     不同，如果只哈希数值，切换 ``--adjust`` 后会命中上一次口径的缓存。
+    ``adjust_factor`` 同样要参与哈希：它已是因子可见的基础列，两次运行价格相同
+    而系数不同（例如换了前复权基准日）时，读它的因子取值会变。
 
     参数：
-        daily_bars: 已整理为基础七列的日频行情表。
+        daily_bars: 已整理为 ``BASE_DAILY_COLUMNS`` 的日频行情表。
         namespace: 数据源缓存命名空间，例如 ``qmt_daily/hfq``。
 
     返回：
         二十位十六进制短指纹。
     """
 
-    columns = [*KEY_COLUMNS, "open", "high", "low", "close", "volume"]
+    columns = list(BASE_DAILY_COLUMNS)
     digest = hashlib.sha256()
     digest.update(namespace.encode())
     digest.update("|".join(f"{column}:{daily_bars[column].dtype}" for column in columns).encode())
@@ -526,11 +560,22 @@ def build_daily_features_from_daily(
         raise ValueError("因子列表不能包含重复项")
 
     selected = _reject_or_drop_intraday_factors(selected, explicit, source_name)
-    base_columns = {*KEY_COLUMNS, "open", "high", "low", "close", "volume"}
+    base_columns = set(BASE_DAILY_COLUMNS)
     referenced_columns = set().union(*(node.columns for node in expression_nodes)) if expression_nodes else set()
     unknown_columns = referenced_columns.difference(base_columns, FACTOR_FACTORIES)
     if unknown_columns:
         raise ValueError(f"运行时因子表达式引用未知列: {sorted(unknown_columns)}")
+    if "adjust_factor" in referenced_columns:
+        # 文档里的三条陷阱很容易被跳过，这里在真正用到时再提醒一次。qfq 下
+        # adjust_factor(t) = hfq(t)/hfq(anchor)，分母含 t 之后的分红，单独当特征
+        # 就是未来数据泄漏；只有作为还原原始价的分母时该分母才会被约掉。
+        logger.warning(
+            "运行时表达式引用了 adjust_factor：它只应作为 close / adjust_factor 这类"
+            "还原原始不复权价的分母使用。单独取值带一次价格量纲；且在 --adjust qfq "
+            "口径下，交易日 t 的取值 hfq(t)/hfq(anchor) 的分母含有 t 之后、基准日之前"
+            "才发生的分红送转，对 t 而言是未来数据。还原出的原始价跨除权日会跳档，"
+            "不要再叠加任何时序算子。"
+        )
     referenced_intraday = sorted(referenced_columns.intersection(intraday_factor_names()))
     if referenced_intraday:
         raise ValueError(
@@ -674,7 +719,7 @@ def build_daily_features(
     if len(selected) != len(set(selected)):
         raise ValueError("因子列表不能包含重复项")
 
-    base_columns = {*KEY_COLUMNS, "open", "high", "low", "close", "volume"}
+    base_columns = set(BASE_DAILY_COLUMNS)
     referenced_columns = set().union(*(node.columns for node in expression_nodes))
     unknown_columns = referenced_columns.difference(base_columns, FACTOR_FACTORIES)
     if unknown_columns:
@@ -690,6 +735,10 @@ def build_daily_features(
         cache_dir or "disabled",
     )
     daily = _build_daily_bars(bars)
+    # 分钟库存的是原始价，没有任何复权概念，因此系数恒为 1.0。这里补列而不是改
+    # ``_build_daily_bars``：后者的源码文本参与实现指纹，改它会作废全部分钟缓存。
+    # 补上之后两条路径的基础列宇宙一致，读 adjust_factor 的因子换数据源不会报错。
+    daily["adjust_factor"] = 1.0
     logger.info(
         "基础日线聚合完成: rows=%d symbols=%d",
         len(daily),

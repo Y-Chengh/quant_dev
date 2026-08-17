@@ -42,9 +42,19 @@ _SEED = 20260816
 #: 同一个常量，改动样本波动率时门槛会自动跟着变。
 _DAILY_SIGMA = 0.02
 
+#: 各证券除权事件之后的后复权系数。含 1.0 档，用来覆盖「该证券从未除权」；
+#: 其余档位刻意与 ``_SCALE_LADDER`` 不成比例，避免两者相乘后互相抵消。
+_EVENT_FACTORS = (1.0, 1.6, 2.4, 1.0, 4.5)
+
 
 def _daily_frame(days: int = 60, codes: tuple[str, ...] = ("A", "B", "C", "D", "E")) -> pd.DataFrame:
     """生成多证券随机游走日频样本，长度足以填满 20 日滚动窗口。
+
+    价格列按复权后的口径生成（连续随机游走），``adjust_factor`` 是一条在样本
+    正中间跳档的阶梯，因此 ``close / adjust_factor`` 还原出的原始价在该日会像
+    真实除权那样跳空——恒为常数的系数会让「还原原始价」类用例退化成对 ``close``
+    本身的检验。跳档位置取 ``days // 2`` 而不是写死的常量：写死的位置一旦超过
+    某个调用方传入的 ``days``，那份样本的系数就整列恒等，用例会静默空转。
 
     参数：
         days: 每只证券生成的连续工作日数，缺省 60，需大于最长因子窗口 20 加
@@ -55,10 +65,12 @@ def _daily_frame(days: int = 60, codes: tuple[str, ...] = ("A", "B", "C", "D", "
 
     rng = np.random.default_rng(_SEED)
     dates = pd.bdate_range("2024-01-02", periods=days)
+    event_position = days // 2
     rows = []
     for index, code in enumerate(codes):
         level = 8.0 + index * 7.0
-        for date in dates:
+        event_factor = _EVENT_FACTORS[index % len(_EVENT_FACTORS)]
+        for position, date in enumerate(dates):
             level *= float(np.exp(rng.normal(0.0, _DAILY_SIGMA)))
             open_price = level * float(np.exp(rng.normal(0.0, 0.005)))
             close_price = level * float(np.exp(rng.normal(0.0, 0.005)))
@@ -71,6 +83,7 @@ def _daily_frame(days: int = 60, codes: tuple[str, ...] = ("A", "B", "C", "D", "
                     "low": min(open_price, close_price) * (1.0 - abs(rng.normal(0.0, 0.004))),
                     "close": close_price,
                     "volume": float(rng.integers(1_000, 50_000)),
+                    "adjust_factor": 1.0 if position < event_position else event_factor,
                 }
             )
     return pd.DataFrame(rows)
@@ -134,18 +147,26 @@ def _code_scales(codes) -> pd.Series:
 def _rescale_prices(frame: pd.DataFrame, scales: pd.Series) -> pd.DataFrame:
     """按证券给价格列各乘一个常数，等价于逐证券更换复权基准。
 
+    ``adjust_factor`` 存在时必须与价格**同步**缩放：前复权系数
+    ``qfq(s | anchor) = hfq(s) / hfq(anchor)`` 的分母同时出现在复权价和系数里，
+    换基准日时两者乘上同一个常数。只缩放价格会把 ``close / adjust_factor`` 这类
+    还原原始价的写法误判成一次齐次，反过来给真正带量纲的写法开脱。
+
     参数：
-        frame: 日频或分钟频行情表，至少含 ``code`` 与 ``_PRICE_COLUMNS``。
+        frame: 日频或分钟频行情表，至少含 ``code`` 与 ``_PRICE_COLUMNS``；
+            ``adjust_factor`` 可选，分钟频样本没有这一列。
         scales: 以证券代码为索引的缩放系数。
 
     返回：
-        仅价格列被缩放的新表；成交量等非价格列逐字节保持原值。
+        价格列与复权系数被缩放的新表；成交量等其余列逐字节保持原值。
     """
 
     result = frame.copy()
     multiplier = result["code"].astype(str).map(scales).astype(float)
     for column in _PRICE_COLUMNS:
         result[column] = result[column].astype(float) * multiplier
+    if "adjust_factor" in result.columns:
+        result["adjust_factor"] = result["adjust_factor"].astype(float) * multiplier
     return result
 
 
@@ -348,6 +369,43 @@ class DslExpressionScaleInvarianceTest(unittest.TestCase):
         mask = np.isfinite(base) & np.isfinite(scaled)
         self.assertGreater(mask.sum(), 0)
         np.testing.assert_allclose(scaled[mask], base[mask], rtol=1e-9)
+
+    def test_fixture_adjust_factor_actually_steps(self):
+        # 前提守卫：系数若恒为常数，下面两条用例就退化成对 close 本身的检验。
+        per_code = self.daily.groupby("code")["adjust_factor"].nunique()
+        self.assertGreater(int(per_code.max()), 1, "样本的 adjust_factor 没有除权跳档")
+
+    def test_raw_price_recovery_is_scale_invariant(self):
+        # close / adjust_factor 在任何复权口径下都还原为同一个原始不复权价，
+        # 因此它对「更换基准日」这类逐证券常数缩放严格不变，即 k = 0。
+        # 这正是把 adjust_factor 放进因子层的唯一无争议用途。
+        def raw_price(frame: pd.DataFrame) -> np.ndarray:
+            handle = DailyFactorFrame(frame)
+            expression = handle.close() / handle.column("adjust_factor")
+            return expression.compute().astype(float).to_numpy()
+
+        base, scaled = raw_price(self.daily), raw_price(self.scaled)
+        mask = np.isfinite(base) & np.isfinite(scaled)
+        self.assertGreater(mask.sum(), 0)
+        np.testing.assert_allclose(scaled[mask], base[mask], rtol=1e-9)
+
+    def test_adjust_factor_alone_is_first_order_homogeneous(self):
+        # 反面：单独取系数带一次量纲，换基准日整列跟着变。搜索候选若把它当特征
+        # 直接投进横截面，排出来的是「上市时长 × 分红历史」而不是信号。
+        def factor_only(frame: pd.DataFrame) -> np.ndarray:
+            return (
+                DailyFactorFrame(frame)
+                .column("adjust_factor")
+                .compute()
+                .astype(float)
+                .to_numpy()
+            )
+
+        row_scale = self.daily["code"].astype(str).map(self.scales).astype(float).to_numpy()
+        base, scaled = factor_only(self.daily), factor_only(self.scaled)
+        mask = np.isfinite(base) & np.isfinite(scaled)
+        self.assertGreater(mask.sum(), 0)
+        np.testing.assert_allclose(scaled[mask], (base * row_scale)[mask], rtol=1e-9)
 
     def test_cross_sectional_rank_of_price_is_not_scale_invariant(self):
         # 这是全截面统一缩放抓不到、必须逐证券缩放才能暴露的那一类：

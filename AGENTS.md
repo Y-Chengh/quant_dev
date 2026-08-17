@@ -165,10 +165,23 @@
 - 因子不得混用复权价与未复权量。日线库只复权 `open`/`high`/`low`/`close`/
   `pre_close`，`amount` 恒不复权，`volume` 仅在 `adjust_volume=True` 时反向调整。
   因此同一个表达式里 `close` 与成交量类字段的齐次度会随该开关变化，`close * volume`
-  这类近似成交额的写法在两种配置下口径不同。当前 `_prepare_daily_bars` 只保留
-  `open`/`high`/`low`/`close`/`volume`，日频因子拿不到 `amount`；若将来把它加入基础
-  列，`amount / volume` 推出的 VWAP 与已复权的 `close` 不同尺度，直接相比会在每个
-  除权日产生虚假跳变。
+  这类近似成交额的写法在两种配置下口径不同。因子可见的基础列**契约**由
+  `quant.factor_research.factors.BASE_DAILY_COLUMNS` 唯一定义（`_prepare_daily_bars`、
+  `_daily_input_fingerprint` 与两处表达式列守卫都读它），日频因子拿不到 `amount`；
+  若将来把它加入基础列，`amount / volume` 推出的 VWAP 与已复权的 `close` 不同尺度，
+  直接相比会在每个除权日产生虚假跳变。注意分钟路径**实际产出**哪些列仍写在
+  `_build_daily_bars` 里，往常量加列时必须手工同步——不能改 `_build_daily_bars` 来
+  加列，那会作废全部分钟缓存；两条路径由 `tests/factor_research/test_adjust_factor_column.py`
+  的列集合用例对齐，漏同步会直接测试失败而不是静默分叉。
+- 基础列 `adjust_factor` 是当前复权口径乘到价格上的那个正系数，于是
+  `close / adjust_factor` 在三种口径下都还原为同一个原始不复权价；分钟路径没有复权
+  概念，`build_daily_features` 与 `aggregate_daily_bars` 在那里补 1.0，使两条路径的
+  列宇宙一致。使用它必须守住三条：**只能同日横截面用**（该系数在时间上是阶梯函数，
+  还原出的原始价跨除权日会跳档，再叠任何时序算子都会算出假跳空）；**单独当特征时
+  是一次齐次**，必须声明 `price_homogeneity = 1`，否则横截面上排的是「上市时长 ×
+  分红送转历史」；**`qfq` 口径下有未来数据泄漏**，因为 `hfq(t) / hfq(anchor)` 的分母
+  含有 `t` 之后的分红，只有作为还原原始价的分母（`hfq(anchor)` 自动约掉）才安全。
+  `_rescale_prices` 必须与价格同步缩放该列，否则「还原原始价」会被误判成一次齐次。
 - 新增或修改因子后，更新自动注册集合测试，并增加具体数值和边界条件测试。
 - 正式因子可以调用 `factor_dsl` 的基础算子，但搜索产生的临时候选不得注册到
   `FACTOR_FACTORIES`，避免改变 `DEFAULT_FEATURES`。

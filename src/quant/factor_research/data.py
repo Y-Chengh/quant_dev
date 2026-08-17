@@ -4,6 +4,7 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .timing import log_elapsed
@@ -53,10 +54,12 @@ def validate_daily_bars(daily: pd.DataFrame) -> pd.DataFrame:
     参数：
         daily: 日频行情表，至少包含证券代码、交易日和开高低收量七列；
             允许携带 ``amount``、``pre_close``、``suspend_flag`` 等额外列。
+            可选的 ``adjust_factor`` 列会被一并校验：它是复权口径乘到价格上的
+            那个正系数，取值必须有限且大于零。
 
     返回：
         按证券代码和交易日升序排列、索引重置后的新表；存在重复主键、
-        非正价格、负成交量或最高最低价矛盾时抛出 ``ValueError``。
+        非正价格、负成交量、最高最低价矛盾或非法复权系数时抛出 ``ValueError``。
     """
     missing = DAILY_REQUIRED_COLUMNS.difference(daily.columns)
     if missing:
@@ -84,6 +87,29 @@ def validate_daily_bars(daily: pd.DataFrame) -> pd.DataFrame:
                 int(invalid.sum()), first["code"], first["trade_date"]
             )
         )
+    if "adjust_factor" in result.columns:
+        # 复权系数会作为基础列一路传到因子层，``close / adjust_factor`` 必须能
+        # 还原原始不复权价，因此这里宁可报错也不把缺失或非正的系数悄悄替换成
+        # 1.0——那等于让这几行偷偷换成「未复权」口径，而且完全不可见。
+        # 必须落到 numpy ``float64``：``pd.to_numeric`` 会保留可空扩展 dtype
+        # （``Float64``），此时 ``np.isfinite`` 返回带 ``pd.NA`` 的 BooleanArray，
+        # ``any()`` 默认 skipna 会把缺失位当 False 跳过，缺失系数就被静默放行。
+        # ``astype`` 顺带把 ``pd.NA`` 归一成 ``np.nan``，并让写回列的 dtype 恒定，
+        # 使 ``_daily_input_fingerprint`` 的 dtype 串不随输入 backend 变化。
+        factor = pd.to_numeric(result["adjust_factor"], errors="coerce").astype("float64")
+        bad_factor = ~np.isfinite(factor) | (factor <= 0)
+        if bad_factor.any():
+            first = result.loc[bad_factor].iloc[0]
+            raise ValueError(
+                "日频行情包含{0}行非法复权系数（必须有限且为正），"
+                "首个问题行: code={1} trade_date={2} adjust_factor={3!r}".format(
+                    int(bad_factor.sum()),
+                    first["code"],
+                    first["trade_date"],
+                    first["adjust_factor"],
+                )
+            )
+        result["adjust_factor"] = factor
     return result.sort_values(["code", "trade_date"]).reset_index(drop=True)
 
 

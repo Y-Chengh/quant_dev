@@ -165,10 +165,46 @@ non_homogeneous_factor_names()  # frozenset({'alpha_001'})
 会给带价格量纲的因子发出假的合格证。
 
 另外，复权只作用于 `open`/`high`/`low`/`close`/`pre_close`，`amount` 恒不复权、
-`volume` 仅在 `--adjust-volume` 时反向调整。因子层目前只拿得到
-`open`/`high`/`low`/`close`/`volume`（`_prepare_daily_bars` 会丢掉 `amount`），
+`volume` 仅在 `--adjust-volume` 时反向调整。因子层拿得到的基础列是
+`quant.factor_research.factors.BASE_DAILY_COLUMNS`，即
+`code`/`trade_date`/`open`/`high`/`low`/`close`/`volume`/`adjust_factor`
+（`_prepare_daily_bars` 会丢掉 `amount`、`pre_close`、`suspend_flag`），
 所以同一表达式里 `close` 与成交量的相对尺度会随该开关变化，`close * volume` 这类
 近似成交额的写法在两种配置下口径不同。
+
+### 基础列 `adjust_factor`
+
+`adjust_factor` 是当前复权口径乘到价格上的那个正系数，因此
+
+```
+close / adjust_factor
+```
+
+在 `none`/`hfq`/`qfq` 三种口径下都还原为**同一个原始不复权价**。分钟数据源没有复权
+概念，那条路径上该列恒为 1.0，两条路径的基础列宇宙一致，读它的因子换数据源不会
+`KeyError`。
+
+它的用途和陷阱：
+
+- **零次齐次**：`close / adjust_factor` 对「更换前复权基准日」这类逐证券常数缩放
+  严格不变，可以直接进横截面。这是它唯一无争议的用法。
+- **一次齐次**：`adjust_factor` 单独作为特征带价格量纲，横截面上排出来的是
+  「上市时长 × 分红送转历史」而不是信号。要用必须声明 `price_homogeneity = 1`。
+- **只能同日横截面用**：`adjust_factor(t)` 在时间上是阶梯函数，还原出的原始价跨
+  除权日会跳档。`close / adjust_factor` 上再叠任何时序算子（`delta`、`returns`、
+  `ts_mean` …）都会算出假的除权跳空——那正是复权要修掉的东西。
+- **`qfq` 下有未来数据泄漏**：`hfq` 与 `none` 下 `adjust_factor(t)` 只由不晚于 `t`
+  的除权事件累乘而来，是因果的；但 `qfq` 下它等于 `hfq(t) / hfq(anchor)`，`anchor`
+  晚于 `t` 时分母含有 `t` 之后才发生的分红送转。所以在 `qfq` 口径下**只能**把它
+  用作还原原始价的分母（比值里 `hfq(anchor)` 自动约掉），不得把它本身或它的时序
+  变化直接当特征。
+
+搜索的列来源都是显式配置的，因此加这一列不会自动扩大搜索空间：`genetic/config.py`
+的 `sources` 缺省为 `("close", "volume", "return_1d")`，`cli/grid_search.py` 的
+`build_search_space()` 与 `build_genetic_search_config()` 各自硬编码
+`close/volume/return_1d/high/low/open`，三处都不含 `adjust_factor`。若手工把它放进
+`sources`，务必按上面四条先确认候选表达式的齐次度；另外分钟数据源上该列恒为 1.0，
+放进去只会得到一个常数终端。
 
 指定窗口和股票：
 
