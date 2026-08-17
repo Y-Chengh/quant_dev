@@ -11,6 +11,7 @@ from quant.cli.factor_demo import (
     parse_args,
     resolve_drawdown_chart_path,
     resolve_equity_chart_path,
+    resolve_slippage_chart_path,
 )
 from quant.factor_research.backtesting import (
     TRADING_DAYS_PER_YEAR,
@@ -21,6 +22,7 @@ from quant.factor_research.experiment import ExperimentResult
 from quant.factor_research.reporting import (
     render_drawdown_curve_svg,
     render_equity_curve_svg,
+    render_slippage_curves_svg,
     write_evaluation_report,
 )
 
@@ -540,6 +542,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertEqual(defaults.backtest_top_n, 10)
         self.assertEqual(defaults.slippage_bps, 0.0)
         self.assertEqual(defaults.commission_bps, 0.0)
+        self.assertEqual(defaults.slippage_bps_candidates, [])
         overridden = parse_args(
             [
                 "--backtest-top-n",
@@ -548,24 +551,32 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                 "3.5",
                 "--commission-bps",
                 "2",
+                "--slippage-bps-candidates",
+                "0",
+                "12.5",
             ]
         )
         self.assertEqual(overridden.backtest_top_n, 5)
         self.assertEqual(overridden.slippage_bps, 3.5)
         self.assertEqual(overridden.commission_bps, 2.0)
+        self.assertEqual(overridden.slippage_bps_candidates, [0.0, 12.5])
 
         with TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "experiment.yaml"
             config_path.write_text(
-                "backtest_top_n: 7\nslippage_bps: 4\ncommission_bps: 1.5\n",
+                "backtest_top_n: 7\nslippage_bps: 4\ncommission_bps: 1.5\n"
+                "slippage_bps_candidates:\n  - 0\n  - 8\n",
                 encoding="utf-8",
             )
             configured = parse_args(["--config", str(config_path)])
         self.assertEqual(configured.backtest_top_n, 7)
         self.assertEqual(configured.slippage_bps, 4.0)
         self.assertEqual(configured.commission_bps, 1.5)
+        self.assertEqual(configured.slippage_bps_candidates, [0.0, 8.0])
         with self.assertRaises(SystemExit):
             parse_args(["--commission-bps", "nan"])
+        with self.assertRaises(SystemExit):
+            parse_args(["--slippage-bps-candidates", "-1"])
 
     def test_report_contains_sharpe_and_writes_equity_curve(self) -> None:
         """评估报告应展示成本、夏普比率并生成可链接的收益曲线。
@@ -645,6 +656,8 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("### 回撤诊断", report)
         self.assertIn("### 历史回撤与修复", report)
         self.assertIn("### 历次回撤区间", report)
+        # 未配置滑点候选时不应出现滑点对比小节。
+        self.assertNotIn("### 不同滑点下的收益曲线对比", report)
         self.assertIn(drawdown_path.name, report)
         self.assertIn("| 全股票等权最大回撤 |", report)
         self.assertLess(
@@ -1053,6 +1066,310 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             output_path = Path(temp_dir) / "unsorted_drawdown.svg"
             with self.assertRaisesRegex(ValueError, "升序"):
                 render_drawdown_curve_svg(unsorted_daily, output_path)
+
+    def test_slippage_candidates_reuse_selection_and_recost_daily_returns(self) -> None:
+        """滑点候选应复用同一批选股，只按各自滑点重算净值并去重。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        returns = [0.10, -0.05, 0.02]
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions(returns),
+            "up_probability",
+            top_n=1,
+            slippage_bps=0.0,
+            commission_bps=1.0,
+            # 与基准重复的 0 以及重复出现的 100 都应被去重。
+            slippage_bps_candidates=[100.0, 100.0, 0.0],
+        )
+        self.assertEqual(
+            result.slippage_metrics["slippage_bps"].tolist(), [0.0, 100.0]
+        )
+        self.assertEqual(
+            result.slippage_metrics["is_baseline"].tolist(), [True, False]
+        )
+
+        curves = result.slippage_curves
+        baseline_curve = curves.loc[curves["slippage_bps"] == 0.0]
+        np.testing.assert_array_equal(
+            baseline_curve["equity"].to_numpy(dtype=float),
+            result.daily_returns["equity"].to_numpy(dtype=float),
+        )
+        np.testing.assert_array_equal(
+            baseline_curve["net_return"].to_numpy(dtype=float),
+            result.daily_returns["net_return"].to_numpy(dtype=float),
+        )
+        # 候选曲线按 (1 + 毛收益) * 成交乘数 - 1 精确重算，手续费与基准一致。
+        multiplier = (1.0 - 0.01) * (1.0 - 0.0001) / ((1.0 + 0.01) * (1.0 + 0.0001))
+        expected_net = (1.0 + np.asarray(returns)) * multiplier - 1.0
+        candidate_curve = curves.loc[curves["slippage_bps"] == 100.0]
+        np.testing.assert_allclose(
+            candidate_curve["net_return"].to_numpy(dtype=float), expected_net
+        )
+        np.testing.assert_allclose(
+            candidate_curve["equity"].to_numpy(dtype=float),
+            np.cumprod(1.0 + expected_net),
+        )
+        np.testing.assert_array_equal(
+            pd.to_datetime(candidate_curve["target_date"]).to_numpy(),
+            pd.to_datetime(result.daily_returns["target_date"]).to_numpy(),
+        )
+
+        baseline_metrics = result.slippage_metrics.iloc[0]
+        self.assertEqual(
+            baseline_metrics["total_return"], result.metrics["total_return"]
+        )
+        self.assertEqual(
+            baseline_metrics["sharpe_ratio"], result.metrics["sharpe_ratio"]
+        )
+        self.assertEqual(
+            baseline_metrics["max_drawdown"], result.drawdown_metrics["max_drawdown"]
+        )
+        self.assertEqual(baseline_metrics["annualized_return_minus_baseline"], 0.0)
+        candidate_metrics = result.slippage_metrics.iloc[1]
+        self.assertAlmostEqual(
+            candidate_metrics["annualized_return_minus_baseline"],
+            candidate_metrics["annualized_return"]
+            - baseline_metrics["annualized_return"],
+        )
+        # 滑点更高必然吃掉收益，而选股与其余诊断保持不变。
+        self.assertLess(
+            candidate_metrics["total_return"], baseline_metrics["total_return"]
+        )
+        self.assertEqual(result.top_selections["code"].tolist(), ["A0", "A1", "A2"])
+
+    def test_slippage_candidates_default_to_no_comparison(self) -> None:
+        """未给出滑点候选时不应产出对比曲线，既有输出保持不变。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        result = run_top_n_intraday_backtest(
+            self._predictions(), "up_probability", top_n=2
+        )
+        self.assertTrue(result.slippage_curves.empty)
+        self.assertTrue(result.slippage_metrics.empty)
+
+    def test_slippage_candidates_leave_every_other_output_unchanged(self) -> None:
+        """滑点候选只应新增对比结果，其余全部字段必须逐一保持不变。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = self._predictions()
+        baseline = run_top_n_intraday_backtest(
+            predictions, "up_probability", top_n=2, slippage_bps=2, commission_bps=1
+        )
+        compared = run_top_n_intraday_backtest(
+            predictions,
+            "up_probability",
+            top_n=2,
+            slippage_bps=2,
+            commission_bps=1,
+            slippage_bps_candidates=[0.0, 25.0],
+        )
+        for frame_name in (
+            "daily_returns",
+            "top_selections",
+            "decile_returns",
+            "drawdown_episodes",
+        ):
+            pd.testing.assert_frame_equal(
+                getattr(baseline, frame_name), getattr(compared, frame_name)
+            )
+        for metric_name in (
+            "metrics",
+            "benchmark_metrics",
+            "relative_metrics",
+            "selection_metrics",
+            "drawdown_metrics",
+        ):
+            expected = getattr(baseline, metric_name)
+            actual = getattr(compared, metric_name)
+            self.assertEqual(expected.keys(), actual.keys())
+            for key, value in expected.items():
+                if np.isnan(value):
+                    self.assertTrue(np.isnan(actual[key]), key)
+                    continue
+                self.assertEqual(value, actual[key], key)
+        self.assertTrue(baseline.slippage_curves.empty)
+        self.assertFalse(compared.slippage_curves.empty)
+
+    def test_slippage_candidates_reject_invalid_values(self) -> None:
+        """滑点候选超出取值范围或非有限值时必须直接报错。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        predictions = self._predictions()
+        for invalid in (-1.0, 10_000.0, float("nan"), float("inf")):
+            with self.assertRaisesRegex(ValueError, "slippage_bps_candidates"):
+                run_top_n_intraday_backtest(
+                    predictions,
+                    "up_probability",
+                    top_n=2,
+                    slippage_bps_candidates=[invalid],
+                )
+        # 非数值候选也要给出带参数名的报错，而不是裸的转换异常。
+        for invalid_type in (["abc"], ["12"], [True], "12"):
+            with self.assertRaisesRegex(ValueError, "slippage_bps_candidates"):
+                run_top_n_intraday_backtest(
+                    predictions,
+                    "up_probability",
+                    top_n=2,
+                    slippage_bps_candidates=invalid_type,  # type: ignore[arg-type]
+                )
+
+    def test_slippage_chart_distinguishes_more_levels_than_palette(self) -> None:
+        """候选档数超过调色板长度时应换线型，保证同色曲线仍可区分。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        curves = pd.concat(
+            [
+                pd.DataFrame(
+                    {
+                        "slippage_bps": float(level),
+                        "target_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                        "equity": [1.01 - level / 1000.0, 1.02 - level / 1000.0],
+                        "is_baseline": level == 0,
+                    }
+                )
+                for level in range(9)
+            ],
+            ignore_index=True,
+        )
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "many_levels.svg"
+            render_slippage_curves_svg(curves, output_path)
+            slippage_svg = output_path.read_text(encoding="utf-8")
+
+        self.assertEqual(slippage_svg.count("<polyline"), 9)
+        # 第 7、8 档候选与第 1、2 档同色，但线型不同。
+        self.assertIn('stroke="#2563eb" stroke-dasharray="7 4"', slippage_svg)
+        self.assertIn('stroke="#d97706" stroke-dasharray="7 4"', slippage_svg)
+
+    def test_slippage_chart_draws_one_curve_per_level(self) -> None:
+        """滑点对比图应为每档滑点画一条曲线并在图例中标出基准。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions([0.10, -0.05, 0.02]),
+            "up_probability",
+            top_n=1,
+            slippage_bps=2.5,
+            slippage_bps_candidates=[0.0, 50.0],
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chart_path = root / "slippage.svg"
+            render_slippage_curves_svg(result.slippage_curves, chart_path)
+            slippage_svg = chart_path.read_text(encoding="utf-8")
+
+            mismatched = result.slippage_curves.copy()
+            last_index = mismatched.index[-1]
+            mismatched.loc[last_index, "target_date"] = pd.Timestamp("2030-01-01")
+            with self.assertRaisesRegex(ValueError, "同一组目标交易日"):
+                render_slippage_curves_svg(mismatched, root / "mismatched.svg")
+            # 首档滑点自身日期乱序时先触发单调性检查，而不是各档一致性检查。
+            unsorted_curves = result.slippage_curves.copy()
+            unsorted_curves.loc[unsorted_curves.index[0], "target_date"] = (
+                pd.Timestamp("2030-01-01")
+            )
+            with self.assertRaisesRegex(ValueError, "升序"):
+                render_slippage_curves_svg(unsorted_curves, root / "unsorted.svg")
+            with self.assertRaisesRegex(ValueError, "缺少列"):
+                render_slippage_curves_svg(
+                    result.slippage_curves.drop(columns=["equity"]),
+                    root / "missing.svg",
+                )
+            with self.assertRaisesRegex(ValueError, "没有对比曲线"):
+                render_slippage_curves_svg(
+                    result.slippage_curves.iloc[0:0], root / "empty.svg"
+                )
+
+        self.assertEqual(slippage_svg.count("<polyline"), 3)
+        # 图例与报告表格使用同一套滑点格式，避免同一档滑点两种写法。
+        self.assertIn("滑点 2.5000 bps（基准）", slippage_svg)
+        self.assertIn(">滑点 0.0000 bps</text>", slippage_svg)
+        self.assertIn(">滑点 50.0000 bps</text>", slippage_svg)
+        self.assertIn(">期初</text>", slippage_svg)
+
+    def test_report_lists_slippage_comparison_before_benchmarks(self) -> None:
+        """给出滑点候选时报告应插入对比小节，并排在基准对照之前。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        returns = [0.10, -0.05, 0.02]
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions(returns),
+            "up_probability",
+            top_n=1,
+            slippage_bps=2.5,
+            commission_bps=1.0,
+            slippage_bps_candidates=[0.0, 50.0],
+        )
+        accuracy = pd.DataFrame(
+            {
+                "target_date": result.daily_returns["target_date"],
+                "samples": [1, 1, 1],
+                "accuracy": [1.0, 0.0, 1.0],
+                "accuracy_change": [np.nan, -1.0, 1.0],
+            }
+        )
+        experiment = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="slippage",
+            feature_columns=[],
+            metrics={"samples": 3.0},
+            predictions=self._single_security_predictions(returns),
+            feature_importance=None,
+            daily_accuracy_trend=accuracy,
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "evaluation.md"
+            accuracy_path = root / "evaluation_accuracy.svg"
+            slippage_path = resolve_slippage_chart_path(accuracy_path)
+            write_evaluation_report(
+                experiment,
+                report_path,
+                accuracy_path,
+                "slippage-run",
+                {},
+                backtest=result,
+                equity_chart_path=resolve_equity_chart_path(accuracy_path),
+                slippage_chart_path=slippage_path,
+            )
+            report = report_path.read_text(encoding="utf-8")
+            self.assertTrue(slippage_path.exists())
+
+        self.assertIn("### 不同滑点下的收益曲线对比", report)
+        self.assertIn(slippage_path.name, report)
+        self.assertIn("| 2.5000（基准） | ", report)
+        self.assertIn("| 0.0000 | ", report)
+        self.assertIn("| 50.0000 | ", report)
+        self.assertIn("手续费保持 1.0000 bps 不变", report)
+        self.assertLess(
+            report.index("### 不同滑点下的收益曲线对比"),
+            report.index("### Top N 基准与横截面对照"),
+        )
+        self.assertLess(
+            report.index("### Top N 与横截面对照收益曲线"),
+            report.index("### 不同滑点下的收益曲线对比"),
+        )
 
     def test_equity_renderer_accepts_legacy_top_only_frame(self) -> None:
         """旧调用方只提供 Top N 净值时仍应生成单曲线 SVG。

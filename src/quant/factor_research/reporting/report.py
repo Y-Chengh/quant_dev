@@ -23,6 +23,7 @@ from .labels import (
     METRIC_LABELS,
 )
 from .markdown import _render_top_selection_tables, render_markdown_report_html
+from .slippage_chart import render_slippage_curves_svg
 
 DRAWDOWN_METRIC_LABELS = {
     "max_drawdown": "最大回撤",
@@ -170,6 +171,59 @@ def _render_drawdown_sections(
     return lines
 
 
+def _render_slippage_sections(
+    backtest: TopNBacktestResult,
+    slippage_chart_path: Path | None,
+) -> list[str]:
+    """生成不同滑点下的 Top N 收益曲线对比图与汇总指标 Markdown 段落。
+
+    对比曲线复用基准回测的每日选股与手续费率，只替换单边滑点，因此差异可以完全
+    归因于滑点。未配置滑点候选（或候选与基准重复被去重后为空）时返回空列表，
+    报告不出现该小节，既有输出保持不变。
+
+    参数：
+        backtest: Top N 日内策略回测结果，读取其滑点对比曲线与汇总指标。
+        slippage_chart_path: 滑点对比图 SVG 路径；为 ``None`` 时只输出指标表。
+
+    返回：
+        可直接追加到评估报告的 Markdown 文本行。
+    """
+
+    metrics = backtest.slippage_metrics
+    if metrics.empty:
+        return []
+    lines = ["", "### 不同滑点下的收益曲线对比", ""]
+    if slippage_chart_path is not None:
+        lines.extend(
+            [
+                f"![不同单边滑点下的 Top N 累计净值对比]({slippage_chart_path.name})",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            f"各档曲线使用同一批每日选股，手续费保持 {backtest.commission_bps:.4f} bps 不变，"
+            f"只替换单边滑点；基准为 `--slippage-bps` 的 {backtest.slippage_bps:.4f} bps，"
+            "与基准重复的候选滑点已去重。",
+            "",
+            "| 单边滑点（bps） | 累计收益率 | 年化收益率 | 年化波动率 | 夏普比率 |"
+            " 最大回撤 | 年化收益相对基准 |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for row in metrics.itertuples(index=False):
+        label = f"{row.slippage_bps:.4f}" + ("（基准）" if bool(row.is_baseline) else "")
+        lines.append(
+            f"| {label} | {_format_percentage(row.total_return)} | "
+            f"{_format_percentage(row.annualized_return)} | "
+            f"{_format_percentage(row.annualized_volatility)} | "
+            f"{_format_number(row.sharpe_ratio)} | "
+            f"{_format_percentage(row.max_drawdown)} | "
+            f"{_format_percentage(row.annualized_return_minus_baseline)} |"
+        )
+    return lines
+
+
 def write_evaluation_report(
     result: ExperimentResult,
     report_path: Path,
@@ -181,6 +235,7 @@ def write_evaluation_report(
     equity_chart_path: Path | None = None,
     ic_chart_path: Path | None = None,
     drawdown_chart_path: Path | None = None,
+    slippage_chart_path: Path | None = None,
 ) -> None:
     """写入模型评估、可选 Top N 回测、HTML 副本以及对应 SVG 图表。
 
@@ -197,6 +252,8 @@ def write_evaluation_report(
             既有调用接口行为。
         drawdown_chart_path: 历史回撤与修复 SVG 路径；缺省不输出回撤图，保留
             既有调用接口行为，回撤指标表仍照常输出。
+        slippage_chart_path: 不同滑点收益曲线对比 SVG 路径；缺省不输出对比图，
+            指标表仍照常输出。回测未配置滑点候选时该图不会生成。
 
     返回：
         无；函数写入 Markdown、同名 HTML 报告及配置的 SVG 图表。
@@ -211,6 +268,8 @@ def write_evaluation_report(
         render_equity_curve_svg(backtest.daily_returns, equity_chart_path)
         if drawdown_chart_path is not None:
             render_drawdown_curve_svg(backtest.daily_returns, drawdown_chart_path)
+        if slippage_chart_path is not None and not backtest.slippage_curves.empty:
+            render_slippage_curves_svg(backtest.slippage_curves, slippage_chart_path)
 
     predictions = result.predictions.copy()
     if "prediction" in predictions:
@@ -307,6 +366,11 @@ def write_evaluation_report(
                 "四组均按目标日开盘等权买入、收盘卖出并采用相同双边成本；Mid N 为预测排序居中的最多 N 只。"
                 "上面板为全区间累计净值；下面板按自然年把净值以上一年末（首年为期初）重定基为 1，"
                 "段末净值减一即该自然年收益，并直接在图中标注各年份与四组当年收益。",
+            ]
+        )
+        lines.extend(_render_slippage_sections(backtest, slippage_chart_path))
+        lines.extend(
+            [
                 "",
                 "### Top N 基准与横截面对照",
                 "",

@@ -34,7 +34,10 @@
   `genetic/` 按 `config`/`events`/`session`/`trees`/`generator`/`search` 分层。
 - `models/`：预测模型抽象、具体模型及模型工厂。
 - `reporting/`：Markdown/HTML 双格式评估报告和图表输出，按
-  `labels`/`formatting`/`markdown`/`charts`/`report` 分层。
+  `labels`/`formatting`/`markdown`/`charts`/`drawdown_chart`/`slippage_chart`/
+  `report` 分层；回撤图与滑点对比图各自独立成模块，避免 `charts` 越过拆分线。
+- `backtesting/`：验证集 Top N 日内等权回测、交易成本、随机/等权基准、横截面
+  分组及收益价差诊断，按 `metrics`/`drawdown`/`costs`/`result`/`top_n` 分层。
 - `search_report/`：因子搜索结果的可审计报告生成，按
   `constants`/`formatting`/`reproduction`/`summaries`/`charts`/`report` 分层。
 - `data_sources/`：可切换的行情数据源注册表（5 分钟库与 QMT 日线库），
@@ -42,8 +45,6 @@
 - `factors.py`：日频聚合、因子计算和缓存流程。
 - `dataset.py`：特征、标签及训练数据集构建。
 - `experiment.py`：滚动训练、预测和实验结果汇总。
-- `backtesting.py`：验证集 Top N 日内等权回测、交易成本、随机/等权基准、
-  横截面分组及收益价差诊断。
 - `metrics.py`：分类、回归及每日横截面 IC/Rank IC 评估指标。
 
 其余子包：

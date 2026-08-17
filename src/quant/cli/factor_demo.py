@@ -114,6 +114,22 @@ def resolve_drawdown_chart_path(accuracy_chart_path: Path) -> Path:
     return accuracy_chart_path.with_name(f"{stem}_drawdown{accuracy_chart_path.suffix}")
 
 
+def resolve_slippage_chart_path(accuracy_chart_path: Path) -> Path:
+    """根据准确率图路径生成同目录、同运行标识的滑点对比图路径。
+
+    参数：
+        accuracy_chart_path: 本次运行的准确率 SVG 路径。
+
+    返回：
+        文件名后缀由 ``_accuracy`` 替换为 ``_slippage`` 的 SVG 路径。
+    """
+
+    stem = accuracy_chart_path.stem
+    if stem.endswith("_accuracy"):
+        stem = stem[: -len("_accuracy")]
+    return accuracy_chart_path.with_name(f"{stem}_slippage{accuracy_chart_path.suffix}")
+
+
 def resolve_ic_chart_path(accuracy_chart_path: Path) -> Path:
     """根据准确率图路径生成同目录、同运行标识的 IC 趋势图路径。
 
@@ -372,6 +388,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="回测单边滑点基点数，买卖两边分别应用，默认 0",
     )
     parser.add_argument(
+        "--slippage-bps-candidates",
+        nargs="+",
+        type=_cost_bps,
+        default=[],
+        help=(
+            "仅用于对比的单边滑点基点数列表，可传多个；只在 Top N 日内回测中"
+            "额外画出各档滑点的收益曲线并列出指标，不改变选股与其余全部结果，"
+            "默认不做对比"
+        ),
+    )
+    parser.add_argument(
         "--commission-bps",
         type=_cost_bps,
         default=0.0,
@@ -571,6 +598,7 @@ def main() -> None:
         top_n=getattr(args, "backtest_top_n", 10),
         slippage_bps=getattr(args, "slippage_bps", 0.0),
         commission_bps=getattr(args, "commission_bps", 0.0),
+        slippage_bps_candidates=getattr(args, "slippage_bps_candidates", ()) or (),
     )
     logger.info("Top N 日内策略回测指标: %s", backtest.metrics)
     if result.feature_importance is None:
@@ -588,6 +616,7 @@ def main() -> None:
         equity_chart_path=resolve_equity_chart_path(chart_file),
         ic_chart_path=resolve_ic_chart_path(chart_file),
         drawdown_chart_path=resolve_drawdown_chart_path(chart_file),
+        slippage_chart_path=resolve_slippage_chart_path(chart_file),
     )
     logger.info("评估报告: %s", report_file.resolve())
     logger.info("HTML 报告: %s", report_file.with_suffix(".html").resolve())

@@ -286,6 +286,11 @@ class YamlConfigReportingTest(unittest.TestCase):
                 "_drawdown.svg"
             )
         )
+        self.assertTrue(
+            report_writer.call_args.kwargs["slippage_chart_path"].name.endswith(
+                "_slippage.svg"
+            )
+        )
 
 
 if __name__ == "__main__":

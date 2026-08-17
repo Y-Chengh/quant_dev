@@ -7,6 +7,7 @@
 - ``markdown``：报告正文拼装、HTML 转换与候选表格渲染。
 - ``charts``：准确率趋势、IC 趋势与资金曲线的 SVG 渲染。
 - ``drawdown_chart``：Top N 净值历史回撤与修复过程的 SVG 渲染。
+- ``slippage_chart``：不同滑点假设下 Top N 净值对比曲线的 SVG 渲染。
 - ``report``：报告落盘编排。
 
 本模块保持与拆分前完全一致的公开接口，调用方无需改动导入语句。
@@ -29,6 +30,7 @@ from .labels import (
 )
 from .markdown import render_markdown_report_html
 from .report import write_evaluation_report
+from .slippage_chart import render_slippage_curves_svg
 
 __all__ = [
     "IC_TREND_LONG_MIN_PERIODS",
@@ -41,5 +43,6 @@ __all__ = [
     "render_equity_curve_svg",
     "render_ic_trend_svg",
     "render_markdown_report_html",
+    "render_slippage_curves_svg",
     "write_evaluation_report",
 ]
