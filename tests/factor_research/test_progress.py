@@ -8,9 +8,16 @@ from contextlib import redirect_stderr
 from typing import Any
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
+from quant.factor_research import experiment as experiment_module
 from quant.factor_research.experiment import DirectionExperiment, ExperimentResult
+from quant.factor_research.models.base import (
+    DirectionModel,
+    DirectionModelFactory,
+    FitProgressCallback,
+)
 from quant.factor_research.progress import (
     PROGRESS_MODES,
     ProgressBar,
@@ -56,6 +63,118 @@ def _build_dataset(periods: int = 6) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+_USE_ROUNDS = object()
+"""桩模型的哨兵：表示 ``set_fit_progress`` 按实际轮数声明。
+
+不能用 ``None`` 当哨兵：``None`` 本身是「无法预知轮数」这一合法声明值，
+需要作为独立用例传入。
+"""
+
+
+class _RoundReportingModel(DirectionModel):
+    """按固定轮数上报训练进度的最小分类模型，用于验证进度刻度。"""
+
+    def __init__(
+        self,
+        rounds: int,
+        reported_rounds: int,
+        declared_rounds: object = _USE_ROUNDS,
+    ) -> None:
+        """记录声明轮数与实际上报轮数。
+
+        参数：
+            rounds: 训练时传给回调的总轮数。
+            reported_rounds: 训练时实际上报的轮数；小于 ``rounds`` 用于模拟提前收敛。
+            declared_rounds: ``set_fit_progress`` 的返回值；缺省按 ``rounds`` 声明，
+                传入 ``None`` 或非法值用于验证调用方对异常声明的降级处理。
+        """
+
+        self.rounds = rounds
+        self.reported_rounds = reported_rounds
+        self.declared_rounds = (
+            rounds if declared_rounds is _USE_ROUNDS else declared_rounds
+        )
+        self.installed_callback: FitProgressCallback | None = None
+        # 只看最终值无法区分「从未安装」与「装了又卸」，因此记录每一次装卸。
+        self.progress_calls: list[FitProgressCallback | None] = []
+        self._positive_rate = 0.0
+
+    def set_fit_progress(self, callback: FitProgressCallback | None) -> int | None:
+        """注册或卸载训练进度回调，并声明总轮数。
+
+        参数：
+            callback: 训练中按轮调用的回调；``None`` 表示卸载。
+
+        返回：
+            注册时返回声明的总轮数，卸载时返回 ``None``。
+        """
+
+        self.installed_callback = callback
+        self.progress_calls.append(callback)
+        return None if callback is None else self.declared_rounds
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> _RoundReportingModel:
+        """逐轮上报进度，并记住训练集里的多数类。
+
+        参数：
+            X: 二维特征矩阵，本模型不使用其取值。
+            y: 0/1 标签数组，用于决定常数预测概率。
+
+        返回：
+            模型自身。
+        """
+
+        for completed in range(1, self.reported_rounds + 1):
+            if self.installed_callback is not None:
+                self.installed_callback(completed, self.rounds)
+        self._positive_rate = float(np.mean(np.asarray(y, dtype=float)))
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """返回与训练集正类比例相同的常数概率。
+
+        参数：
+            X: 待预测的二维特征矩阵，只用于确定输出行数。
+
+        返回：
+            形状为（样本数, 2）的下跌、上涨概率。
+        """
+
+        positive = np.full(len(np.asarray(X)), self._positive_rate, dtype=float)
+        return np.column_stack([1.0 - positive, positive])
+
+
+class _RoundReportingModelFactory(DirectionModelFactory):
+    """创建 :class:`_RoundReportingModel` 的测试工厂。"""
+
+    name = "round_reporting_stub"
+
+    def __init__(
+        self,
+        rounds: int,
+        reported_rounds: int | None = None,
+        declared_rounds: object = _USE_ROUNDS,
+    ) -> None:
+        """保存声明轮数、实际上报轮数与对外声明值。
+
+        参数：
+            rounds: 传给进度回调的训练总轮数。
+            reported_rounds: 实际上报的轮数；缺省与 ``rounds`` 相同。
+            declared_rounds: ``set_fit_progress`` 的返回值；缺省按 ``rounds`` 声明。
+        """
+
+        self.rounds = rounds
+        self.reported_rounds = rounds if reported_rounds is None else reported_rounds
+        self.declared_rounds = declared_rounds
+
+    def create(self) -> _RoundReportingModel:
+        """创建无历史状态的新模型实例。"""
+
+        return _RoundReportingModel(
+            self.rounds, self.reported_rounds, self.declared_rounds
+        )
 
 
 def _pin_terminal_columns(test: unittest.TestCase, columns: int = 200) -> None:
@@ -304,6 +423,56 @@ class ProgressBarTest(unittest.TestCase):
 
         self.assertEqual(stream.getvalue(), "")
 
+    def test_advance_to_moves_forward_only_and_clamps_to_total(self) -> None:
+        """按绝对位置推进时只前进不回退，且不得越过总步数。"""
+
+        stream = io.StringIO()
+        bar = ProgressBar(
+            10, "单次训练验证", mode="always", stream=stream, min_interval=0.0
+        )
+        bar.advance_to(4, detail="训练 4/8 轮")
+        self.assertEqual(bar.completed, 4)
+        bar.advance_to(2, detail="回退")
+        self.assertEqual(bar.completed, 4)
+        bar.advance_to(99, detail="补齐")
+        self.assertEqual(bar.completed, 10)
+        bar.close()
+
+        frames = [frame for frame in stream.getvalue().split("\r") if frame]
+        # 回退的一次不产生新帧，末帧强制渲染并显示 100%。
+        self.assertEqual(len(frames), 2)
+        self.assertIn("40.0% 4/10", frames[0])
+        self.assertIn("训练 4/8 轮", frames[0])
+        self.assertIn("100.0% 10/10", frames[1])
+        self.assertNotIn("回退", stream.getvalue())
+
+    def test_rebase_eta_restarts_the_remaining_time_estimate(self) -> None:
+        """重设基准后，剩余时间只按新阶段的速度估计，已用时间不受影响。"""
+
+        stream = io.StringIO()
+        bar = ProgressBar(
+            10, "单次训练验证", mode="always", stream=stream, min_interval=0.0
+        )
+        bar.advance(detail="预处理")
+        before = stream.getvalue().split("\r")[-1]
+        bar.rebase_eta()
+        with bar.paused():
+            pass
+        after = stream.getvalue().split("\r")[-1]
+        bar.advance(detail="训练 1/8 轮")
+        resumed = stream.getvalue().split("\r")[-1]
+        bar.close()
+
+        # 重设基准前，1/10 已经可以按全程平均耗时外推剩余时间。
+        self.assertIn("10.0% 1/10", before)
+        self.assertNotIn("预计剩余 --", before)
+        # 重设基准后仍是 1/10，但基准之后还没完成任何一步，无从外推。
+        self.assertIn("10.0% 1/10", after)
+        self.assertIn("预计剩余 --", after)
+        # 新阶段完成一步后恢复外推，且只按新阶段的耗时计算。
+        self.assertIn("20.0% 2/10", resumed)
+        self.assertNotIn("预计剩余 --", resumed)
+
     def test_zero_total_disables_bar(self) -> None:
         """没有可展示步数时进度条直接关闭，避免除零和空帧。"""
 
@@ -438,6 +607,69 @@ class ExperimentProgressTest(unittest.TestCase):
         # 写里程碑日志前先擦掉进度行，避免日志接在半行进度帧后面。
         self.assertIn("\r   ", stream.getvalue())
 
+    def test_single_mode_follows_model_training_rounds(self) -> None:
+        """模型声明逐轮上报时，训练段应按轮细分而不是整段一步。"""
+
+        stream = io.StringIO()
+        # 逐轮推进在生产环境按 0.2 秒节流；桩模型瞬间跑完，关掉节流才能观察到中间帧。
+        with patch.object(experiment_module, "DEFAULT_MIN_INTERVAL", 0.0):
+            self._run(
+                stream,
+                progress="always",
+                training_mode="single",
+                model_factory=_RoundReportingModelFactory(rounds=8),
+            )
+        output = stream.getvalue()
+
+        # 总步数为 预处理 1 步 + 训练 8 轮 + 预测 1 步。
+        self.assertIn("0.0% 0/10", output)
+        self.assertIn("训练 3/8 轮", output)
+        self.assertIn("100.0% 10/10", output)
+        self.assertIn("预测", output)
+
+    def test_single_mode_fills_the_training_segment_when_rounds_fall_short(self) -> None:
+        """模型提前收敛、上报轮数不足时，训练段仍要补齐，末帧必须到 100%。"""
+
+        stream = io.StringIO()
+        with patch.object(experiment_module, "DEFAULT_MIN_INTERVAL", 0.0):
+            self._run(
+                stream,
+                progress="always",
+                training_mode="single",
+                model_factory=_RoundReportingModelFactory(rounds=8, reported_rounds=3),
+            )
+        output = stream.getvalue()
+
+        self.assertIn("训练 3/8 轮", output)
+        self.assertIn("100.0% 10/10", output)
+
+    def test_fit_progress_callback_is_uninstalled_after_training(self) -> None:
+        """训练结束后必须卸载回调，避免结果里的模型长期持有进度条。"""
+
+        factory = _RoundReportingModelFactory(rounds=4)
+        result = self._run(
+            io.StringIO(), progress="always", training_mode="single", model_factory=factory
+        )
+
+        self.assertIsNone(result.model.installed_callback)
+        # 先装后卸，且只装一次。
+        self.assertEqual(len(result.model.progress_calls), 2)
+        self.assertIsNotNone(result.model.progress_calls[0])
+        self.assertIsNone(result.model.progress_calls[1])
+
+    def test_round_reporting_model_stays_silent_when_progress_is_off(self) -> None:
+        """搜索并行 worker 的默认路径：即使模型支持逐轮上报也不得有任何输出。"""
+
+        stream = io.StringIO()
+        factory = _RoundReportingModelFactory(rounds=8)
+        result = self._run(stream, training_mode="single", model_factory=factory)
+
+        self.assertEqual(stream.getvalue(), "")
+        # 关闭进度时根本不安装回调，训练调用与不带该能力时完全一致；
+        # 只断言最终值为 None 无效，装了又卸同样是 None。
+        self.assertEqual(result.model.progress_calls, [])
+        self.assertGreater(len(result.predictions), 0)
+
     def test_debug_level_forces_progress_off(self) -> None:
         """DEBUG 等级逐日写调试日志，会打断进度行，因此强制关闭进度条。"""
 
@@ -451,6 +683,42 @@ class ExperimentProgressTest(unittest.TestCase):
             experiment_logger.setLevel(previous_level)
 
         self.assertNotIn("滚动验证 [", stream.getvalue())
+
+    def test_illegal_declared_rounds_fall_back_to_three_steps(self) -> None:
+        """模型声明的轮数不可用时降级为三阶段，绝不能让训练失败。"""
+
+        for declared in (float("inf"), 0, -5, "many", None):
+            with self.subTest(declared=declared):
+                stream = io.StringIO()
+                result = self._run(
+                    stream,
+                    progress="always",
+                    training_mode="single",
+                    model_factory=_RoundReportingModelFactory(
+                        rounds=8, declared_rounds=declared
+                    ),
+                )
+
+                self.assertIn("100.0% 3/3", stream.getvalue())
+                self.assertGreater(len(result.predictions), 0)
+
+    def test_debug_level_also_skips_the_training_callback(self) -> None:
+        """DEBUG 等级关闭进度条时，同样不应给模型安装逐轮回调。"""
+
+        experiment_logger = logging.getLogger("quant.factor_research.experiment")
+        previous_level = experiment_logger.level
+        experiment_logger.setLevel(logging.DEBUG)
+        try:
+            result = self._run(
+                io.StringIO(),
+                progress="always",
+                training_mode="single",
+                model_factory=_RoundReportingModelFactory(rounds=8),
+            )
+        finally:
+            experiment_logger.setLevel(previous_level)
+
+        self.assertEqual(result.model.progress_calls, [])
 
     def test_progress_mode_is_validated(self) -> None:
         """非法进度模式必须在构造实验时报错。"""

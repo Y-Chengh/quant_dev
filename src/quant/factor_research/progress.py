@@ -160,6 +160,10 @@ class ProgressBar:
         self._enabled = self._resolve_enabled(mode)
         self._completed = 0
         self._started_at = perf_counter()
+        # 剩余时间的外推基准独立于已用时间：各阶段单步耗时差一个数量级时，
+        # 可以在阶段切换处调用 rebase_eta() 只按新阶段的速度估计剩余时间。
+        self._eta_started_at = self._started_at
+        self._eta_origin = 0
         # 首帧必须绕过节流，因此把上次重绘时间初始化为负无穷。
         self._last_render_at = float("-inf")
         self._last_line_width = 0
@@ -222,9 +226,25 @@ class ProgressBar:
         if not self._enabled or self._closed:
             return
         self._started_at = perf_counter()
+        self._eta_started_at = self._started_at
+        self._eta_origin = self._completed
         # 初始帧不带定位信息，重置记录，避免 paused() 重画出上一轮的旧信息。
         self._last_detail = ""
         self._render(force=True)
+
+    def rebase_eta(self) -> None:
+        """把预计剩余时间的外推基准移到当前进度位置。
+
+        返回：
+            无返回值。剩余时间按"已完成步的平均耗时 × 剩余步数"外推，各阶段单步
+            耗时差一个数量级时该平均值毫无意义：例如单次模式的第 1 步是整表预处理，
+            其后几百步是单轮提升，用预处理的耗时外推会给出大得离谱的剩余时间。
+            在阶段切换处调用本方法后，剩余时间只按新阶段的实际速度估计；已用时间
+            仍从进度条启动算起，不受影响。
+        """
+
+        self._eta_started_at = perf_counter()
+        self._eta_origin = self._completed
 
     def advance(self, step: int = 1, detail: str = "") -> None:
         """累计已完成步数并按节流重绘进度帧。
@@ -246,6 +266,23 @@ class ProgressBar:
         # 定位信息，而不是上一个真正落笔的帧所带的旧信息。
         self._last_detail = detail
         self._render(force=self._completed >= self.total, detail=detail)
+
+    def advance_to(self, completed: int, detail: str = "") -> None:
+        """把已完成步数直接推进到给定位置并按节流重绘。
+
+        参数：
+            completed: 目标已完成步数；小于当前值时忽略，进度条只前进不回退。
+            detail: 追加在进度帧末尾的定位信息；为空则不追加。
+
+        返回：
+            无返回值。子步骤上报的进度是绝对值而非增量（例如模型上报「已完成第
+            168 轮」），用它比反复计算增量更不容易错；达到总步数时强制重绘。
+        """
+
+        target = min(int(completed), self.total)
+        if target <= self._completed:
+            return
+        self.advance(target - self._completed, detail=detail)
 
     def clear(self) -> None:
         """擦掉当前进度行，把光标留在行首。
@@ -339,10 +376,12 @@ class ProgressBar:
             if self._completed >= self.total
             else int(ratio * self.bar_width)
         )
-        # 线性外推：已完成步的平均耗时乘以剩余步数；一步都没完成时无从估计。
+        # 线性外推：外推基准之后已完成步的平均耗时乘以剩余步数；基准之后一步都没
+        # 完成时无从估计。基准默认是进度条起点，调用 rebase_eta() 后移到阶段切换处。
+        eta_completed = self._completed - self._eta_origin
         remaining = (
-            elapsed / self._completed * (self.total - self._completed)
-            if self._completed > 0
+            (now - self._eta_started_at) / eta_completed * (self.total - self._completed)
+            if eta_completed > 0
             else float("nan")
         )
         head = f"{self.description} "

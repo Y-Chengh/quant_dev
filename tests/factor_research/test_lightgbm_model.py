@@ -324,6 +324,101 @@ class LightGBMModelTest(unittest.TestCase):
         )
         self.assertTrue(np.isfinite(result.predictions["up_probability"]).all())
 
+    @staticmethod
+    def _regression_sample(rows: int = 60) -> tuple[np.ndarray, np.ndarray]:
+        """构造可复现的回归训练样本。
+
+        参数：
+            rows: 样本行数；取值需大于叶节点最小样本数，保证真的会分裂建树。
+
+        返回：
+            四列特征矩阵与由首列线性生成、带小幅噪声的连续目标。
+        """
+
+        generator = np.random.default_rng(20260818)
+        features = generator.normal(size=(rows, 4))
+        target = features[:, 0] * 0.5 + generator.normal(size=rows) * 0.05
+        return features, target
+
+    def test_fit_progress_reports_every_boosting_round(self):
+        """注册回调后，每完成一轮提升都应上报一次递增的已完成轮数。"""
+
+        features, target = self._regression_sample()
+        model = LightGBMRegressor(
+            n_estimators=9, min_child_samples=2, n_jobs=1, boosting_type="gbdt"
+        )
+        reported: list[tuple[int, int]] = []
+
+        declared = model.set_fit_progress(lambda completed, total: reported.append((completed, total)))
+        model.fit(features, target)
+
+        self.assertEqual(declared, 9)
+        self.assertEqual([completed for completed, _ in reported], list(range(1, 10)))
+        self.assertEqual({total for _, total in reported}, {9})
+
+    def test_fit_progress_can_be_uninstalled_without_changing_predictions(self):
+        """进度回调只用于显示，装卸它都不得改变训练结果。
+
+        逐个提升算法核对：``dart`` 是生产默认值，``gbdt`` 与 ``goss`` 为常用替代。
+        ``dart``、``gbdt`` 保留生产默认的 ``subsample=0.8``，因为每轮行采样会消耗
+        随机数，是"回调是否扰动训练"最敏感的探测点；``goss`` 与行采样互斥只能关掉，
+        并把轮数提到预热期（约 ``1/learning_rate``）之后，否则它退化成 ``gbdt``。
+        """
+
+        features, target = self._regression_sample()
+        settings = (
+            ("dart", 9, 0.8),
+            ("gbdt", 9, 0.8),
+            ("goss", 40, 1.0),
+        )
+        for boosting_type, n_estimators, subsample in settings:
+            with self.subTest(boosting_type=boosting_type):
+                parameters = {
+                    "n_estimators": n_estimators,
+                    "min_child_samples": 2,
+                    "n_jobs": 1,
+                    "boosting_type": boosting_type,
+                    "subsample": subsample,
+                }
+                baseline = LightGBMRegressor(**parameters).fit(features, target)
+
+                observed = LightGBMRegressor(**parameters)
+                calls: list[int] = []
+                observed.set_fit_progress(
+                    lambda completed, total: calls.append(completed)
+                )
+                observed.fit(features, target)
+
+                uninstalled = LightGBMRegressor(**parameters)
+                self.assertIsNone(uninstalled.set_fit_progress(None))
+                uninstalled.set_fit_progress(lambda completed, total: calls.append(-1))
+                uninstalled.set_fit_progress(None)
+                uninstalled.fit(features, target)
+
+                self.assertEqual(len(calls), n_estimators)
+                self.assertNotIn(-1, calls)
+                np.testing.assert_allclose(
+                    observed.predict(features), baseline.predict(features)
+                )
+                np.testing.assert_allclose(
+                    uninstalled.predict(features), baseline.predict(features)
+                )
+
+    def test_fit_progress_is_silent_when_classifier_skips_training(self):
+        """训练集只有一个类别时不会真正建树，回调也不应被调用。"""
+
+        features, _ = self._regression_sample(rows=20)
+        labels = np.ones(len(features), dtype=int)
+        model = LightGBMClassifier(n_estimators=9, min_child_samples=2, n_jobs=1)
+        reported: list[int] = []
+
+        declared = model.set_fit_progress(lambda completed, total: reported.append(completed))
+        model.fit(features, labels)
+
+        self.assertEqual(declared, 9)
+        self.assertEqual(reported, [])
+        np.testing.assert_allclose(model.predict_proba(features)[:, 1], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

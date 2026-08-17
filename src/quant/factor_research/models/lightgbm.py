@@ -3,17 +3,89 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
-from lightgbm import LGBMClassifier, LGBMRegressor
+from lightgbm import LGBMClassifier, LGBMModel, LGBMRegressor
 
-from .base import DirectionModel, DirectionModelFactory
+from .base import DirectionModel, DirectionModelFactory, FitProgressCallback
 from .registry import register_model_factory
 
 
-class LightGBMClassifier(DirectionModel):
+class _BoostingProgressMixin:
+    """按提升轮向调用方上报训练进度的可选能力。
+
+    LightGBM 的一次 ``fit`` 是一个不可细分的长调用，只有它自己的迭代回调才知道
+    训练进行到第几棵树。本 mixin 把该回调翻译成 ``DirectionModel`` 约定的
+    ``set_fit_progress`` 可选能力，供命令行进度条显示训练内部的真实进度。
+
+    对子类的要求：持有名为 ``estimator`` 的 LightGBM 估计器，在 ``__init__`` 中调用
+    :meth:`_init_fit_progress`，并在调用 ``self.estimator.fit`` 时把
+    :meth:`_fit_callbacks` 的返回值传给 ``callbacks``。
+    """
+
+    estimator: LGBMModel
+    """子类持有的 LightGBM 估计器；本 mixin 只读取它的 ``n_estimators``。"""
+
+    _fit_progress: FitProgressCallback | None
+    """当前注册的训练进度回调；未注册时为 ``None``，训练行为与不带该能力时一致。"""
+
+    def _init_fit_progress(self) -> None:
+        """初始化进度上报状态；未注册回调时训练行为与不带该能力时完全一致。"""
+
+        self._fit_progress = None
+
+    def set_fit_progress(self, callback: FitProgressCallback | None) -> int | None:
+        """注册按提升轮上报的训练进度回调，并声明本次训练的总轮数。
+
+        参数：
+            callback: 训练过程中按轮调用的回调，依次接收已完成轮数与总轮数；
+                传入 ``None`` 表示取消上报。
+
+        返回：
+            注册回调时返回本次训练的最大迭代轮数（即 ``n_estimators``）；取消
+            上报时返回 ``None``。该值只用于调用方预先分配进度刻度，实际轮数可能
+            因提前收敛或常数目标而更少，调用方需自行补齐尾部。
+        """
+
+        self._fit_progress = callback
+        if callback is None:
+            return None
+        return int(self.estimator.n_estimators)
+
+    def _fit_callbacks(self) -> list[Callable[[Any], None]] | None:
+        """构造传给 LightGBM 的迭代回调列表。
+
+        返回：
+            未注册进度回调时返回 ``None``，此时 ``fit`` 的调用方式与改动前一致；
+            否则返回只含一个上报函数的列表。
+        """
+
+        callback = self._fit_progress
+        if callback is None:
+            return None
+
+        def report(env: Any) -> None:
+            """把 LightGBM 的迭代环境翻译成已完成轮数与总轮数。
+
+            参数：
+                env: LightGBM 在每轮结束后传入的回调环境，含本次训练的起止轮次
+                    与当前轮次；``iteration`` 以 ``begin_iteration`` 为起点计数。
+
+            返回：
+                无返回值；异常不应中断训练，因此只做纯粹的数值换算与转发。
+            """
+
+            completed = int(env.iteration) - int(env.begin_iteration) + 1
+            total = int(env.end_iteration) - int(env.begin_iteration)
+            callback(completed, max(total, completed))
+
+        return [report]
+
+
+class LightGBMClassifier(_BoostingProgressMixin, DirectionModel):
     """使用支持多线程的直方图梯度提升树预测下一交易日开盘至收盘方向。"""
 
     def __init__(
@@ -51,7 +123,7 @@ class LightGBMClassifier(DirectionModel):
                 ``gbdt`` 为标准梯度提升，``goss`` 在 gbdt 基础上按梯度单边采样加速，
                 与行采样互斥（需 ``subsample=1.0``，由工厂在创建前校验）。
         """
-        self.estimator = LGBMClassifier(
+        self.estimator: LGBMClassifier = LGBMClassifier(
             objective=objective,
             boosting_type=boosting_type,
             # min_split_gain=0.01,
@@ -74,6 +146,7 @@ class LightGBMClassifier(DirectionModel):
         )
         self.feature_importances_ = np.array([], dtype=float)
         self._constant_probability: float | None = None
+        self._init_fit_progress()
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> LightGBMClassifier:
         X = np.asarray(X, dtype=float)
@@ -91,7 +164,7 @@ class LightGBMClassifier(DirectionModel):
             return self
 
         self._constant_probability = None
-        self.estimator.fit(X, y)
+        self.estimator.fit(X, y, callbacks=self._fit_callbacks())
         self.feature_importances_ = np.asarray(
             self.estimator.feature_importances_, dtype=float
         ).copy()
@@ -107,7 +180,7 @@ class LightGBMClassifier(DirectionModel):
         return np.asarray(self.estimator.predict_proba(X), dtype=float)
 
 
-class LightGBMRegressor(DirectionModel):
+class LightGBMRegressor(_BoostingProgressMixin, DirectionModel):
     """预测下一交易日开盘至收盘连续涨跌幅的 LightGBM 回归模型。"""
 
     def __init__(
@@ -148,7 +221,7 @@ class LightGBMRegressor(DirectionModel):
                 ``gbdt`` 为标准梯度提升，``goss`` 在 gbdt 基础上按梯度单边采样加速，
                 与行采样互斥（需 ``subsample=1.0``，由工厂在创建前校验）。
         """
-        self.estimator = LGBMRegressor(
+        self.estimator: LGBMRegressor = LGBMRegressor(
             objective=objective,
             alpha=objective_alpha,
             boosting_type=boosting_type,
@@ -169,6 +242,7 @@ class LightGBMRegressor(DirectionModel):
         )
         self.feature_importances_ = np.array([], dtype=float)
         self._constant_prediction: float | None = None
+        self._init_fit_progress()
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> LightGBMRegressor:
         X = np.asarray(X, dtype=float)
@@ -183,7 +257,7 @@ class LightGBMRegressor(DirectionModel):
             return self
 
         self._constant_prediction = None
-        self.estimator.fit(X, y)
+        self.estimator.fit(X, y, callbacks=self._fit_callbacks())
         self.feature_importances_ = np.asarray(
             self.estimator.feature_importances_, dtype=float
         ).copy()

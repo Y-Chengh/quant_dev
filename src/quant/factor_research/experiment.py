@@ -16,7 +16,11 @@ from .metrics import (
     daily_cross_sectional_ic,
     regression_metrics,
 )
-from .models.base import DirectionModel, DirectionModelFactory
+from .models.base import (
+    DirectionModel,
+    DirectionModelFactory,
+    FitProgressCallback,
+)
 from .models.simple_decision_tree import SimpleDecisionTreeModelFactory
 from .progress import DEFAULT_MIN_INTERVAL, PROGRESS_MODES, ProgressBar
 from .timing import ElapsedRecorder, log_elapsed
@@ -232,8 +236,52 @@ class DirectionExperiment:
             日志，日志与进度帧写同一个流，会不断打断同一行的进度条。
         """
 
-        mode = "never" if logger.isEnabledFor(logging.DEBUG) else self.progress
-        return ProgressBar(total, description, mode=mode, min_interval=min_interval)
+        return ProgressBar(
+            total,
+            description,
+            mode=self._progress_mode(),
+            min_interval=min_interval,
+        )
+
+    def _progress_mode(self) -> str:
+        """返回本次运行实际生效的进度显示模式。
+
+        返回：
+            :data:`PROGRESS_MODES` 之一。DEBUG 等级下一律返回 ``never``：该等级会
+            逐日写调试日志，日志与进度帧写同一个流，会不断打断同一行的进度条。
+        """
+
+        return "never" if logger.isEnabledFor(logging.DEBUG) else self.progress
+
+    def _install_fit_progress(
+        self,
+        model: DirectionModel,
+        callback: FitProgressCallback | None,
+    ) -> int:
+        """给支持逐轮上报的模型安装训练进度回调。
+
+        参数：
+            model: 本次训练使用的模型实例。
+            callback: 按轮接收训练进度的回调；传 ``None`` 表示卸载。
+
+        返回：
+            模型声明的训练总轮数；模型未实现该可选能力、卸载回调，或声明的轮数
+            不是正整数时返回 ``0``，此时整段训练在进度条上只占一步。该能力只用于
+            显示，因此声明值异常时降级而不是让训练失败。
+        """
+
+        setter = getattr(model, "set_fit_progress", None)
+        if not callable(setter):
+            return 0
+        units = setter(callback)
+        if units is None:
+            return 0
+        try:
+            rounds = int(units)
+        except (TypeError, ValueError, OverflowError):
+            # 进度显示不值得让一次训练失败，声明值不可用时按不支持处理。
+            return 0
+        return rounds if rounds >= 1 else 0
 
     def _target(self, frame: pd.DataFrame) -> np.ndarray:
         """按任务选择训练目标；两种目标都只属于对应的 target_date。"""
@@ -298,27 +346,74 @@ class DirectionExperiment:
         timings = ElapsedRecorder()
         nan_fill_value = -10000.0
         model = self.model_factory.create()
-        # 单次模式只有三个耗时阶段，进度条按阶段推进；detail 写的是刚完成的阶段名。
-        # 总共只画四帧，因此关闭节流，让每个阶段的完成都立即反映到终端。
-        with self._create_progress(3, "单次训练验证", min_interval=0.0) as progress:
-            train_matrix = timings.track("preprocessing")(self._matrix)(
-                train_frame, nan_fill_value
+        progress: ProgressBar | None = None
+        fit_units = 0
+
+        def report_fit(completed: int, total: int) -> None:
+            """把模型上报的已完成训练轮数映射为进度条步数。
+
+            参数：
+                completed: 模型已完成的迭代轮数，从 1 起计。
+                total: 模型声明的本次训练总轮数，只用于行尾文本。
+
+            返回：
+                无返回值。该闭包只在 ``model.fit`` 执行期间被调用，此时进度条与
+                训练刻度都已就绪；训练段固定占用进度条的第 2 步起共 ``fit_units`` 步。
+            """
+
+            if progress is None:
+                return
+            progress.advance_to(
+                1 + min(int(completed), fit_units),
+                detail=f"训练 {int(completed)}/{int(total)} 轮",
             )
-            validation_matrix = timings.track("preprocessing")(self._matrix)(
-                validation_frame, nan_fill_value
-            )
-            progress.advance(detail="预处理")
-            timings.track("fit")(model.fit)(
-                train_matrix,
-                self._target(train_frame),
-            )
-            progress.advance(detail="训练")
+
+        # 训练是单次模式里唯一不可细分的长阶段：能逐轮上报的模型按轮推进，
+        # 其余模型整段训练只占一步，退回预处理、训练、预测三阶段的粒度。
+        # 完全关闭进度时连回调都不装，让训练调用与不带该能力时逐字节一致；
+        # auto 模式下即使最终判定为非终端，回调也只是空转，开销可忽略。
+        reports_progress = self._progress_mode() != "never"
+        fit_units = (
+            self._install_fit_progress(model, report_fit) if reports_progress else 0
+        )
+        # 逐轮推进时帧数很多，用默认节流；只有三步时关掉节流，让每步立即可见。
+        with self._create_progress(
+            2 + max(fit_units, 1),
+            "单次训练验证",
+            min_interval=DEFAULT_MIN_INTERVAL if fit_units > 1 else 0.0,
+        ) as bar:
+            progress = bar
+            try:
+                train_matrix = timings.track("preprocessing")(self._matrix)(
+                    train_frame, nan_fill_value
+                )
+                validation_matrix = timings.track("preprocessing")(self._matrix)(
+                    validation_frame, nan_fill_value
+                )
+                bar.advance(detail="预处理")
+                # 预处理是整表操作，单步耗时与单轮提升差一个数量级，
+                # 用它外推剩余时间会得到离谱的结果。
+                bar.rebase_eta()
+                timings.track("fit")(model.fit)(
+                    train_matrix,
+                    self._target(train_frame),
+                )
+            finally:
+                # 结果里会带回该模型，不能让它长期持有进度条闭包；没装过就不去动它。
+                # 卸载只是清理，失败不得掩盖训练本身抛出的异常。
+                if reports_progress:
+                    try:
+                        self._install_fit_progress(model, None)
+                    except Exception:
+                        logger.debug("卸载训练进度回调失败", exc_info=True)
+            # 模型可能提前收敛或走了常数目标分支而没报满轮数，这里补齐训练段。
+            bar.advance_to(1 + max(fit_units, 1), detail="训练")
 
             predictions = validation_frame[
                 self._prediction_columns(validation_frame)
             ].copy()
             self._add_model_predictions(predictions, model, validation_matrix, timings)
-            progress.advance(detail="预测")
+            bar.advance(detail="预测")
         predictions["training_samples"] = len(train_frame)
         predictions["training_end_date"] = train_frame["target_date"].max()
         importance = getattr(model, "feature_importances_", None)

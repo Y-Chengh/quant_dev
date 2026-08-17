@@ -4,12 +4,28 @@ from __future__ import annotations
 
 import argparse
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 
 import numpy as np
 
+FitProgressCallback = Callable[[int, int], None]
+"""训练进度回调：依次接收已完成轮数（从 1 起）与本次训练的总轮数。"""
+
 
 class DirectionModel(ABC):
-    """滚动方向预测所需的最小模型接口。"""
+    """滚动方向预测所需的最小模型接口。
+
+    ``set_fit_progress`` 是可选能力，用于在一次 ``fit`` 内部按迭代轮上报进度：
+
+    .. code-block:: python
+
+        def set_fit_progress(self, callback: FitProgressCallback | None) -> int | None
+
+    实现该方法的模型应在训练过程中按轮调用 ``callback(已完成轮数, 总轮数)``，并
+    返回本次训练预计的总轮数；传入 ``None`` 表示取消上报。无法预知轮数时返回
+    ``None``。未实现该方法的模型不受影响，整段训练在调用方的进度显示中只占一步。
+    该能力只用于进度显示，不得改变训练结果。
+    """
 
     @abstractmethod
     def fit(self, X: np.ndarray, y: np.ndarray) -> DirectionModel:
