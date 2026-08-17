@@ -354,11 +354,16 @@ def render_equity_curve_svg(
     daily_returns: pd.DataFrame,
     output_path: Path,
 ) -> None:
-    """将 Top N 及三组横截面对照的日度净值曲线渲染为独立 SVG。
+    """将 Top N 及三组横截面对照的日度净值曲线渲染为上下双面板 SVG。
+
+    上面板为全区间累计净值；下面板把同一批净值按自然年重定基：每个自然年
+    以上一年末净值（首年为期初 1.0）为基准重新从 1.0 起算，因此段末净值减一
+    即该自然年的累计收益，并在每个年份区段内直接标注年份与各组当年收益。
 
     参数：
-        daily_returns: 按目标交易日排序且至少含日期与 Top N 累计净值的日度回测
-            结果；全市场平均、Bottom N 和 Mid N 净值列可选，以兼容旧结果。
+        daily_returns: 按目标交易日升序排列且至少含日期与 Top N 累计净值的
+            日度回测结果；全市场平均、Bottom N 和 Mid N 净值列可选，以兼容
+            旧结果。
         output_path: SVG 收益曲线的写入路径。
 
     返回：
@@ -371,17 +376,34 @@ def render_equity_curve_svg(
         "bottom_equity": ("Bottom N", "bottom"),
         "mid_equity": ("Mid N", "mid"),
     }
+    # 逐组曲线颜色，与 <style> 中各 CSS 类的描边颜色一一对应，
+    # 用于把年度收益标注渲染成与曲线同色的文字。
+    series_colors = {
+        "equity": "#059669",
+        "universe": "#2563eb",
+        "bottom": "#dc2626",
+        "mid": "#d97706",
+    }
     required = {"target_date", "equity"}
     missing = required.difference(daily_returns.columns)
     if missing:
         raise ValueError(f"收益曲线缺少列: {sorted(missing)}")
     if daily_returns.empty:
         raise ValueError("无法为没有日度收益的回测绘制收益曲线")
+    dates = pd.to_datetime(daily_returns["target_date"], errors="coerce")
+    if dates.isna().any():
+        raise ValueError("收益曲线的 target_date 包含缺失或无效日期")
+    if not dates.is_monotonic_increasing:
+        raise ValueError("收益曲线的 target_date 必须按目标交易日升序排列")
 
-    width, height = 1000, 440
-    left, right, top, bottom = 82, 28, 38, 66
+    width = 1000
+    left, right = 82, 28
+    panel_a_top, panel_a_height = 44, 330
+    panel_b_top, panel_b_height = 450, 300
+    height = 780
     plot_width = width - left - right
-    plot_height = height - top - bottom
+    panel_a_bottom = panel_a_top + panel_a_height
+    panel_b_bottom = panel_b_top + panel_b_height
     available_equity_columns = {
         column: metadata
         for column, metadata in equity_columns.items()
@@ -394,6 +416,8 @@ def render_equity_curve_svg(
     )
     if not np.isfinite(closing_equities).all():
         raise ValueError("收益曲线净值包含 NaN 或无穷值")
+    if (closing_equities <= 0.0).any():
+        raise ValueError("收益曲线净值必须为正数，才能按自然年重定基")
     # 显式加入期初净值，确保单日回测也能画出一条可见线段。
     equities = {
         column: np.concatenate(
@@ -408,6 +432,39 @@ def render_equity_curve_svg(
     padding = max((upper - lower) * 0.08, max(abs(lower), abs(upper), 1.0) * 0.01)
     y_min, y_max = lower - padding, upper + padding
 
+    # 观测序号 0 为期初，行号 j 对应观测序号 j + 1；日期升序保证同一自然年
+    # 的行必然连续，这里按年份变化点切出各年的观测序号区间（含首尾）。
+    years = dates.dt.year.to_numpy()
+    year_starts = [0, *(int(pos) + 1 for pos in np.flatnonzero(np.diff(years) != 0))]
+    year_segments = []
+    for order, start_row in enumerate(year_starts):
+        end_row = (
+            year_starts[order + 1] - 1
+            if order + 1 < len(year_starts)
+            else len(years) - 1
+        )
+        year_segments.append((int(years[start_row]), start_row + 1, end_row + 1))
+    # 每段以上一观测（上一年末或期初）为基准重定基，首元素恒为 1.0，
+    # 段末元素减一即该自然年累计收益。
+    yearly_rebased = {
+        column: [
+            values[start - 1 : end + 1] / values[start - 1]
+            for _, start, end in year_segments
+        ]
+        for column, values in equities.items()
+    }
+    rebased_all = np.concatenate(
+        [segment for segments in yearly_rebased.values() for segment in segments]
+    )
+    rebased_lower = min(1.0, float(rebased_all.min()))
+    rebased_upper = max(1.0, float(rebased_all.max()))
+    rebased_padding = max(
+        (rebased_upper - rebased_lower) * 0.08,
+        max(abs(rebased_lower), abs(rebased_upper), 1.0) * 0.01,
+    )
+    rebased_min = rebased_lower - rebased_padding
+    rebased_max = rebased_upper + rebased_padding
+
     def x_at(index: int) -> float:
         """将净值观测序号映射为绘图区横坐标。
 
@@ -420,40 +477,70 @@ def render_equity_curve_svg(
 
         return left + plot_width * index / max(1, count - 1)
 
-    def y_at(value: float) -> float:
-        """将策略净值映射为绘图区纵坐标。
+    def y_at(value: float, panel_top: float, span: float, floor: float, ceiling: float) -> float:
+        """将净值映射为指定面板内的纵坐标。
 
         参数：
-            value: 需要绘制的累计净值。
+            value: 需要绘制的累计或按年重定基净值。
+            panel_top: 当前面板绘图区顶边的 SVG 纵坐标。
+            span: 当前面板绘图区的像素高度。
+            floor: 当前面板纵轴下界净值。
+            ceiling: 当前面板纵轴上界净值。
 
         返回：
-            当前净值在 SVG 绘图区内的像素纵坐标。
+            当前净值在对应面板绘图区内的像素纵坐标。
         """
 
-        return top + (y_max - value) / (y_max - y_min) * plot_height
+        return panel_top + (ceiling - value) / (ceiling - floor) * span
+
+    def y_at_a(value: float) -> float:
+        """将累计净值映射为上面板纵坐标。
+
+        参数：
+            value: 需要绘制的全区间累计净值。
+
+        返回：
+            当前净值在上面板绘图区内的像素纵坐标。
+        """
+
+        return y_at(value, panel_a_top, panel_a_height, y_min, y_max)
+
+    def y_at_b(value: float) -> float:
+        """将按年重定基净值映射为下面板纵坐标。
+
+        参数：
+            value: 需要绘制的自然年重定基净值。
+
+        返回：
+            当前净值在下面板绘图区内的像素纵坐标。
+        """
+
+        return y_at(value, panel_b_top, panel_b_height, rebased_min, rebased_max)
 
     curve_points = {
         column: " ".join(
-            f"{x_at(index):.2f},{y_at(value):.2f}"
+            f"{x_at(index):.2f},{y_at_a(value):.2f}"
             for index, value in enumerate(values)
         )
         for column, values in equities.items()
     }
     date_labels = [
         "期初",
-        *(date.strftime("%Y-%m-%d") for date in pd.to_datetime(daily_returns["target_date"])),
+        *(date.strftime("%Y-%m-%d") for date in dates),
     ]
     tick_indices = np.unique(np.linspace(0, count - 1, min(7, count), dtype=int))
     y_ticks = np.linspace(y_min, y_max, 5)
+    rebased_ticks = np.linspace(rebased_min, rebased_max, 5)
     svg = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
         '<title id="title">Top N 与横截面对照收益曲线</title>',
-        '<desc id="desc">Top N、全市场平均、Bottom N 和 Mid N 计入相同双边成本后的累计净值</desc>',
+        '<desc id="desc">上面板为计入相同双边成本的累计净值，下面板按自然年重定基并标注各年份与当年收益</desc>',
         '<rect width="100%" height="100%" fill="#ffffff"/>',
-        '<style>text{font-family:Arial,"Microsoft YaHei",sans-serif;fill:#334155}.grid{stroke:#e2e8f0;stroke-width:1}.axis{stroke:#64748b;stroke-width:1.2}.baseline{stroke:#94a3b8;stroke-width:1;stroke-dasharray:5 4}.equity,.universe,.bottom,.mid{fill:none;stroke-width:2.3}.equity{stroke:#059669}.universe{stroke:#2563eb}.bottom{stroke:#dc2626}.mid{stroke:#d97706}</style>',
+        '<style>text{font-family:Arial,"Microsoft YaHei",sans-serif;fill:#334155}.grid{stroke:#e2e8f0;stroke-width:1}.axis{stroke:#64748b;stroke-width:1.2}.baseline{stroke:#94a3b8;stroke-width:1;stroke-dasharray:5 4}.caption{font-size:13px;font-weight:600}.year-label{font-size:13px;font-weight:600}.year-return{font-size:11px}.year-boundary{stroke:#cbd5e1;stroke-width:1;stroke-dasharray:3 3}.equity,.universe,.bottom,.mid{fill:none;stroke-width:2.3}.equity{stroke:#059669}.universe{stroke:#2563eb}.bottom{stroke:#dc2626}.mid{stroke:#d97706}</style>',
+        f'<text x="{left}" y="23" class="caption">全区间累计净值</text>',
     ]
     for value in y_ticks:
-        y = y_at(float(value))
+        y = y_at_a(float(value))
         svg.append(
             f'<line class="grid" x1="{left}" y1="{y:.2f}" x2="{width - right}" y2="{y:.2f}"/>'
         )
@@ -462,9 +549,9 @@ def render_equity_curve_svg(
         )
     svg.extend(
         [
-            f'<line class="axis" x1="{left}" y1="{top}" x2="{left}" y2="{height - bottom}"/>',
-            f'<line class="axis" x1="{left}" y1="{height - bottom}" x2="{width - right}" y2="{height - bottom}"/>',
-            f'<line class="baseline" x1="{left}" y1="{y_at(1.0):.2f}" x2="{width - right}" y2="{y_at(1.0):.2f}"/>',
+            f'<line class="axis" x1="{left}" y1="{panel_a_top}" x2="{left}" y2="{panel_a_bottom}"/>',
+            f'<line class="axis" x1="{left}" y1="{panel_a_bottom}" x2="{width - right}" y2="{panel_a_bottom}"/>',
+            f'<line class="baseline" x1="{left}" y1="{y_at_a(1.0):.2f}" x2="{width - right}" y2="{y_at_a(1.0):.2f}"/>',
         ]
     )
     for column, (_, css_class) in available_equity_columns.items():
@@ -475,7 +562,7 @@ def render_equity_curve_svg(
         x = x_at(int(index))
         label = escape(date_labels[int(index)])
         svg.append(
-            f'<text x="{x:.2f}" y="{height - bottom + 25}" font-size="12" text-anchor="middle">{label}</text>'
+            f'<text x="{x:.2f}" y="{panel_a_bottom + 25}" font-size="12" text-anchor="middle">{label}</text>'
         )
     legend_x = width - 430
     for position, (_, (label, css_class)) in enumerate(
@@ -486,5 +573,48 @@ def render_equity_curve_svg(
             f'<line class="{css_class}" x1="{x}" y1="19" x2="{x + 28}" y2="19"/>'
         )
         svg.append(f'<text x="{x + 34}" y="23" font-size="12">{label}</text>')
+
+    svg.append(
+        f'<text x="{left}" y="{panel_b_top - 16}" class="caption">每自然年收益曲线（每年以上一年末重定基为 1，段末净值减一即当年收益）</text>'
+    )
+    for value in rebased_ticks:
+        y = y_at_b(float(value))
+        svg.append(
+            f'<line class="grid" x1="{left}" y1="{y:.2f}" x2="{width - right}" y2="{y:.2f}"/>'
+        )
+        svg.append(
+            f'<text x="{left - 12}" y="{y + 4:.2f}" font-size="12" text-anchor="end">{value:.3f}</text>'
+        )
+    svg.extend(
+        [
+            f'<line class="axis" x1="{left}" y1="{panel_b_top}" x2="{left}" y2="{panel_b_bottom}"/>',
+            f'<line class="axis" x1="{left}" y1="{panel_b_bottom}" x2="{width - right}" y2="{panel_b_bottom}"/>',
+            f'<line class="baseline" x1="{left}" y1="{y_at_b(1.0):.2f}" x2="{width - right}" y2="{y_at_b(1.0):.2f}"/>',
+        ]
+    )
+    for _, start, _ in year_segments[1:]:
+        boundary_x = x_at(start - 1)
+        svg.append(
+            f'<line class="year-boundary" x1="{boundary_x:.2f}" y1="{panel_b_top}" x2="{boundary_x:.2f}" y2="{panel_b_bottom}"/>'
+        )
+    for column, (_, css_class) in available_equity_columns.items():
+        for order, (_, start, _end) in enumerate(year_segments):
+            points = " ".join(
+                f"{x_at(start - 1 + offset):.2f},{y_at_b(float(value)):.2f}"
+                for offset, value in enumerate(yearly_rebased[column][order])
+            )
+            svg.append(f'<polyline class="{css_class}" points="{points}"/>')
+    for order, (year, start, end) in enumerate(year_segments):
+        mid_x = (x_at(start - 1) + x_at(end)) / 2.0
+        svg.append(
+            f'<text x="{mid_x:.2f}" y="{panel_b_top + 18}" class="year-label" text-anchor="middle">{year}</text>'
+        )
+        for position, (column, (label, css_class)) in enumerate(
+            available_equity_columns.items()
+        ):
+            year_return = float(yearly_rebased[column][order][-1]) - 1.0
+            svg.append(
+                f'<text x="{mid_x:.2f}" y="{panel_b_top + 34 + position * 15}" class="year-return" text-anchor="middle" style="fill:{series_colors[css_class]}">{label} {year_return:+.1%}</text>'
+            )
     svg.append("</svg>")
     output_path.write_text("\n".join(svg), encoding="utf-8")

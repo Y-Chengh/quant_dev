@@ -682,6 +682,60 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertNotIn('<polyline class="bottom"', equity_svg)
         self.assertNotIn('<polyline class="mid"', equity_svg)
 
+    def test_equity_curve_svg_annotates_calendar_year_returns(self) -> None:
+        """收益曲线应含按自然年重定基的下面板，并标注年份与各组当年收益。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        daily = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(
+                    ["2024-12-30", "2024-12-31", "2025-01-02"]
+                ),
+                "equity": [1.10, 1.20, 1.32],
+                "universe_equity": [1.05, 1.10, 0.99],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "yearly_equity.svg"
+            render_equity_curve_svg(daily, output_path)
+            equity_svg = output_path.read_text(encoding="utf-8")
+
+        # 年份直接标注在下面板曲线区段内。
+        self.assertIn(">2024</text>", equity_svg)
+        self.assertIn(">2025</text>", equity_svg)
+        # 2024 年：Top N 1.20/1.0-1=+20.0%，全市场 1.10/1.0-1=+10.0%；
+        # 2025 年：Top N 1.32/1.20-1=+10.0%，全市场 0.99/1.10-1=-10.0%。
+        self.assertIn(">Top N +20.0%</text>", equity_svg)
+        self.assertIn(">Top N +10.0%</text>", equity_svg)
+        self.assertIn(">全市场平均 +10.0%</text>", equity_svg)
+        self.assertIn(">全市场平均 -10.0%</text>", equity_svg)
+        # 每组曲线 = 全区间 1 条 + 每个自然年 1 条重定基区段。
+        self.assertEqual(equity_svg.count('<polyline class="equity"'), 3)
+        self.assertEqual(equity_svg.count('<polyline class="universe"'), 3)
+        # 跨年处画一条年度分界虚线。
+        self.assertEqual(equity_svg.count('class="year-boundary"'), 1)
+
+    def test_equity_curve_svg_rejects_unsorted_target_dates(self) -> None:
+        """日期乱序会破坏自然年切分口径，应显式拒绝而非画出错误区段。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        unsorted_daily = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02", "2024-12-30"]),
+                "equity": [1.05, 1.10],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "unsorted_equity.svg"
+            with self.assertRaisesRegex(ValueError, "升序"):
+                render_equity_curve_svg(unsorted_daily, output_path)
+
     def test_report_accepts_legacy_backtest_without_selection_details(self) -> None:
         """旧回测结果没有 Top N 明细列时，完整报告应兼容并显示暂无明细。
 
