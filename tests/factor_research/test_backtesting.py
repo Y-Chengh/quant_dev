@@ -7,7 +7,11 @@ from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 
-from quant.cli.factor_demo import parse_args, resolve_equity_chart_path
+from quant.cli.factor_demo import (
+    parse_args,
+    resolve_drawdown_chart_path,
+    resolve_equity_chart_path,
+)
 from quant.factor_research.backtesting import (
     TRADING_DAYS_PER_YEAR,
     TopNBacktestResult,
@@ -15,6 +19,7 @@ from quant.factor_research.backtesting import (
 )
 from quant.factor_research.experiment import ExperimentResult
 from quant.factor_research.reporting import (
+    render_drawdown_curve_svg,
     render_equity_curve_svg,
     write_evaluation_report,
 )
@@ -599,6 +604,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
             report_path = root / "evaluation.md"
             accuracy_path = root / "evaluation_accuracy.svg"
             equity_path = resolve_equity_chart_path(accuracy_path)
+            drawdown_path = resolve_drawdown_chart_path(accuracy_path)
             write_evaluation_report(
                 experiment,
                 report_path,
@@ -607,6 +613,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                 {},
                 backtest=backtest,
                 equity_chart_path=equity_path,
+                drawdown_chart_path=drawdown_path,
             )
             report = report_path.read_text(encoding="utf-8")
             equity_svg = equity_path.read_text(encoding="utf-8")
@@ -635,10 +642,26 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn("### Top N 超额与多空价差", report)
         self.assertIn("### 预测分数十分位收益", report)
         self.assertIn("### Top N 与其余股票命中对照", report)
+        self.assertIn("### 回撤诊断", report)
+        self.assertIn("### 历史回撤与修复", report)
+        self.assertIn("### 历次回撤区间", report)
+        self.assertIn(drawdown_path.name, report)
+        self.assertIn("| 全股票等权最大回撤 |", report)
         self.assertLess(
             report.index("## Top N 日内策略回测"),
             report.index("### 每日 Top N 选股明细"),
         )
+        # 回撤诊断与三个横截面对照小节都排在体量最大的每日明细之前。
+        selection_position = report.index("### 每日 Top N 选股明细")
+        for heading in (
+            "### 回撤诊断",
+            "### 历史回撤与修复",
+            "### 历次回撤区间",
+            "### Top N 与横截面对照收益曲线",
+            "### Top N 基准与横截面对照",
+            "### Top N 超额与多空价差",
+        ):
+            self.assertLess(report.index(heading), selection_position)
         self.assertIn("随机 Top N 年化收益率中位数", report)
         self.assertIn("| 夏普比率 |", report)
         self.assertIn("单边滑点：2.0000 bps", report)
@@ -655,9 +678,381 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn('class="toc-level-4"', html_report)
         self.assertIn(">2025-01</a>", html_report)
         self.assertIn(">2025-02</a>", html_report)
+        # 目录里的逐月条目收进默认折叠分组：<details> 不带 open 属性。
+        self.assertIn('<details class="toc-group"><summary>', html_report)
+        self.assertNotIn("<details class=\"toc-group\" open", html_report)
+        group = html_report[
+            html_report.index('<details class="toc-group">') :
+        ].split("</details>")[0]
+        self.assertIn("每日 Top N 选股明细", group)
+        self.assertIn('<div class="toc-children">', group)
+        self.assertIn('class="toc-level-4" href="#', group)
+        self.assertIn(">2025-01</a>", group)
+        self.assertIn(">2025-02</a>", group)
         self.assertIn("`A`", report)
         self.assertIn("<code>A</code><br>预估：90.00%", html_report)
         self.assertIn('class="table-scroll"', html_report)
+
+    def _single_security_predictions(self, returns: list[float]) -> pd.DataFrame:
+        """构造每日只有一只证券的预测样本，使组合净值等于给定收益序列。
+
+        参数：
+            returns: 按交易日排序的组合日收益率序列，单位为一；每个交易日只有
+                一只候选证券，因此 Top 1 组合的毛收益与之逐日相等。
+
+        返回：
+            含目标日期、证券代码、实际收益、模型分数和方向标签的预测表。
+        """
+
+        dates = pd.bdate_range("2025-01-06", periods=len(returns))
+        return pd.DataFrame(
+            {
+                "target_date": dates,
+                "code": [f"A{index}" for index in range(len(returns))],
+                "target_return": list(returns),
+                "up_probability": [0.6] * len(returns),
+                "label": [int(value > 0) for value in returns],
+                "prediction": [1] * len(returns),
+            }
+        )
+
+    def test_drawdown_metrics_track_depth_recovery_and_calmar(self) -> None:
+        """回撤指标应按期初净值 1.0 精确给出深度、修复时长与 Calmar 比率。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        returns = [0.10, -0.20, 0.05, 0.15, -0.10, 0.20]
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions(returns), "up_probability", top_n=1
+        )
+        equity = result.daily_returns["equity"].to_numpy(dtype=float)
+        expected_equity = np.cumprod(1.0 + np.asarray(returns))
+        np.testing.assert_allclose(equity, expected_equity)
+        # 峰值 1.10 出现在首个交易日，谷底 0.88 对应 -20%，末日创出新高完成修复。
+        expected_peaks = np.maximum.accumulate(
+            np.concatenate(([1.0], expected_equity))
+        )[1:]
+        np.testing.assert_allclose(
+            result.daily_returns["drawdown"].to_numpy(dtype=float),
+            expected_equity / expected_peaks - 1.0,
+        )
+        np.testing.assert_allclose(
+            result.daily_returns["peak_equity"].to_numpy(dtype=float),
+            expected_peaks,
+        )
+        metrics = result.drawdown_metrics
+        self.assertAlmostEqual(metrics["max_drawdown"], -0.2)
+        self.assertEqual(metrics["max_drawdown_decline_days"], 1.0)
+        self.assertEqual(metrics["max_drawdown_recovery_days"], 4.0)
+        self.assertEqual(metrics["max_drawdown_total_days"], 5.0)
+        self.assertEqual(metrics["longest_drawdown_days"], 5.0)
+        self.assertEqual(metrics["drawdown_episodes"], 1.0)
+        self.assertEqual(metrics["recovered_drawdown_episodes"], 1.0)
+        self.assertAlmostEqual(metrics["current_drawdown"], 0.0)
+        self.assertAlmostEqual(metrics["drawdown_days_ratio"], 4 / 6)
+        self.assertAlmostEqual(metrics["average_drawdown"], -0.5246 / 6)
+        self.assertAlmostEqual(
+            metrics["calmar_ratio"],
+            result.metrics["annualized_return"] / 0.2,
+            places=5,
+        )
+
+        episodes = result.drawdown_episodes
+        self.assertEqual(len(episodes), 1)
+        episode = episodes.iloc[0]
+        dates = pd.to_datetime(result.daily_returns["target_date"])
+        self.assertEqual(pd.Timestamp(episode["peak_date"]), dates.iloc[0])
+        self.assertEqual(pd.Timestamp(episode["trough_date"]), dates.iloc[1])
+        self.assertEqual(pd.Timestamp(episode["recovery_date"]), dates.iloc[5])
+        self.assertTrue(bool(episode["recovered"]))
+
+    def test_drawdown_from_first_day_reports_unrecovered_tail(self) -> None:
+        """首日即回撤且未修复时，峰值应记为期初且修复字段保持缺失。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions([-0.10, 0.05, -0.02]),
+            "up_probability",
+            top_n=1,
+        )
+        metrics = result.drawdown_metrics
+        self.assertAlmostEqual(metrics["max_drawdown"], -0.10)
+        self.assertAlmostEqual(metrics["current_drawdown"], 1.0 * 0.9 * 1.05 * 0.98 - 1.0)
+        self.assertEqual(metrics["drawdown_days_ratio"], 1.0)
+        self.assertEqual(metrics["recovered_drawdown_episodes"], 0.0)
+        self.assertTrue(np.isnan(metrics["max_drawdown_recovery_days"]))
+        self.assertTrue(np.isfinite(metrics["calmar_ratio"]))
+
+        episodes = result.drawdown_episodes
+        self.assertEqual(len(episodes), 1)
+        episode = episodes.iloc[0]
+        # 峰值落在期初净值上，因此峰值日期缺失，回撤持续到样本末尾。
+        self.assertTrue(pd.isna(episode["peak_date"]))
+        self.assertTrue(pd.isna(episode["recovery_date"]))
+        self.assertFalse(bool(episode["recovered"]))
+        self.assertEqual(int(episode["total_days"]), 3)
+        self.assertTrue(np.isnan(float(episode["recovery_days"])))
+
+        accuracy = pd.DataFrame(
+            {
+                "target_date": result.daily_returns["target_date"],
+                "samples": [1, 1, 1],
+                "accuracy": [1.0, 1.0, 0.0],
+                "accuracy_change": [np.nan, 0.0, -1.0],
+            }
+        )
+        experiment = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="drawdown",
+            feature_columns=[],
+            metrics={"samples": 3.0},
+            predictions=self._single_security_predictions([-0.10, 0.05, -0.02]),
+            feature_importance=None,
+            daily_accuracy_trend=accuracy,
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "evaluation.md"
+            accuracy_path = root / "evaluation_accuracy.svg"
+            write_evaluation_report(
+                experiment,
+                report_path,
+                accuracy_path,
+                "drawdown-run",
+                {},
+                backtest=result,
+                equity_chart_path=resolve_equity_chart_path(accuracy_path),
+                drawdown_chart_path=resolve_drawdown_chart_path(accuracy_path),
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("| 最大回撤 | -10.00% |", report)
+        self.assertIn("| 最大回撤谷底至修复交易日 | N/A |", report)
+        self.assertIn("| 期初 | ", report)
+        self.assertIn("| 未修复 | -10.00% |", report)
+
+    def test_drawdown_chart_marks_trough_and_recovery(self) -> None:
+        """回撤图应画出水下区间、回撤面积并标注谷底与修复位置。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions([0.10, -0.20, 0.05, 0.15, -0.10, 0.20]),
+            "up_probability",
+            top_n=1,
+        )
+        legacy_daily = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-02", "2025-01-03"]),
+                "equity": [1.10, 0.99],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            chart_path = root / "drawdown.svg"
+            render_drawdown_curve_svg(result.daily_returns, chart_path)
+            drawdown_svg = chart_path.read_text(encoding="utf-8")
+            legacy_path = root / "legacy_drawdown.svg"
+            render_drawdown_curve_svg(legacy_daily, legacy_path)
+            legacy_svg = legacy_path.read_text(encoding="utf-8")
+
+        self.assertIn('<polygon class="underwater"', drawdown_svg)
+        self.assertIn('<polygon class="drawdown"', drawdown_svg)
+        self.assertIn('<polyline class="universe"', drawdown_svg)
+        self.assertIn('<circle class="marker"', drawdown_svg)
+        self.assertIn('class="recovery"', drawdown_svg)
+        # 图上标注的最大回撤必须与回测算出的 drawdown 列同源，不能各算各的。
+        self.assertIn(
+            f"最大回撤 {result.daily_returns['drawdown'].min():.2%}", drawdown_svg
+        )
+        self.assertIn("最大回撤 -20.00%", drawdown_svg)
+        self.assertIn("修复，用时 4 个交易日", drawdown_svg)
+        self.assertIn(">期初</text>", drawdown_svg)
+        # 旧结果只有 Top N 净值时不画横截面对照，未修复的回撤要如实标注。
+        self.assertNotIn('<polyline class="universe"', legacy_svg)
+        self.assertNotIn('class="recovery"', legacy_svg)
+        self.assertIn("截至验证区间末尾尚未修复", legacy_svg)
+
+    def test_drawdown_chart_rejects_inconsistent_drawdown_column(self) -> None:
+        """回撤列与净值对不上说明上游口径已分叉，应报错而不是画出错图。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions([0.10, -0.20, 0.05]),
+            "up_probability",
+            top_n=1,
+        )
+        corrupted = result.daily_returns.copy()
+        corrupted.loc[corrupted.index[-1], "drawdown"] = -0.5
+        corrupted_peak = result.daily_returns.copy()
+        corrupted_peak["peak_equity"] = 5.0
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "corrupted_drawdown.svg"
+            with self.assertRaisesRegex(ValueError, "drawdown 与净值不一致"):
+                render_drawdown_curve_svg(corrupted, output_path)
+            # 峰值列同样不被无条件信任，否则图上的回撤深度会被外部列决定。
+            with self.assertRaisesRegex(ValueError, "peak_equity 与净值不一致"):
+                render_drawdown_curve_svg(corrupted_peak, output_path)
+
+    def test_no_drawdown_reports_empty_episode_table(self) -> None:
+        """净值一路创新高时回撤区间表应为空表，并给出明确说明而非空白。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        returns = [0.01, 0.02, 0.03]
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions(returns), "up_probability", top_n=1
+        )
+        self.assertTrue(result.drawdown_episodes.empty)
+        # 空表也要保持列与类型，避免下游读取时才报错。
+        self.assertEqual(
+            list(result.drawdown_episodes.columns),
+            [
+                "peak_date",
+                "trough_date",
+                "recovery_date",
+                "max_drawdown",
+                "decline_days",
+                "recovery_days",
+                "total_days",
+                "recovered",
+            ],
+        )
+        self.assertEqual(result.drawdown_episodes["trough_date"].dtype, "datetime64[ns]")
+        self.assertEqual(result.drawdown_episodes["recovered"].dtype, bool)
+        metrics = result.drawdown_metrics
+        self.assertEqual(metrics["max_drawdown"], 0.0)
+        self.assertEqual(metrics["drawdown_episodes"], 0.0)
+        self.assertEqual(metrics["longest_drawdown_days"], 0.0)
+        self.assertEqual(metrics["drawdown_days_ratio"], 0.0)
+        self.assertTrue(np.isnan(metrics["calmar_ratio"]))
+
+        accuracy = pd.DataFrame(
+            {
+                "target_date": result.daily_returns["target_date"],
+                "samples": [1, 1, 1],
+                "accuracy": [1.0, 1.0, 1.0],
+                "accuracy_change": [np.nan, 0.0, 0.0],
+            }
+        )
+        experiment = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="no-drawdown",
+            feature_columns=[],
+            metrics={"samples": 3.0},
+            predictions=self._single_security_predictions(returns),
+            feature_importance=None,
+            daily_accuracy_trend=accuracy,
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "evaluation.md"
+            accuracy_path = root / "evaluation_accuracy.svg"
+            write_evaluation_report(
+                experiment,
+                report_path,
+                accuracy_path,
+                "no-drawdown-run",
+                {},
+                backtest=result,
+                equity_chart_path=resolve_equity_chart_path(accuracy_path),
+                drawdown_chart_path=resolve_drawdown_chart_path(accuracy_path),
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("验证区间内净值未跌破历史峰值，没有回撤区间。", report)
+        self.assertIn("| 最大回撤 | 0.00% |", report)
+        self.assertIn("| Calmar 比率（年化收益/最大回撤） | N/A |", report)
+
+    def test_drawdown_episode_table_truncates_and_reports_total(self) -> None:
+        """回撤区间超过展示上限时应只列最深的若干段并说明总段数。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        # 每个 +2% 创新高、随后 -1% 形成一段可修复回撤，共 12 段。
+        returns = [0.02, -0.01] * 12
+        result = run_top_n_intraday_backtest(
+            self._single_security_predictions(returns), "up_probability", top_n=1
+        )
+        self.assertEqual(len(result.drawdown_episodes), 12)
+        # 序列以 -1% 收尾，因此最后一段回撤截至样本末尾仍未修复。
+        self.assertEqual(int(result.drawdown_episodes["recovered"].sum()), 11)
+        self.assertFalse(bool(result.drawdown_episodes.iloc[-1]["recovered"]))
+
+        accuracy = pd.DataFrame(
+            {
+                "target_date": result.daily_returns["target_date"],
+                "samples": [1] * len(returns),
+                "accuracy": [1.0] * len(returns),
+                "accuracy_change": [np.nan] + [0.0] * (len(returns) - 1),
+            }
+        )
+        experiment = ExperimentResult(
+            model=None,  # type: ignore[arg-type]
+            model_name="many-drawdowns",
+            feature_columns=[],
+            metrics={"samples": float(len(returns))},
+            predictions=self._single_security_predictions(returns),
+            feature_importance=None,
+            daily_accuracy_trend=accuracy,
+        )
+        with TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            report_path = root / "evaluation.md"
+            accuracy_path = root / "evaluation_accuracy.svg"
+            write_evaluation_report(
+                experiment,
+                report_path,
+                accuracy_path,
+                "many-drawdowns-run",
+                {},
+                backtest=result,
+                equity_chart_path=resolve_equity_chart_path(accuracy_path),
+                drawdown_chart_path=resolve_drawdown_chart_path(accuracy_path),
+            )
+            report = report_path.read_text(encoding="utf-8")
+
+        self.assertIn("共 12 段", report)
+        section = report[report.index("### 历次回撤区间") :].split("### ")[1]
+        rows = [
+            line
+            for line in section.splitlines()
+            if line.startswith("| ") and not line.startswith("| ---")
+        ]
+        # 表头 1 行 + 最多 10 行明细。
+        self.assertEqual(len(rows), 11)
+
+    def test_drawdown_chart_rejects_unsorted_target_dates(self) -> None:
+        """日期乱序会算错历史峰值与修复位置，应显式拒绝而非画出错误曲线。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        unsorted_daily = pd.DataFrame(
+            {
+                "target_date": pd.to_datetime(["2025-01-03", "2025-01-02"]),
+                "equity": [0.99, 1.10],
+            }
+        )
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "unsorted_drawdown.svg"
+            with self.assertRaisesRegex(ValueError, "升序"):
+                render_drawdown_curve_svg(unsorted_daily, output_path)
 
     def test_equity_renderer_accepts_legacy_top_only_frame(self) -> None:
         """旧调用方只提供 Top N 净值时仍应生成单曲线 SVG。

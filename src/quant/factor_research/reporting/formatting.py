@@ -15,10 +15,11 @@ def _format_number(value: Any) -> str:
 
 
 def _format_percentage(value: Any) -> str:
-    """将有限收益率格式化为百分比，并将缺失值显示为 ``N/A``。
+    """将有限比率格式化为百分比，并将缺失值显示为 ``N/A``。
 
     参数：
-        value: 单只证券的开盘至收盘收益率，单位为一；允许 NaN。
+        value: 以一为单位的比率，例如单只证券的开盘至收盘收益率、组合最大回撤
+            或处于回撤的交易日占比；允许 NaN。
 
     返回：
         保留两位小数的百分比文本，或缺失值标记 ``N/A``。
@@ -26,6 +27,20 @@ def _format_percentage(value: Any) -> str:
 
     number = float(value)
     return "N/A" if not np.isfinite(number) else f"{number:.2%}"
+
+
+def _format_integer(value: Any) -> str:
+    """将交易日数或区间计数格式化为整数文本，并将缺失值显示为 ``N/A``。
+
+    参数：
+        value: 回撤区间的交易日数量或区间个数；未修复等无定义场景允许为 NaN。
+
+    返回：
+        四舍五入到整数的计数文本，或缺失值标记 ``N/A``。
+    """
+
+    number = float(value)
+    return "N/A" if not np.isfinite(number) else f"{int(round(number))}"
 
 
 def _render_inline_markdown(text: str, allow_breaks: bool = False) -> str:

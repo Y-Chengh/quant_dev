@@ -6,6 +6,7 @@
 - ``formatting``：数值格式化与 Markdown 行内标记渲染。
 - ``markdown``：报告正文拼装、HTML 转换与候选表格渲染。
 - ``charts``：准确率趋势、IC 趋势与资金曲线的 SVG 渲染。
+- ``drawdown_chart``：Top N 净值历史回撤与修复过程的 SVG 渲染。
 - ``report``：报告落盘编排。
 
 本模块保持与拆分前完全一致的公开接口，调用方无需改动导入语句。
@@ -18,6 +19,7 @@ from .charts import (
     render_equity_curve_svg,
     render_ic_trend_svg,
 )
+from .drawdown_chart import render_drawdown_curve_svg
 from .labels import (
     IC_TREND_LONG_MIN_PERIODS,
     IC_TREND_LONG_WINDOW,
@@ -35,6 +37,7 @@ __all__ = [
     "IC_TREND_SHORT_WINDOW",
     "METRIC_LABELS",
     "render_accuracy_trend_svg",
+    "render_drawdown_curve_svg",
     "render_equity_curve_svg",
     "render_ic_trend_svg",
     "render_markdown_report_html",

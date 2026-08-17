@@ -98,6 +98,22 @@ def resolve_equity_chart_path(accuracy_chart_path: Path) -> Path:
     return accuracy_chart_path.with_name(f"{stem}_equity{accuracy_chart_path.suffix}")
 
 
+def resolve_drawdown_chart_path(accuracy_chart_path: Path) -> Path:
+    """根据准确率图路径生成同目录、同运行标识的回撤修复图路径。
+
+    参数：
+        accuracy_chart_path: 本次运行的准确率 SVG 路径。
+
+    返回：
+        文件名后缀由 ``_accuracy`` 替换为 ``_drawdown`` 的 SVG 路径。
+    """
+
+    stem = accuracy_chart_path.stem
+    if stem.endswith("_accuracy"):
+        stem = stem[: -len("_accuracy")]
+    return accuracy_chart_path.with_name(f"{stem}_drawdown{accuracy_chart_path.suffix}")
+
+
 def resolve_ic_chart_path(accuracy_chart_path: Path) -> Path:
     """根据准确率图路径生成同目录、同运行标识的 IC 趋势图路径。
 
@@ -571,6 +587,7 @@ def main() -> None:
         backtest=backtest,
         equity_chart_path=resolve_equity_chart_path(chart_file),
         ic_chart_path=resolve_ic_chart_path(chart_file),
+        drawdown_chart_path=resolve_drawdown_chart_path(chart_file),
     )
     logger.info("评估报告: %s", report_file.resolve())
     logger.info("HTML 报告: %s", report_file.with_suffix(".html").resolve())

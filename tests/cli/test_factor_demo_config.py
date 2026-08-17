@@ -281,6 +281,11 @@ class YamlConfigReportingTest(unittest.TestCase):
                 "_ic_trend.svg"
             )
         )
+        self.assertTrue(
+            report_writer.call_args.kwargs["drawdown_chart_path"].name.endswith(
+                "_drawdown.svg"
+            )
+        )
 
 
 if __name__ == "__main__":

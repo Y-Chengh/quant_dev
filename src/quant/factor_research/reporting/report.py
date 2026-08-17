@@ -15,13 +15,159 @@ from .charts import (
     render_equity_curve_svg,
     render_ic_trend_svg,
 )
-from .formatting import _format_number
+from .drawdown_chart import render_drawdown_curve_svg
+from .formatting import _format_integer, _format_number, _format_percentage
 from .labels import (
     IC_TREND_LONG_WINDOW,
     IC_TREND_SHORT_WINDOW,
     METRIC_LABELS,
 )
 from .markdown import _render_top_selection_tables, render_markdown_report_html
+
+DRAWDOWN_METRIC_LABELS = {
+    "max_drawdown": "最大回撤",
+    "max_drawdown_decline_days": "最大回撤峰值至谷底交易日",
+    "max_drawdown_recovery_days": "最大回撤谷底至修复交易日",
+    "max_drawdown_total_days": "最大回撤区间交易日",
+    "current_drawdown": "期末当前回撤",
+    "average_drawdown": "日均水下深度",
+    "drawdown_days_ratio": "处于回撤的交易日占比",
+    "longest_drawdown_days": "最长回撤区间交易日",
+    "drawdown_episodes": "回撤区间数",
+    "recovered_drawdown_episodes": "已修复回撤区间数",
+    "calmar_ratio": "Calmar 比率（年化收益/最大回撤）",
+}
+DRAWDOWN_PERCENTAGE_METRICS = frozenset(
+    {
+        "max_drawdown",
+        "current_drawdown",
+        "average_drawdown",
+        "drawdown_days_ratio",
+    }
+)
+DRAWDOWN_INTEGER_METRICS = frozenset(
+    {
+        "max_drawdown_decline_days",
+        "max_drawdown_recovery_days",
+        "max_drawdown_total_days",
+        "longest_drawdown_days",
+        "drawdown_episodes",
+        "recovered_drawdown_episodes",
+    }
+)
+DRAWDOWN_EPISODE_LIMIT = 10
+
+
+def _format_drawdown_metric(key: str, value: Any) -> str:
+    """按回撤指标的业务口径选择百分比、整数或通用数值格式。
+
+    参数：
+        key: 回撤指标键名，用于区分比率、交易日计数与比率型比值。
+        value: 该指标的数值；未修复等无定义场景允许为 NaN。
+
+    返回：
+        与指标口径匹配的展示文本。
+    """
+
+    if key in DRAWDOWN_PERCENTAGE_METRICS:
+        return _format_percentage(value)
+    if key in DRAWDOWN_INTEGER_METRICS:
+        return _format_integer(value)
+    return _format_number(value)
+
+
+def _render_drawdown_sections(
+    backtest: TopNBacktestResult,
+    drawdown_chart_path: Path | None,
+) -> list[str]:
+    """生成回撤诊断指标、回撤修复图与历次回撤区间明细的 Markdown 段落。
+
+    回撤统一按扣除双边成本后的 Top N 净值曲线计算，期初净值为 1.0，取值不大于
+    0；未修复的回撤区间修复日期与修复交易日数显示为缺失。旧版回测结果没有回撤
+    字段时只输出回撤修复图，不虚构指标。
+
+    参数：
+        backtest: Top N 日内策略回测结果，读取其回撤指标与回撤区间明细。
+        drawdown_chart_path: 回撤修复图 SVG 路径；为 ``None`` 时不插入图像段落。
+
+    返回：
+        可直接追加到评估报告的 Markdown 文本行。
+    """
+
+    lines: list[str] = []
+    if backtest.drawdown_metrics:
+        lines.extend(
+            [
+                "",
+                "### 回撤诊断",
+                "",
+                "回撤按扣除双边成本后的 Top N 净值曲线计算，期初净值 1.0 也参与"
+                "历史峰值统计；负值表示相对历史峰值的跌幅，0 表示当日创出新高。"
+                "交易日数只统计验证区间内的目标交易日。日均水下深度是逐日回撤在"
+                "全部交易日上的均值，创出新高的交易日按 0 计入，因此它明显小于"
+                "历次回撤深度的平均值。",
+                "",
+                "| 回撤指标 | 数值 |",
+                "| --- | ---: |",
+            ]
+        )
+        for key, value in backtest.drawdown_metrics.items():
+            lines.append(
+                f"| {DRAWDOWN_METRIC_LABELS.get(key, key)} | "
+                f"{_format_drawdown_metric(key, value)} |"
+            )
+    if drawdown_chart_path is not None:
+        lines.extend(
+            [
+                "",
+                "### 历史回撤与修复",
+                "",
+                f"![Top N 累计净值、历史峰值与水下回撤修复过程]({drawdown_chart_path.name})",
+                "",
+                "上面板阴影为净值低于历史峰值的水下区间，下面板为逐日回撤深度；"
+                "红点标注最大回撤谷底，虚线标注该轮回撤的修复位置，蓝线为全市场"
+                "等权对照的回撤。",
+            ]
+        )
+    if backtest.drawdown_metrics:
+        lines.extend(["", "### 历次回撤区间", ""])
+        episodes = backtest.drawdown_episodes
+        if episodes.empty:
+            lines.append("验证区间内净值未跌破历史峰值，没有回撤区间。")
+            return lines
+        ordered = episodes.sort_values("max_drawdown", kind="mergesort")
+        shown = ordered.head(DRAWDOWN_EPISODE_LIMIT)
+        lines.extend(
+            [
+                f"按回撤深度降序列出最多 {DRAWDOWN_EPISODE_LIMIT} 段区间，"
+                f"共 {len(episodes)} 段；峰值日期为「期初」表示回撤自期初净值"
+                "就开始，未修复区间的区间交易日只统计到验证区间末尾。",
+                "",
+                "| 峰值日期 | 谷底日期 | 修复日期 | 最大回撤 | 峰值至谷底交易日 |"
+                " 谷底至修复交易日 | 区间交易日 | 是否修复 |",
+                "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+            ]
+        )
+        for row in shown.itertuples(index=False):
+            peak_date = (
+                "期初"
+                if pd.isna(row.peak_date)
+                else f"{pd.Timestamp(row.peak_date).date()}"
+            )
+            recovery_date = (
+                "未修复"
+                if pd.isna(row.recovery_date)
+                else f"{pd.Timestamp(row.recovery_date).date()}"
+            )
+            lines.append(
+                f"| {peak_date} | {pd.Timestamp(row.trough_date).date()} | "
+                f"{recovery_date} | {_format_percentage(row.max_drawdown)} | "
+                f"{_format_integer(row.decline_days)} | "
+                f"{_format_integer(row.recovery_days)} | "
+                f"{_format_integer(row.total_days)} | "
+                f"{'是' if bool(row.recovered) else '否'} |"
+            )
+    return lines
 
 
 def write_evaluation_report(
@@ -34,6 +180,7 @@ def write_evaluation_report(
     backtest: TopNBacktestResult | None = None,
     equity_chart_path: Path | None = None,
     ic_chart_path: Path | None = None,
+    drawdown_chart_path: Path | None = None,
 ) -> None:
     """写入模型评估、可选 Top N 回测、HTML 副本以及对应 SVG 图表。
 
@@ -48,6 +195,8 @@ def write_evaluation_report(
         equity_chart_path: 收益曲线 SVG 路径；提供回测结果时必须同时提供。
         ic_chart_path: IC/Rank IC 双周期趋势 SVG 路径；缺省不输出趋势图，保留
             既有调用接口行为。
+        drawdown_chart_path: 历史回撤与修复 SVG 路径；缺省不输出回撤图，保留
+            既有调用接口行为，回撤指标表仍照常输出。
 
     返回：
         无；函数写入 Markdown、同名 HTML 报告及配置的 SVG 图表。
@@ -60,6 +209,8 @@ def write_evaluation_report(
         if equity_chart_path is None:
             raise ValueError("提供 backtest 时必须同时提供 equity_chart_path")
         render_equity_curve_svg(backtest.daily_returns, equity_chart_path)
+        if drawdown_chart_path is not None:
+            render_drawdown_curve_svg(backtest.daily_returns, drawdown_chart_path)
 
     predictions = result.predictions.copy()
     if "prediction" in predictions:
@@ -145,12 +296,7 @@ def write_evaluation_report(
             lines.append(
                 f"| {metric_labels.get(key, key)} | {_format_number(value)} |"
             )
-        lines.extend(
-            _render_top_selection_tables(
-                backtest.top_selections,
-                backtest.score_column,
-            )
-        )
+        lines.extend(_render_drawdown_sections(backtest, drawdown_chart_path))
         lines.extend(
             [
                 "",
@@ -174,6 +320,7 @@ def write_evaluation_report(
             "equal_weight_total_return": "全股票等权累计收益率",
             "equal_weight_annualized_return": "全股票等权年化收益率",
             "equal_weight_sharpe_ratio": "全股票等权夏普比率",
+            "equal_weight_max_drawdown": "全股票等权最大回撤",
             "random_simulations": "随机 Top N 模拟次数",
             "random_annualized_p05": "随机 Top N 年化收益率 P05",
             "random_annualized_median": "随机 Top N 年化收益率中位数",
@@ -208,6 +355,13 @@ def write_evaluation_report(
             lines.append(
                 f"| {relative_labels.get(key, key)} | {_format_number(value)} |"
             )
+
+        lines.extend(
+            _render_top_selection_tables(
+                backtest.top_selections,
+                backtest.score_column,
+            )
+        )
 
         lines.extend(
             [

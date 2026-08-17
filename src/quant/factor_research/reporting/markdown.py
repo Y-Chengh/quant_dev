@@ -129,11 +129,57 @@ def _markdown_report_body(
     return "\n".join(body), headings, document_title
 
 
+def _render_table_of_contents(headings: list[tuple[int, str, str]]) -> str:
+    """把报告标题列表渲染为带默认折叠分组的侧边目录。
+
+    一至四级标题都会进入目录。四级标题（每日 Top N 选股明细下的逐月表格）会连同
+    其上级标题收进默认折叠的 ``<details>`` 分组，避免长月份列表把其它章节挤出
+    可视区域；点击分组标题仍可直接跳转到对应章节。
+
+    参数：
+        headings: ``_markdown_report_body`` 返回的（层级, 纯文本标题, 锚点）列表，
+            顺序与正文标题出现顺序一致。
+
+    返回：
+        可直接嵌入侧边栏 ``<nav>`` 的 HTML 片段。
+    """
+
+    items = [item for item in headings if item[0] <= 4]
+    parts: list[str] = []
+    index = 0
+    while index < len(items):
+        level, label, anchor = items[index]
+        link = f'<a class="toc-level-{level}" href="#{anchor}">{escape(label)}</a>'
+        children: list[tuple[int, str, str]] = []
+        cursor = index + 1
+        if level < 4:
+            while cursor < len(items) and items[cursor][0] == 4:
+                children.append(items[cursor])
+                cursor += 1
+        if not children:
+            parts.append(link)
+            index += 1
+            continue
+        child_links = "".join(
+            f'<a class="toc-level-{child_level}" href="#{child_anchor}">'
+            f"{escape(child_label)}</a>"
+            for child_level, child_label, child_anchor in children
+        )
+        parts.append(
+            f'<details class="toc-group"><summary>{link}'
+            f'<span class="toc-count">{len(children)}</span></summary>'
+            f'<div class="toc-children">{child_links}</div></details>'
+        )
+        index = cursor
+    return "\n".join(parts)
+
+
 def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
     """将评估 Markdown 转换为带目录和响应式样式的自包含 HTML。
 
     HTML 使用同目录的 SVG 图表相对路径；宽表支持横向滚动并冻结首列，目录收录
-    一至四级标题，在桌面端固定显示、窄屏设备上自动收起。所有报告动态文本默认
+    一至四级标题，在桌面端固定显示、窄屏设备上自动收起。四级标题按上级章节收进
+    默认折叠的分组，详见 ``_render_table_of_contents``。所有报告动态文本默认
     进行 HTML 转义，避免 YAML 或参数快照被解释为可执行标签。
 
     参数：
@@ -145,11 +191,7 @@ def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
     """
 
     body, headings, document_title = _markdown_report_body(markdown_text)
-    navigation = "\n".join(
-        f'<a class="toc-level-{level}" href="#{anchor}">{escape(label)}</a>'
-        for level, label, anchor in headings
-        if level <= 4
-    )
+    navigation = _render_table_of_contents(headings)
     source_name = escape(output_path.with_suffix(".md").name, quote=True)
     html = f"""<!doctype html>
 <html lang="zh-CN">
@@ -160,7 +202,8 @@ def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
 <style>
 :root{{--bg:#f4f7fb;--panel:#fff;--ink:#172033;--muted:#64748b;--line:#dbe3ee;--brand:#2563eb;--brand-soft:#eff6ff;--shadow:0 14px 40px rgba(15,23,42,.08)}}
 *{{box-sizing:border-box}}html{{scroll-behavior:smooth}}body{{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Microsoft YaHei","PingFang SC",Arial,sans-serif;line-height:1.65}}
-.layout{{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}}aside{{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 22px;background:#0f172a;color:#e2e8f0}}aside h2{{margin:0 0 18px;font-size:17px;color:#fff}}nav{{display:flex;flex-direction:column;gap:4px}}nav a{{padding:7px 10px;border-radius:7px;color:#cbd5e1;text-decoration:none;font-size:13px}}nav a:hover{{background:#1e293b;color:#fff}}nav .toc-level-3{{padding-left:24px;font-size:12px;color:#94a3b8}}nav .toc-level-4{{padding-left:40px;font-size:12px;color:#94a3b8}}.source{{display:block;margin-top:24px;padding:9px 12px;border:1px solid #334155;border-radius:8px;color:#bfdbfe;text-align:center;text-decoration:none;font-size:12px}}
+.layout{{display:grid;grid-template-columns:260px minmax(0,1fr);min-height:100vh}}aside{{position:sticky;top:0;height:100vh;overflow:auto;padding:28px 22px;background:#0f172a;color:#e2e8f0}}aside h2{{margin:0 0 18px;font-size:17px;color:#fff}}nav{{display:flex;flex-direction:column;gap:4px}}nav a{{padding:7px 10px;border-radius:7px;color:#cbd5e1;text-decoration:none;font-size:13px}}nav a:hover{{background:#1e293b;color:#fff}}nav .toc-level-3{{padding-left:24px;font-size:12px;color:#94a3b8}}nav .toc-level-4{{padding-left:40px;font-size:12px;color:#94a3b8}}
+details.toc-group{{display:flex;flex-direction:column;gap:4px}}details.toc-group>summary{{display:flex;align-items:center;gap:6px;padding:0 8px 0 6px;border-radius:7px;list-style:none;cursor:pointer}}details.toc-group>summary::-webkit-details-marker{{display:none}}details.toc-group>summary::before{{content:"▸";color:#94a3b8;font-size:11px}}details.toc-group[open]>summary::before{{content:"▾"}}details.toc-group>summary:hover{{background:#1e293b}}details.toc-group>summary a{{flex:1;padding-left:4px}}details.toc-group>summary:hover a{{color:#fff}}.toc-count{{padding:1px 7px;border-radius:999px;background:#1e293b;color:#94a3b8;font-size:11px}}.toc-children{{display:flex;flex-direction:column;gap:4px}}.source{{display:block;margin-top:24px;padding:9px 12px;border:1px solid #334155;border-radius:8px;color:#bfdbfe;text-align:center;text-decoration:none;font-size:12px}}
 main{{min-width:0;padding:34px}}article{{max-width:1500px;margin:0 auto;padding:38px 42px 70px;background:var(--panel);border:1px solid #e7edf5;border-radius:16px;box-shadow:var(--shadow)}}h1{{margin:0 0 22px;font-size:30px;line-height:1.25}}h2{{margin:42px 0 16px;padding-bottom:9px;border-bottom:2px solid var(--line);font-size:22px}}h3{{margin:30px 0 12px;font-size:18px}}h4{{margin:25px 0 10px;color:#334155}}.heading-anchor{{margin-left:-20px;padding-right:6px;color:#94a3b8;text-decoration:none;opacity:0}}h1:hover .heading-anchor,h2:hover .heading-anchor,h3:hover .heading-anchor,h4:hover .heading-anchor{{opacity:1}}p{{margin:10px 0;color:#334155}}ul{{margin:8px 0 20px;padding-left:22px}}code{{padding:.12em .38em;border-radius:5px;background:#eef2f7;color:#be123c;font-family:"Cascadia Code",Consolas,monospace;font-size:.9em}}pre{{overflow:auto;padding:18px;border-radius:10px;background:#111827;color:#e5e7eb}}pre code{{padding:0;background:transparent;color:inherit}}img{{display:block;max-width:100%;height:auto;margin:18px auto;border:1px solid var(--line);border-radius:10px;background:#fff}}
 .table-scroll{{max-width:100%;margin:14px 0 24px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}}table{{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45}}th,td{{min-width:108px;padding:10px 12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:2;background:#eaf1fb;color:#1e3a5f;font-weight:700}}th:first-child,td:first-child{{position:sticky;left:0;z-index:1;min-width:120px;background:#f8fafc}}th:first-child{{z-index:3;background:#dfeafb}}tbody tr:nth-child(even) td{{background:#f8fafc}}tbody tr:nth-child(even) td:first-child{{background:#eef2f7}}tbody tr:hover td{{background:#fff7ed}}tbody tr:hover td:first-child{{background:#ffedd5}}tr:last-child td{{border-bottom:0}}th:last-child,td:last-child{{border-right:0}}.align-right{{text-align:right;font-variant-numeric:tabular-nums}}
 @media(max-width:900px){{.layout{{display:block}}aside{{position:relative;width:auto;height:auto;padding:18px}}nav{{display:none}}.source{{margin-top:8px}}main{{padding:12px}}article{{padding:24px 18px;border-radius:10px}}h1{{font-size:25px}}h2{{font-size:20px}}}}
