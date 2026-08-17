@@ -30,10 +30,30 @@ class LightGBMClassifier(DirectionModel):
         n_jobs: int = -1,
         random_state: int | None = 42,
         objective: str = "binary",
+        boosting_type: str = "dart",
     ):
+        """初始化方向二分类器。
+
+        参数：
+            n_estimators: 提升树数量，即最大迭代轮数。
+            learning_rate: 每棵树的贡献缩减系数。
+            num_leaves: 单棵树允许的最大叶节点数。
+            max_depth: 单棵树最大深度；负值表示不限制。
+            min_child_samples: 每个叶节点所需的最少训练样本数。
+            subsample: 每轮训练抽取的样本比例，取值范围为 ``(0, 1]``。
+            colsample_bytree: 每棵树抽取的特征比例，取值范围为 ``(0, 1]``。
+            reg_alpha: 叶节点权重的 L1 正则化系数。
+            reg_lambda: 叶节点权重的 L2 正则化系数。
+            n_jobs: LightGBM 并行线程数；``-1`` 表示使用全部可用 CPU。
+            random_state: 随机种子；为空时不固定随机序列。
+            objective: LightGBM 分类目标函数名称。
+            boosting_type: 提升算法；``dart`` 随机丢弃已有树抑制过拟合但训练慢，
+                ``gbdt`` 为标准梯度提升，``goss`` 在 gbdt 基础上按梯度单边采样加速，
+                与行采样互斥（需 ``subsample=1.0``，由工厂在创建前校验）。
+        """
         self.estimator = LGBMClassifier(
             objective=objective,
-            boosting_type='dart',
+            boosting_type=boosting_type,
             # min_split_gain=0.01,
             # early_stopping_rounds=100,
             n_estimators=n_estimators,
@@ -105,6 +125,7 @@ class LightGBMRegressor(DirectionModel):
         random_state: int | None = 42,
         objective: str = "regression",
         objective_alpha: float = 0.9,
+        boosting_type: str = "dart",
     ):
         """初始化连续收益率回归器。
 
@@ -123,11 +144,14 @@ class LightGBMRegressor(DirectionModel):
             objective: LightGBM 回归目标函数名称。
             objective_alpha: Huber 的残差截断阈值，或 quantile 的目标分位点；
                 其他回归目标不会使用该值。
+            boosting_type: 提升算法；``dart`` 随机丢弃已有树抑制过拟合但训练慢，
+                ``gbdt`` 为标准梯度提升，``goss`` 在 gbdt 基础上按梯度单边采样加速，
+                与行采样互斥（需 ``subsample=1.0``，由工厂在创建前校验）。
         """
         self.estimator = LGBMRegressor(
             objective=objective,
             alpha=objective_alpha,
-            boosting_type="dart",
+            boosting_type=boosting_type,
             n_estimators=n_estimators,
             learning_rate=learning_rate,
             num_leaves=num_leaves,
@@ -196,12 +220,24 @@ class LightGBMModelFactory(DirectionModelFactory):
     task: str = "classification"
     objective: str | None = None
     objective_alpha: float = 0.9
+    boosting_type: str = "dart"
     name: ClassVar[str] = "lightgbm"
     supported_tasks: ClassVar[tuple[str, ...]] = ("classification", "regression")
+    BOOSTING_TYPES: ClassVar[tuple[str, ...]] = ("gbdt", "dart", "goss")
 
     def __post_init__(self) -> None:
-        """补全任务默认目标，并校验目标函数及其 alpha 参数。"""
+        """补全任务默认目标，并校验目标函数、alpha 参数及提升算法组合。"""
 
+        if self.boosting_type not in self.BOOSTING_TYPES:
+            raise ValueError(
+                f"boosting_type 必须是 {self.BOOSTING_TYPES} 之一，"
+                f"实际为 {self.boosting_type!r}"
+            )
+        if self.boosting_type == "goss" and self.subsample < 1.0:
+            raise ValueError(
+                "GOSS 与行采样互斥（LightGBM 会报 Cannot use bagging in GOSS），"
+                f"boosting_type='goss' 时 subsample 必须为 1.0，实际为 {self.subsample}"
+            )
         classification_objectives = {"binary", "cross_entropy", "cross_entropy_lambda"}
         regression_objectives = {
             "regression", "regression_l1", "huber", "fair", "quantile",
@@ -269,6 +305,17 @@ class LightGBMModelFactory(DirectionModelFactory):
                 "其他目标函数忽略该参数"
             ),
         )
+        parser.add_argument(
+            "--boosting-type",
+            choices=list(cls.BOOSTING_TYPES),
+            default="dart",
+            help=(
+                "提升算法：dart 随机丢弃已有树抑制过拟合但训练慢；"
+                "gbdt 为标准梯度提升，训练明显更快；"
+                "goss 在 gbdt 基础上按梯度单边采样进一步加速，"
+                "要求 --subsample 1.0"
+            ),
+        )
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> LightGBMModelFactory:
@@ -296,6 +343,7 @@ class LightGBMModelFactory(DirectionModelFactory):
             task=getattr(args, "task", "classification"),
             objective=getattr(args, "objective", None),
             objective_alpha=getattr(args, "objective_alpha", 0.9),
+            boosting_type=getattr(args, "boosting_type", "dart"),
         )
 
     def create(self) -> DirectionModel:
@@ -319,6 +367,7 @@ class LightGBMModelFactory(DirectionModelFactory):
             n_jobs=self.n_jobs,
             random_state=self.random_state,
             objective=self.objective,
+            boosting_type=self.boosting_type,
             **(
                 {"objective_alpha": self.objective_alpha}
                 if self.task == "regression"

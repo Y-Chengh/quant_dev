@@ -45,6 +45,8 @@ class LightGBMModelTest(unittest.TestCase):
                 "7",
                 "--objective",
                 "cross_entropy",
+                "--boosting-type",
+                "gbdt",
             ]
         )
         factory = model_factory_from_args(args)
@@ -63,6 +65,7 @@ class LightGBMModelTest(unittest.TestCase):
         self.assertEqual(factory.n_jobs, 2)
         self.assertEqual(factory.random_state, 7)
         self.assertEqual(factory.objective, "cross_entropy")
+        self.assertEqual(factory.boosting_type, "gbdt")
 
     def test_legacy_namespace_defaults_to_binary_classification(self):
         args = parse_args(["--model", "lightgbm"])
@@ -87,6 +90,61 @@ class LightGBMModelTest(unittest.TestCase):
         self.assertEqual(first.estimator.get_params()["n_jobs"], 2)
         self.assertEqual(first.estimator.get_params()["subsample_freq"], 1)
         self.assertEqual(first.estimator.get_params()["objective"], "binary")
+
+    def test_boosting_type_defaults_to_dart_and_passes_through(self):
+        """缺省保持 dart 与既有结果可比；显式配置应透传到底层估计器。"""
+
+        default_model = LightGBMModelFactory(n_jobs=1).create()
+        self.assertEqual(
+            default_model.estimator.get_params()["boosting_type"], "dart"
+        )
+
+        gbdt_model = LightGBMModelFactory(boosting_type="gbdt", n_jobs=1).create()
+        self.assertEqual(gbdt_model.estimator.get_params()["boosting_type"], "gbdt")
+
+        goss_model = LightGBMModelFactory(
+            boosting_type="goss", subsample=1.0, n_jobs=1
+        ).create()
+        self.assertEqual(goss_model.estimator.get_params()["boosting_type"], "goss")
+        # subsample=1.0 时不启用每轮行采样，GOSS 才能通过 LightGBM 自身校验。
+        self.assertEqual(goss_model.estimator.get_params()["subsample_freq"], 0)
+
+    def test_boosting_type_is_validated_at_factory_construction(self):
+        """非法取值与 GOSS+行采样组合都应在工厂构造时立刻报错。"""
+
+        with self.assertRaisesRegex(ValueError, "boosting_type"):
+            LightGBMModelFactory(boosting_type="rf")
+        with self.assertRaisesRegex(ValueError, "GOSS"):
+            LightGBMModelFactory(boosting_type="goss", subsample=0.8)
+
+    def test_gbdt_and_goss_models_fit_and_predict(self):
+        """gbdt 与 goss 两种提升算法应能完成训练并给出有限预测。"""
+
+        random = np.random.default_rng(42)
+        X = random.normal(size=(200, 3))
+        y = 0.01 * X[:, 0] - 0.005 * X[:, 1]
+        labels = (y > 0).astype(int)
+
+        gbdt_classifier = LightGBMClassifier(
+            n_estimators=10,
+            min_child_samples=5,
+            n_jobs=1,
+            boosting_type="gbdt",
+        ).fit(X, labels)
+        probabilities = gbdt_classifier.predict_proba(X[:5])
+        self.assertEqual(probabilities.shape, (5, 2))
+        self.assertTrue(np.isfinite(probabilities).all())
+
+        goss_regressor = LightGBMRegressor(
+            n_estimators=10,
+            min_child_samples=5,
+            subsample=1.0,
+            n_jobs=1,
+            boosting_type="goss",
+        ).fit(X, y)
+        prediction = goss_regressor.predict(X[:5])
+        self.assertEqual(prediction.shape, (5,))
+        self.assertTrue(np.isfinite(prediction).all())
 
     def test_regression_factory_uses_configured_objective(self):
         factory = LightGBMModelFactory(

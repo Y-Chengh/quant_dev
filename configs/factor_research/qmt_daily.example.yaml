@@ -29,6 +29,7 @@ task: regression
 model: lightgbm
 objective: huber
 objective_alpha: 0.02
+# boosting_type: gbdt  # 缺省 dart；gbdt 训练快数倍，goss 更快但要求 subsample: 1.0
 n_estimators: 1000
 learning_rate: 0.03
 num_leaves: 31

@@ -136,6 +136,7 @@ volume_ratio_5d
 | `--random-state` | `42` | 随机种子，用于复现实验结果。 |
 | `--objective` | 随 `--task` 选择 | LightGBM 目标函数。分类默认为 `binary`，还支持 `cross_entropy`、`cross_entropy_lambda`；回归默认为 `regression`，还支持 `regression_l1`、`huber`、`fair`、`quantile`。目标函数必须与任务类型兼容。 |
 | `--objective-alpha` | `0.9` | `huber` 的残差截断阈值，或 `quantile` 的目标分位点；其他目标函数忽略该参数。收益率以小数表示时，`huber` 阈值也使用相同单位，例如 `0.02` 表示 2%。 |
+| `--boosting-type` | `dart` | 提升算法。`dart` 每轮随机丢弃已有树抑制过拟合，但训练慢且不支持提前停止；`gbdt` 是标准梯度提升，同等树数下训练明显更快；`goss` 在 `gbdt` 基础上按梯度做单边采样，大样本下进一步加速，与每轮行采样互斥，要求 `--subsample 1.0`。 |
 
 ### 3.4 `factor_passthrough`
 
