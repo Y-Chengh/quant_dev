@@ -18,6 +18,7 @@ from .metrics import (
 )
 from .models.base import DirectionModel, DirectionModelFactory
 from .models.simple_decision_tree import SimpleDecisionTreeModelFactory
+from .progress import DEFAULT_MIN_INTERVAL, PROGRESS_MODES, ProgressBar
 from .timing import ElapsedRecorder, log_elapsed
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,26 @@ class DirectionExperiment:
         model_factory: DirectionModelFactory | None = None,
         training_mode: str = "rolling",
         task: str = "classification",
+        progress: str = "never",
     ):
+        """保存训练验证配置，并校验训练方式、任务与模型工厂的兼容性。
+
+        参数：
+            validation_start: 验证集首个目标日期，该日期本身属于验证区间。
+            feature_columns: 参与建模的特征列名；缺省使用 ``DEFAULT_FEATURES``。
+            max_depth: 缺省决策树模型的最大深度；注入 ``model_factory`` 后不再生效。
+            min_samples_leaf: 缺省决策树模型的叶子最小样本数；同上。
+            args: 命令行参数命名空间，仅用于透传调试开关，不参与建模口径。
+            model_factory: 模型工厂；缺省构造简单决策树工厂，注入后实验不关心具体算法。
+            training_mode: ``rolling`` 为逐日扩展窗口重训，``single`` 为固定训练集只拟合一次。
+            task: ``classification`` 为涨跌二分类，``regression`` 为连续涨跌幅。
+            progress: 训练验证进度条模式，取 :data:`PROGRESS_MODES` 之一。缺省 ``never``
+                保持库层调用（含搜索的并行 worker）静默，由命令行显式开启为 ``auto``。
+
+        返回：
+            无返回值；任一配置非法时直接抛出 ``ValueError``。
+        """
+
         if training_mode not in TRAINING_MODES:
             raise ValueError(
                 f"training_mode 必须是 {TRAINING_MODES} 之一，实际为 {training_mode!r}"
@@ -58,6 +78,10 @@ class DirectionExperiment:
             raise ValueError(
                 f"task 必须是 {PREDICTION_TASKS} 之一，实际为 {task!r}"
             )
+        if progress not in PROGRESS_MODES:
+            raise ValueError(
+                f"progress 必须是 {PROGRESS_MODES} 之一，实际为 {progress!r}"
+            )
         self.validation_start = pd.Timestamp(validation_start)
         self.feature_columns = feature_columns or DEFAULT_FEATURES
         self.max_depth = max_depth
@@ -65,6 +89,7 @@ class DirectionExperiment:
         self.args = args
         self.training_mode = training_mode
         self.task = task
+        self.progress = progress
         # 保留原有树参数作为默认配置；注入工厂后，实验流程不再关心具体算法。
         self.model_factory = (
             model_factory
@@ -188,6 +213,28 @@ class DirectionExperiment:
             )
         return dataset.loc[finite].copy()
 
+    def _create_progress(
+        self,
+        total: int,
+        description: str,
+        min_interval: float = DEFAULT_MIN_INTERVAL,
+    ) -> ProgressBar:
+        """按显示模式和当前日志等级创建本阶段的进度条。
+
+        参数：
+            total: 本阶段的总步数，例如滚动模式的验证日数量。
+            description: 进度条行首的阶段名称，例如 ``滚动验证``。
+            min_interval: 两次重绘的最小间隔秒数；步数很少的阶段传 0 以保证每一步
+                都立即显示，逐日循环则用默认节流避免刷屏。
+
+        返回：
+            已解析好是否输出的进度条。DEBUG 等级下强制关闭：该等级会逐日写调试
+            日志，日志与进度帧写同一个流，会不断打断同一行的进度条。
+        """
+
+        mode = "never" if logger.isEnabledFor(logging.DEBUG) else self.progress
+        return ProgressBar(total, description, mode=mode, min_interval=min_interval)
+
     def _target(self, frame: pd.DataFrame) -> np.ndarray:
         """按任务选择训练目标；两种目标都只属于对应的 target_date。"""
         if self.task == "classification":
@@ -251,21 +298,27 @@ class DirectionExperiment:
         timings = ElapsedRecorder()
         nan_fill_value = -10000.0
         model = self.model_factory.create()
-        train_matrix = timings.track("preprocessing")(self._matrix)(
-            train_frame, nan_fill_value
-        )
-        validation_matrix = timings.track("preprocessing")(self._matrix)(
-            validation_frame, nan_fill_value
-        )
-        timings.track("fit")(model.fit)(
-            train_matrix,
-            self._target(train_frame),
-        )
+        # 单次模式只有三个耗时阶段，进度条按阶段推进；detail 写的是刚完成的阶段名。
+        # 总共只画四帧，因此关闭节流，让每个阶段的完成都立即反映到终端。
+        with self._create_progress(3, "单次训练验证", min_interval=0.0) as progress:
+            train_matrix = timings.track("preprocessing")(self._matrix)(
+                train_frame, nan_fill_value
+            )
+            validation_matrix = timings.track("preprocessing")(self._matrix)(
+                validation_frame, nan_fill_value
+            )
+            progress.advance(detail="预处理")
+            timings.track("fit")(model.fit)(
+                train_matrix,
+                self._target(train_frame),
+            )
+            progress.advance(detail="训练")
 
-        predictions = validation_frame[
-            self._prediction_columns(validation_frame)
-        ].copy()
-        self._add_model_predictions(predictions, model, validation_matrix, timings)
+            predictions = validation_frame[
+                self._prediction_columns(validation_frame)
+            ].copy()
+            self._add_model_predictions(predictions, model, validation_matrix, timings)
+            progress.advance(detail="预测")
         predictions["training_samples"] = len(train_frame)
         predictions["training_end_date"] = train_frame["target_date"].max()
         importance = getattr(model, "feature_importances_", None)
@@ -324,69 +377,84 @@ class DirectionExperiment:
 
         # if getattr(self.args, "debug", False):
         #     logger.debug("DEBUG: %s", prediction_dates)
-        for position, target_date in enumerate(prediction_dates, start=1):
-            logger.debug("滚动训练日期 [%d/%d]: %s", position, total_dates, pd.Timestamp(target_date).date())
-            if position == 1 or position == total_dates or position % progress_interval == 0:
-                logger.info(
-                    "滚动验证进度 [%d/%d] %.1f%%",
-                    position,
-                    total_dates,
-                    position / total_dates * 100,
+        with self._create_progress(total_dates, "滚动验证") as progress:
+            for position, target_date in enumerate(prediction_dates, start=1):
+                date_text = str(pd.Timestamp(target_date).date())
+                logger.debug("滚动训练日期 [%d/%d]: %s", position, total_dates, date_text)
+                milestone = (
+                    position == 1
+                    or position == total_dates
+                    or position % progress_interval == 0
                 )
-            # A label is available at T only after T closes, so training must end before T.
-            train_frame = dataset.loc[dataset["target_date"] < target_date]
-            predict_frame = dataset.loc[dataset["target_date"] == target_date]
-            if train_frame.empty or predict_frame.empty:
-                continue
+                # 里程碑日志照常写，日志文件里仍留有 10% 一档的进度记录；
+                # 进度条与日志写同一个流，先让出整行再写，写完自动重画。
+                # 日志等级高于 INFO 时这条记录会被丢弃，此时不必让行，
+                # 否则终端上的进度条会毫无理由地闪一下。
+                if milestone and logger.isEnabledFor(logging.INFO):
+                    with progress.paused():
+                        logger.info(
+                            "滚动验证进度 [%d/%d] %.1f%%",
+                            position,
+                            total_dates,
+                            position / total_dates * 100,
+                        )
+                # A label is available at T only after T closes, so training must end before T.
+                train_frame = dataset.loc[dataset["target_date"] < target_date]
+                predict_frame = dataset.loc[dataset["target_date"] == target_date]
+                if train_frame.empty or predict_frame.empty:
+                    # 跳过的日期同样占用一个进度步，否则末帧到不了 100%。
+                    progress.advance(detail=date_text)
+                    continue
 
-            if logger.isEnabledFor(logging.DEBUG):
-                # 监控na占比
-                train_features = train_frame[self.feature_columns]
-                predict_features = predict_frame[self.feature_columns]
-                train_na_by_feature = train_features.isna().sum()
-                predict_na_by_feature = predict_features.isna().sum()
-                train_na_count = int(train_na_by_feature.sum())
-                predict_na_count = int(predict_na_by_feature.sum())
-                logger.debug(
-                    "因子 NA 监控: target_date=%s train=%d/%d (%.2f%%) predict=%d/%d (%.2f%%) "
-                    "train_by_feature=%s predict_by_feature=%s",
-                    pd.Timestamp(target_date).date(),
-                    train_na_count,
-                    train_features.size,
-                    train_na_count / train_features.size * 100,
-                    predict_na_count,
-                    predict_features.size,
-                    predict_na_count / predict_features.size * 100,
-                    train_na_by_feature[train_na_by_feature > 0].to_dict(),
-                    predict_na_by_feature[predict_na_by_feature > 0].to_dict(),
-                )
-
-            model, train_matrix, predict_matrix = preprocess(train_frame, predict_frame)
-            timings.track("fit")(model.fit)(
-                train_matrix,
-                self._target(train_frame),
-            )
-            daily = predict_frame[self._prediction_columns(predict_frame)].copy()
-            self._add_model_predictions(daily, model, predict_matrix, timings)
-            daily["training_samples"] = len(train_frame)
-            daily["training_end_date"] = train_frame["target_date"].max()
-            predictions.append(daily)
-            model_importance = getattr(model, "feature_importances_", None)
-            logger.debug("model.feature_importances_: %s", model_importance)
-            if model_importance is not None:
-                model_importance = np.asarray(model_importance, dtype=float)
-                expected_shape = (len(self.feature_columns),)
-                if model_importance.shape != expected_shape:
-                    raise ValueError(
-                        "模型特征重要度形状不正确: "
-                        f"expected={expected_shape} actual={model_importance.shape}"
+                if logger.isEnabledFor(logging.DEBUG):
+                    # 监控na占比
+                    train_features = train_frame[self.feature_columns]
+                    predict_features = predict_frame[self.feature_columns]
+                    train_na_by_feature = train_features.isna().sum()
+                    predict_na_by_feature = predict_features.isna().sum()
+                    train_na_count = int(train_na_by_feature.sum())
+                    predict_na_count = int(predict_na_by_feature.sum())
+                    logger.debug(
+                        "因子 NA 监控: target_date=%s train=%d/%d (%.2f%%) predict=%d/%d (%.2f%%) "
+                        "train_by_feature=%s predict_by_feature=%s",
+                        pd.Timestamp(target_date).date(),
+                        train_na_count,
+                        train_features.size,
+                        train_na_count / train_features.size * 100,
+                        predict_na_count,
+                        predict_features.size,
+                        predict_na_count / predict_features.size * 100,
+                        train_na_by_feature[train_na_by_feature > 0].to_dict(),
+                        predict_na_by_feature[predict_na_by_feature > 0].to_dict(),
                     )
-                if not np.isfinite(model_importance).all():
-                    raise ValueError("模型特征重要度包含 NaN 或无穷值")
-                if importance_sum is None:
-                    importance_sum = np.zeros(expected_shape, dtype=float)
-                importance_sum += model_importance
-                importance_count += 1
+
+                model, train_matrix, predict_matrix = preprocess(train_frame, predict_frame)
+                timings.track("fit")(model.fit)(
+                    train_matrix,
+                    self._target(train_frame),
+                )
+                daily = predict_frame[self._prediction_columns(predict_frame)].copy()
+                self._add_model_predictions(daily, model, predict_matrix, timings)
+                daily["training_samples"] = len(train_frame)
+                daily["training_end_date"] = train_frame["target_date"].max()
+                predictions.append(daily)
+                model_importance = getattr(model, "feature_importances_", None)
+                logger.debug("model.feature_importances_: %s", model_importance)
+                if model_importance is not None:
+                    model_importance = np.asarray(model_importance, dtype=float)
+                    expected_shape = (len(self.feature_columns),)
+                    if model_importance.shape != expected_shape:
+                        raise ValueError(
+                            "模型特征重要度形状不正确: "
+                            f"expected={expected_shape} actual={model_importance.shape}"
+                        )
+                    if not np.isfinite(model_importance).all():
+                        raise ValueError("模型特征重要度包含 NaN 或无穷值")
+                    if importance_sum is None:
+                        importance_sum = np.zeros(expected_shape, dtype=float)
+                    importance_sum += model_importance
+                    importance_count += 1
+                progress.advance(detail=date_text)
 
         if model is None or not predictions:
             raise ValueError("没有足够的数据执行滚动验证")

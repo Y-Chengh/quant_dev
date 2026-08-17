@@ -38,6 +38,7 @@ from quant.factor_research.models.registry import (
     available_models,
     model_factory_from_args,
 )
+from quant.factor_research.progress import PROGRESS_MODES
 from quant.factor_research.reporting import write_evaluation_report
 from quant.factor_research.timing import log_elapsed
 
@@ -398,6 +399,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--debug", action="store_true", help="开启调试模式并使用 DEBUG 日志等级")
     parser.add_argument(
+        "--progress",
+        choices=PROGRESS_MODES,
+        default="auto",
+        help=(
+            "模型训练验证进度条：auto 仅在交互式终端显示，always 强制显示，"
+            "never 关闭；DEBUG 日志等级下始终关闭"
+        ),
+    )
+    parser.add_argument(
         "--log-dir",
         type=Path,
         default=DEFAULT_LOG_DIR,
@@ -533,6 +543,7 @@ def main() -> None:
         model_factory=model_factory_from_args(args),
         training_mode=args.training_mode,
         task=args.task,
+        progress=args.progress,
     ).run(dataset)
     logger.info("验证指标: %s", result.metrics)
     score_column = (

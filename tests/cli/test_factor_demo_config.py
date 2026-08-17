@@ -223,6 +223,7 @@ class YamlConfigReportingTest(unittest.TestCase):
                 factor_cache_dir=root / "cache",
                 no_factor_cache=True,
                 model="simple_decision_tree",
+                progress="never",
             )
             experiment = SimpleNamespace(run=lambda dataset: _result())
             # 主流程现在只依赖数据源抽象，因此这里替换的是数据源而不是行情客户端。

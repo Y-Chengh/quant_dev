@@ -59,6 +59,7 @@ python -m quant.cli.factor_demo --model lightgbm --help
 | `--no-factor-cache` | 开关 | 关闭 | 出现该参数时完全禁用因子缓存，`--factor-cache-dir` 不再生效。适合核对最新因子实现。 |
 | `--log-level` | `DEBUG`、`INFO`、`WARNING`、`ERROR` | `INFO` | 控制终端和文件日志等级。 |
 | `--debug` | 开关 | 关闭 | 开启调试模式，并强制把日志等级设为 `DEBUG`；其优先级高于 `--log-level`。 |
+| `--progress` | `auto`、`always`、`never` | `auto` | 模型训练验证阶段的终端进度条。`auto` 仅在交互式终端显示，输出被重定向时自动关闭；`always` 强制显示；`never` 关闭。`DEBUG` 等级下始终关闭。取值不用 `on`/`off`，因为 YAML 会把这两个裸词解析成布尔值。 |
 | `--log-dir` | 路径 | `logs` | 日志、Markdown 评估报告和 SVG 趋势图的归档根目录。 |
 
 回测使用验证集的样本外预测：分类任务按 `up_probability` 排序，回归任务按
@@ -288,6 +289,7 @@ python -m quant.cli.factor_demo --log-level WARNING
 - `--validation-start` 控制验证区间，不会改变特征只能使用当日及以前数据、训练样本必须满足 `target_date < T` 的防泄漏规则。
 - 比较模型或参数时，应固定研究窗口、证券、因子、验证起点和随机种子，否则结果不可直接归因于模型设置。
 - `--debug` 会覆盖 `--log-level` 并使用 `DEBUG`，即使命令中同时指定了其他日志等级。
+- 进度条与控制台日志同写标准错误：进度帧只在终端里覆盖同一行，不会进入 `--log-dir` 下的日志文件；把标准错误重定向到文件时 `auto` 模式会自动关闭。无论进度条是否开启，日志中每 10% 一条的「滚动验证进度」记录都照常保留，因此事后查日志的口径不受影响。
 - 路径包含空格时需加双引号，例如 `--database "D:\quant data\market.duckdb"`。
 - 完整运行会逐日重新训练模型。增加证券数、验证天数、因子数、树数量或树复杂度都会提高耗时。
 
