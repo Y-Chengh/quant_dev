@@ -6,7 +6,7 @@
 
 1. 将分钟行情聚合为日频行情。
 2. 通过独立的因子工厂生成特征。
-3. 使用当日及以前可见的数据预测下一有效交易日开盘至收盘的涨跌方向或涨跌幅。
+3. 使用当日及以前可见的数据预测可配置目标的涨跌方向或涨跌幅：下一交易日收盘至再下一交易日收盘（`close`）、下一交易日开盘至再下一交易日开盘（`open`），或下一交易日开盘至收盘（`inday`）。
 4. 支持扩展窗口逐日训练验证，以及固定训练集单次训练后在验证集测试。
 
 ## 目录说明
@@ -36,7 +36,7 @@
 - `reporting/`：Markdown/HTML 双格式评估报告和图表输出，按
   `labels`/`formatting`/`markdown`/`charts`/`drawdown_chart`/`slippage_chart`/
   `report` 分层；回撤图与滑点对比图各自独立成模块，避免 `charts` 越过拆分线。
-- `backtesting/`：验证集 Top N 日内等权回测、交易成本、随机/等权基准、横截面
+- `backtesting/`：验证集 Top N 目标收益等权回测、交易成本、随机/等权基准、横截面
   分组及收益价差诊断，按 `metrics`/`drawdown`/`costs`/`result`/`top_n` 分层。
 - `search_report/`：因子搜索结果的可审计报告生成，按
   `constants`/`formatting`/`reproduction`/`summaries`/`charts`/`report` 分层。

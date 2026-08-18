@@ -1,4 +1,4 @@
-"""Top N 日内策略回测结果的数据类。"""
+"""Top N 目标收益策略回测结果的数据类。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pandas as pd
 
 @dataclass(frozen=True)
 class TopNBacktestResult:
-    """保存 Top N 日内策略及其横截面对照诊断。"""
+    """保存 Top N 目标收益策略及其横截面对照诊断。"""
 
     top_n: int
     score_column: str

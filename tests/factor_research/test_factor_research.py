@@ -102,6 +102,70 @@ class FactorResearchTest(unittest.TestCase):
         )
         self.assertEqual(len(dataset), 4)
 
+    def test_configurable_targets_use_the_requested_future_prices_by_code(self):
+        """三种目标应按证券独立位移，并准确记录收益实现日期。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dates = pd.bdate_range("2025-01-02", periods=4)
+        daily_features = pd.DataFrame(
+            {
+                "code": ["A", "B"] * 4,
+                "trade_date": [date for date in dates for _ in range(2)],
+                "open": [10.0, 20.0, 11.0, 18.0, 12.0, 21.0, 15.0, 19.0],
+                "close": [10.5, 19.0, 12.0, 20.0, 9.0, 22.0, 18.0, 20.0],
+                "test_feature": range(8),
+            }
+        )
+
+        close_target = build_direction_dataset(
+            daily_features, ["test_feature"], target="close"
+        )
+        open_target = build_direction_dataset(
+            daily_features, ["test_feature"], target="open"
+        )
+        inday_target = build_direction_dataset(
+            daily_features, ["test_feature"], target="inday"
+        )
+
+        np.testing.assert_allclose(
+            close_target["target_return"],
+            [9.0 / 12.0 - 1, 22.0 / 20.0 - 1, 18.0 / 9.0 - 1, 20.0 / 22.0 - 1],
+        )
+        np.testing.assert_allclose(
+            open_target["target_return"],
+            [12.0 / 11.0 - 1, 21.0 / 18.0 - 1, 15.0 / 12.0 - 1, 19.0 / 21.0 - 1],
+        )
+        np.testing.assert_allclose(
+            inday_target["target_return"],
+            [12.0 / 11.0 - 1, 20.0 / 18.0 - 1, 9.0 / 12.0 - 1,
+             22.0 / 21.0 - 1, 18.0 / 15.0 - 1, 20.0 / 19.0 - 1],
+        )
+        self.assertTrue(
+            (close_target["target_end_date"] > close_target["target_date"]).all()
+        )
+        self.assertTrue(
+            (open_target["target_end_date"] > open_target["target_date"]).all()
+        )
+        self.assertTrue(
+            (inday_target["target_end_date"] == inday_target["target_date"]).all()
+        )
+        self.assertEqual(len(close_target), 4)
+        self.assertEqual(len(open_target), 4)
+        self.assertEqual(len(inday_target), 6)
+
+    def test_unknown_target_is_rejected(self):
+        """未知收益口径应在构建标签前直接拒绝。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        with self.assertRaisesRegex(ValueError, "target"):
+            build_direction_dataset(self.daily, target="unknown")
+
     def test_report_return_column_cannot_be_used_as_model_feature(self):
         """目标日收盘收益报告列必须是保留名，不能作为模型特征泄漏未来数据。
 
@@ -526,6 +590,26 @@ class FactorResearchTest(unittest.TestCase):
         samples_by_date = result.predictions.groupby("target_date")["training_samples"].first()
         self.assertTrue(samples_by_date.is_monotonic_increasing)
 
+    def test_close_target_training_uses_only_already_realized_labels(self):
+        """跨日收益尚未在预测买入日前实现时不得进入滚动训练集。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dataset = build_direction_dataset(self.daily, target="close")
+        cutoff = dataset["target_date"].drop_duplicates().sort_values().iloc[48]
+        result = DirectionExperiment(
+            cutoff, max_depth=2, min_samples_leaf=5
+        ).run(dataset)
+
+        self.assertTrue(
+            (result.predictions["training_end_date"] < result.predictions["target_date"]).all()
+        )
+        expected = dataset.loc[dataset["target_end_date"] < cutoff]
+        first = result.predictions.loc[result.predictions["target_date"] == cutoff]
+        self.assertTrue((first["training_samples"] == len(expected)).all())
+
     def test_single_training_fits_once_on_training_split_only(self):
         class RecordingModel(DirectionModel):
             def __init__(self):
@@ -578,6 +662,33 @@ class FactorResearchTest(unittest.TestCase):
                 result.predictions["training_end_date"]
                 < result.predictions["target_date"]
             ).all()
+        )
+
+    def test_single_training_excludes_unrealized_close_targets(self):
+        """固定训练集不得纳入在验证起点才实现的跨日收益标签。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dataset = build_direction_dataset(self.daily, target="close")
+        cutoff = dataset["target_date"].drop_duplicates().sort_values().iloc[48]
+        eligible = dataset.loc[
+            (dataset["target_date"] < cutoff)
+            & (dataset["target_end_date"] < cutoff)
+        ]
+        result = DirectionExperiment(
+            cutoff,
+            max_depth=2,
+            min_samples_leaf=5,
+            training_mode="single",
+        ).run(dataset)
+
+        self.assertTrue(
+            (result.predictions["training_samples"] == len(eligible)).all()
+        )
+        self.assertTrue(
+            (result.predictions["training_end_date"] < cutoff).all()
         )
 
     def test_unknown_training_mode_is_rejected(self):

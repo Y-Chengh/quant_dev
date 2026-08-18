@@ -285,7 +285,7 @@ def _render_top_selection_tables(
         "",
         "### 每日 Top N 选股明细",
         "",
-        f"日期为横轴；预估结果使用 `{score_column}`。实际为当日收盘价相对开盘价的收益率；t涨幅为当日收盘价相对前日收盘价的收益率；两个 t-1 指标均按同一股票的上一可见交易日计算。",
+        f"日期为横轴；预估结果使用 `{score_column}`。实际为配置目标口径的收益率；t涨幅为目标买入日收盘价相对前日收盘价的收益率；两个 t-1 指标均按同一股票的上一可见交易日计算。",
     ]
     for month, month_frame in frame.groupby("month", sort=True):
         dates = pd.Index(month_frame["target_date"].drop_duplicates().sort_values())

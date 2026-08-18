@@ -215,7 +215,16 @@ class FactorSearchExecutionTest(unittest.TestCase):
 
         pd.testing.assert_frame_equal(
             targets,
-            dataset[["feature_date", "target_date", "code", "target_return", "label"]],
+            dataset[
+                [
+                    "feature_date",
+                    "target_date",
+                    "target_end_date",
+                    "code",
+                    "target_return",
+                    "label",
+                ]
+            ],
         )
 
     def test_context_keeps_selection_and_holdout_isolated(self):

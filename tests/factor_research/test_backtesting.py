@@ -632,7 +632,9 @@ class TopNIntradayBacktestTest(unittest.TestCase):
                 encoding="utf-8"
             )
 
-        self.assertIn("## Top N 日内策略回测", report)
+        self.assertIn("## Top N 策略回测", report)
+        self.assertIn("实际为配置目标口径的收益率", report)
+        self.assertNotIn("实际为当日收盘价相对开盘价的收益率", report)
         self.assertIn("### 每日 Top N 选股明细", report)
         self.assertIn("#### 2025-01", report)
         self.assertIn("#### 2025-02", report)
@@ -661,7 +663,7 @@ class TopNIntradayBacktestTest(unittest.TestCase):
         self.assertIn(drawdown_path.name, report)
         self.assertIn("| 全股票等权最大回撤 |", report)
         self.assertLess(
-            report.index("## Top N 日内策略回测"),
+            report.index("## Top N 策略回测"),
             report.index("### 每日 Top N 选股明细"),
         )
         # 回撤诊断与三个横截面对照小节都排在体量最大的每日明细之前。

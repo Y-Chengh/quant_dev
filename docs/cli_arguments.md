@@ -20,7 +20,7 @@ python -m quant.cli.factor_demo [通用参数] [所选模型的专属参数]
 - 使用全部已注册因子和因子缓存。
 - 使用 `simple_decision_tree` 模型。
 - 从研究终点向前 1 年开始逐日扩展窗口验证。
-- 每个验证日按模型分数选择前 10 只证券，开盘等权买入、收盘卖出，并计算收益曲线、年化夏普比率和最大回撤等回撤诊断。
+- 每个验证日按模型分数选择前 10 只证券，按配置目标的起止价等权买卖，并计算收益曲线、年化夏普比率和最大回撤等回撤诊断。
 - 以 `INFO` 等级同时写终端日志和 `logs/run/YYYY-MM-DD/HH/` 下的运行日志、评估报告、准确率趋势图、IC/Rank IC 双周期趋势图、收益曲线及历史回撤与修复图；配置了滑点候选时还会多出滑点对比图。
 
 模型参数采用两阶段解析：程序先读取 `--model`，然后只注册所选模型的参数。因此，不同模型可以有同名参数；某个模型的专属参数不能用于另一个模型。
@@ -34,7 +34,7 @@ python -m quant.cli.factor_demo --model lightgbm --help
 ```
 
 任务类型由 `--task` 控制：`classification`（默认）执行涨跌二分类，
-`regression` 预测下一交易日开盘至收盘的连续涨跌幅。回归任务当前需选择
+`regression` 预测所选目标口径的连续涨跌幅。回归任务当前需选择
 `--model lightgbm`。LightGBM 的 `--objective` 默认随任务选择 `binary` 或
 `regression`，也可显式指定与任务兼容的目标函数。
 
@@ -49,10 +49,11 @@ python -m quant.cli.factor_demo --model lightgbm --help
 | `--symbol-limit` | 整数，1～100 | `20` | 未指定 `--codes` 时，从代码表中选取的证券数。程序始终校验该值在 1～100 内。 |
 | `--backtest-top-n` | 正整数 | `10` | 每个验证交易日按模型分数降序选择并等权买入的最多证券数；当日有效证券不足时全部买入。 |
 | `--slippage-bps` | `[0, 10000)` | `0` | 单边滑点，单位为基点；买入价上浮、卖出价下调，买卖两边分别应用一次。 |
-| `--slippage-bps-candidates` | 一个或多个 `[0, 10000)` 数值 | 空 | 仅用于对比的单边滑点列表。只在 Top N 日内回测中额外画出各档滑点的净值曲线并列出指标，不改变选股、`--slippage-bps` 及其余全部结果；与基准或彼此重复的取值会被去重。 |
+| `--slippage-bps-candidates` | 一个或多个 `[0, 10000)` 数值 | 空 | 仅用于对比的单边滑点列表。只在 Top N 回测中额外画出各档滑点的净值曲线并列出指标，不改变选股、`--slippage-bps` 及其余全部结果；与基准或彼此重复的取值会被去重。 |
 | `--commission-bps` | `[0, 10000)` | `0` | 单边手续费率，单位为基点；买卖两边分别收取一次。 |
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
 | `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务可搭配 `lightgbm` 或用于因子口径核对的 `factor_passthrough`。 |
+| `--target` | `close`、`open`、`inday` | `inday` | 目标收益口径：`close` 为下一交易日收盘买入、再下一交易日收盘卖出；`open` 为下一交易日开盘买入、再下一交易日开盘卖出；`inday` 为下一交易日开盘买入、当日收盘卖出。 |
 | `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm`、`factor_passthrough` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
 | `--factors` | 零个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的正式因子。显式写出空的 `--factors` 可只使用 `--factor-expressions`；两者不能同时为空。 |
 | `--factor-expressions` | 一个或多个 DSL 字符串 | 空 | 直接加载搜索报告中的 `canonical`/`expression_str`，并按稳定 `fg_...` ID 加入模型。PowerShell 应使用外层单引号；内部单引号写成两个，或直接复制搜索报告生成的命令。 |
@@ -64,8 +65,8 @@ python -m quant.cli.factor_demo --model lightgbm --help
 | `--log-dir` | 路径 | `logs` | 日志、Markdown 评估报告和 SVG 趋势图的归档根目录。 |
 
 回测使用验证集的样本外预测：分类任务按 `up_probability` 排序，回归任务按
-`predicted_return` 排序。每天只持有开盘至收盘，不跨日；收益曲线按扣除双边
-成本后的日收益复利，夏普比率采用零无风险利率、日收益样本标准差和 252 日年化。
+`predicted_return` 排序。收益曲线按目标口径的逐日收益扣除双边成本后复利，夏普比率
+采用零无风险利率、日收益样本标准差和 252 日年化。
 
 `--slippage-bps-candidates` 只做滑点敏感性对比：每日选股由模型分数决定、与成本
 无关，因此各档曲线复用同一批选股与同一手续费率，只替换单边滑点，差异可完全归因

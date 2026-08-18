@@ -18,6 +18,7 @@ validation_start: 2025-01-01
 symbol_limit: 500
 
 training_mode: single
+target: close         # D 日特征预测 D+1 收盘买入、D+2 收盘卖出的收益
 
 # 回测费用
 backtest_top_n: 10

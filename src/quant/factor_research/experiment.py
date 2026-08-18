@@ -119,9 +119,12 @@ class DirectionExperiment:
         """按配置执行扩展窗口滚动验证或固定训练集验证。
 
         ``validation_start`` 之前的日期构成固定训练集。滚动模式会在每个预测日
-        使用 ``target_date < T`` 的全部样本重新训练；单次模式仅使用固定训练集
-        拟合一次，并预测整个验证集。
+        使用 ``target_end_date < T`` 的全部已实现收益样本重新训练；单次模式仅使用
+        在验证起点前已实现收益的固定训练集拟合一次，并预测整个验证集。
         """
+        if "target_end_date" not in dataset.columns:
+            dataset = dataset.copy()
+            dataset["target_end_date"] = dataset["target_date"]
         dataset = self._filter_required_finite_features(dataset)
         split = split_by_date(dataset, self.validation_start)
         validation_dates = pd.Index(split.validation["target_date"].drop_duplicates().sort_values())
@@ -131,7 +134,10 @@ class DirectionExperiment:
             )
         else:
             predictions, model, importance = self._single_fit(
-                split.train, split.validation
+                split.train.loc[
+                    split.train["target_end_date"] < self.validation_start
+                ],
+                split.validation,
             )
 
         score_column = (
@@ -303,6 +309,7 @@ class DirectionExperiment:
         base_columns = [
             "feature_date",
             "target_date",
+            "target_end_date",
             "code",
             "label",
             "target_return",
@@ -415,7 +422,7 @@ class DirectionExperiment:
             self._add_model_predictions(predictions, model, validation_matrix, timings)
             bar.advance(detail="预测")
         predictions["training_samples"] = len(train_frame)
-        predictions["training_end_date"] = train_frame["target_date"].max()
+        predictions["training_end_date"] = train_frame["target_end_date"].max()
         importance = getattr(model, "feature_importances_", None)
         if importance is not None:
             importance = np.asarray(importance, dtype=float)
@@ -494,7 +501,7 @@ class DirectionExperiment:
                             position / total_dates * 100,
                         )
                 # A label is available at T only after T closes, so training must end before T.
-                train_frame = dataset.loc[dataset["target_date"] < target_date]
+                train_frame = dataset.loc[dataset["target_end_date"] < target_date]
                 predict_frame = dataset.loc[dataset["target_date"] == target_date]
                 if train_frame.empty or predict_frame.empty:
                     # 跳过的日期同样占用一个进度步，否则末帧到不了 100%。
@@ -531,7 +538,7 @@ class DirectionExperiment:
                 daily = predict_frame[self._prediction_columns(predict_frame)].copy()
                 self._add_model_predictions(daily, model, predict_matrix, timings)
                 daily["training_samples"] = len(train_frame)
-                daily["training_end_date"] = train_frame["target_date"].max()
+                daily["training_end_date"] = train_frame["target_end_date"].max()
                 predictions.append(daily)
                 model_importance = getattr(model, "feature_importances_", None)
                 logger.debug("model.feature_importances_: %s", model_importance)

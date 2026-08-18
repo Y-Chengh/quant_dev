@@ -1,6 +1,6 @@
 # 日频方向预测研究框架
 
-该模块使用某交易日收盘及之前可见的数据，预测下一有效交易日从开盘到收盘上涨或下跌，或直接预测连续涨跌幅。目标收益定义为下一有效交易日的 `close / open - 1`。框架用于离线研究，并提供验证集 Top N 日内等权回测及双边滑点、手续费估算；它不模拟盘口成交量、涨跌停、停牌或部分成交等实盘约束。
+该模块使用某交易日收盘及之前可见的数据，预测可配置目标的上涨或下跌，或直接预测连续涨跌幅。`--target close` 使用下一交易日收盘至再下一交易日收盘收益，`--target open` 使用下一交易日开盘至再下一交易日开盘收益，`--target inday` 使用下一交易日开盘至收盘收益。框架用于离线研究，并提供验证集 Top N 等权回测及双边滑点、手续费估算；它不模拟盘口成交量、涨跌停、停牌或部分成交等实盘约束。
 
 使用 `--task classification`（默认）执行涨跌二分类；使用 `--task regression --model lightgbm` 预测连续涨跌幅。LightGBM 可通过 `--objective` 选择与任务兼容的目标函数，例如分类使用 `binary`，回归使用 `regression`、`regression_l1` 或 `huber`。
 
@@ -12,8 +12,8 @@
 python -m quant.cli.factor_demo
 ```
 
-主实验会对验证集预测同步执行 Top 10 日内等权回测：按模型分数选股，在目标日
-开盘买入、收盘卖出，并在报告中输出收益曲线和 252 日年化夏普比率。可通过
+主实验会对验证集预测同步执行 Top 10 等权回测：按模型分数选股，并按配置目标的
+起止价买入和卖出，在报告中输出收益曲线和 252 日年化夏普比率。可通过
 `--backtest-top-n`、`--slippage-bps` 和 `--commission-bps` 调整选股数量、
 单边滑点及单边手续费。
 
@@ -260,7 +260,8 @@ print(result.predictions.head())
 `result.daily_ic_trend` 保存每日横截面明细；`result.daily_accuracy_trend` 按
 `target_date` 给出每日样本数、预估准度以及较前一交易日的准度变化。
 
-`feature_date` 是特征截止日，`target_date` 是被预测日。框架按 `target_date` 整日切分，确保同一天的不同股票不会同时出现在训练集与测试集中；缺失值填充中位数也只使用训练集拟合。
+`feature_date` 是特征截止日，`target_date` 是目标买入日，`target_end_date` 是收益实现日。框架按
+`target_date` 整日切分，且滚动训练只使用 `target_end_date` 早于当前预测日的样本；缺失值填充中位数也只使用训练集拟合。
 
 ## 因子 DSL 与并行网格搜索
 

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -94,6 +96,37 @@ class ModelRegistryTest(unittest.TestCase):
 
         with self.assertRaises(SystemExit):
             parse_args(["--training-mode", "unknown"])
+
+    def test_target_supports_cli_yaml_and_choices(self):
+        """收益目标应支持命令行、YAML 及统一的选项校验。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        self.assertEqual(parse_args(["--target", "open"]).target, "open")
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.yaml"
+            config_path.write_text("target: close\n", encoding="utf-8")
+            args = parse_args(["--config", str(config_path)])
+        self.assertEqual(args.target, "close")
+        with self.assertRaises(SystemExit):
+            parse_args(["--target", "overnight"])
+
+    def test_help_describes_configurable_target_returns(self):
+        """帮助文本不得把可配置目标误写成固定日内收益。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        output = io.StringIO()
+        with self.assertRaises(SystemExit), redirect_stdout(output):
+            parse_args(["--help"])
+        help_text = output.getvalue()
+        self.assertIn("预测可配置目标收益", help_text)
+        self.assertRegex(help_text, r"Top N\s+目标收益回测")
+        self.assertNotIn("预测下一交易日开盘至收盘涨跌", help_text)
 
     def test_factor_expressions_support_cli_and_yaml(self):
         """搜索表达式应能从命令行或 YAML 字符串列表原样传入。"""

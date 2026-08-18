@@ -22,7 +22,7 @@ from quant.factor_research.data_sources import (
     data_source_argument_names,
     data_source_from_args,
 )
-from quant.factor_research.dataset import build_direction_dataset
+from quant.factor_research.dataset import TARGET_TYPES, build_direction_dataset
 from quant.factor_research.experiment import (
     PREDICTION_TASKS,
     TRAINING_MODES,
@@ -345,7 +345,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         model_parser.set_defaults(data_source=configured_source)
     selected, _ = model_parser.parse_known_args(argv)
 
-    parser = argparse.ArgumentParser(description="通过market service预测下一交易日开盘至收盘涨跌")
+    parser = argparse.ArgumentParser(description="通过行情数据预测可配置目标收益")
     parser.add_argument("--config", type=Path, help="YAML 配置文件；命令行参数优先")
     add_data_source_selection_argument(parser)
     add_selected_data_source_arguments(parser, selected.data_source)
@@ -367,6 +367,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=PREDICTION_TASKS,
         default="classification",
         help="预测任务：classification 为涨跌二分类，regression 为连续涨跌幅",
+    )
+    parser.add_argument(
+        "--target",
+        choices=TARGET_TYPES,
+        default="inday",
+        help=(
+            "预测收益口径：close 为下一交易日收盘至再下一交易日收盘，"
+            "open 为下一交易日开盘至再下一交易日开盘，"
+            "inday 为下一交易日开盘至收盘"
+        ),
     )
     parser.add_argument("--codes", nargs="+", help="股票代码列表，默认取代码表前20只")
     parser.add_argument(
@@ -393,7 +403,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=_cost_bps,
         default=[],
         help=(
-            "仅用于对比的单边滑点基点数列表，可传多个；只在 Top N 日内回测中"
+            "仅用于对比的单边滑点基点数列表，可传多个；只在 Top N 目标收益回测中"
             "额外画出各档滑点的收益曲线并列出指标，不改变选股与其余全部结果，"
             "默认不做对比"
         ),
@@ -577,7 +587,12 @@ def main() -> None:
     )
     model_features = [*selected_factors, *(node.factor_id for node in expression_nodes)]
     logger.info("开始构建方向预测数据集")
-    dataset = build_direction_dataset(daily, feature_columns=model_features, args=args)
+    dataset = build_direction_dataset(
+        daily,
+        feature_columns=model_features,
+        args=args,
+        target=getattr(args, "target", "inday"),
+    )
     logger.info("方向预测数据集行数: %d，开始模型训练验证", len(dataset))
     result = DirectionExperiment(
         validation_start=validation_start,
@@ -600,7 +615,7 @@ def main() -> None:
         commission_bps=getattr(args, "commission_bps", 0.0),
         slippage_bps_candidates=getattr(args, "slippage_bps_candidates", ()) or (),
     )
-    logger.info("Top N 日内策略回测指标: %s", backtest.metrics)
+    logger.info("Top N 目标收益策略回测指标: %s", backtest.metrics)
     if result.feature_importance is None:
         logger.info("当前模型未提供因子重要性")
     else:

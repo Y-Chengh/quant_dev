@@ -88,7 +88,7 @@ def _render_drawdown_sections(
     字段时只输出回撤修复图，不虚构指标。
 
     参数：
-        backtest: Top N 日内策略回测结果，读取其回撤指标与回撤区间明细。
+        backtest: Top N 目标收益策略回测结果，读取其回撤指标与回撤区间明细。
         drawdown_chart_path: 回撤修复图 SVG 路径；为 ``None`` 时不插入图像段落。
 
     返回：
@@ -182,7 +182,7 @@ def _render_slippage_sections(
     报告不出现该小节，既有输出保持不变。
 
     参数：
-        backtest: Top N 日内策略回测结果，读取其滑点对比曲线与汇总指标。
+        backtest: Top N 目标收益策略回测结果，读取其滑点对比曲线与汇总指标。
         slippage_chart_path: 滑点对比图 SVG 路径；为 ``None`` 时只输出指标表。
 
     返回：
@@ -246,7 +246,7 @@ def write_evaluation_report(
         run_id: 当前实验的唯一运行标识。
         run_arguments: 已生效的命令行及 YAML 合并参数。
         yaml_config: 原始 YAML 配置文本；未使用配置文件时为 ``None``。
-        backtest: Top N 日内策略结果；缺省时不输出回测章节。
+        backtest: Top N 目标收益策略结果；缺省时不输出回测章节。
         equity_chart_path: 收益曲线 SVG 路径；提供回测结果时必须同时提供。
         ic_chart_path: IC/Rank IC 双周期趋势 SVG 路径；缺省不输出趋势图，保留
             既有调用接口行为。
@@ -339,13 +339,13 @@ def write_evaluation_report(
         lines.extend(
             [
                 "",
-                "## Top N 日内策略回测",
+                "## Top N 策略回测",
                 "",
                 f"- 每日选股数：最多 {backtest.top_n} 只",
                 f"- 排序分数：`{backtest.score_column}`",
                 f"- 单边滑点：{backtest.slippage_bps:.4f} bps",
                 f"- 单边手续费：{backtest.commission_bps:.4f} bps",
-                "- 交易口径：目标日开盘等权买入、收盘全部卖出，成本在买卖两边分别计取。",
+                "- 交易口径：按配置目标的起止价等权买入和卖出，成本在买卖两边分别计取。",
                 "",
                 "| 回测指标 | 数值 |",
                 "| --- | ---: |",
@@ -363,7 +363,7 @@ def write_evaluation_report(
                 "",
                 f"![Top N、全市场平均、Bottom N 与 Mid N 收益曲线]({equity_chart_path.name})",
                 "",
-                "四组均按目标日开盘等权买入、收盘卖出并采用相同双边成本；Mid N 为预测排序居中的最多 N 只。"
+                "四组均按配置目标的起止价交易并采用相同双边成本；Mid N 为预测排序居中的最多 N 只。"
                 "上面板为全区间累计净值；下面板按自然年把净值以上一年末（首年为期初）重定基为 1，"
                 "段末净值减一即该自然年收益，并直接在图中标注各年份与四组当年收益。",
             ]
