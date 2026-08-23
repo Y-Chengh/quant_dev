@@ -162,6 +162,55 @@ class YamlConfigReportingTest(unittest.TestCase):
         self.assertIn("value: ```", html)
         self.assertIn("unsafe: &lt;tag&gt;", html)
 
+    def test_html_renderer_keeps_short_tables_inline(self):
+        """不超过阈值的表格应维持直接展示，不引入折叠交互。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        markdown_text = "# 短表\n\n| 序号 | 内容 |\n| ---: | --- |\n| 1 | 保持展开 |\n"
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "short.html"
+            render_markdown_report_html(markdown_text, output_path)
+            html = output_path.read_text(encoding="utf-8")
+
+        self.assertIn('<div class="table-scroll"><table>', html)
+        self.assertNotIn('class="table-chunks"', html)
+        self.assertNotIn('class="table-chunk"', html)
+        self.assertNotIn('addEventListener("beforeprint"', html)
+
+    def test_html_renderer_chunks_long_tables_without_dropping_rows(self):
+        """超长表应按行段折叠，并在各分块中保留表头和全部数据行。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        data_rows = "\n".join(f"| {index} | value-{index} |" for index in range(1, 502))
+        markdown_text = "# 长表\n\n| 序号 | 内容 |\n| ---: | --- |\n" + data_rows + "\n"
+        with TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "long.html"
+            render_markdown_report_html(markdown_text, output_path)
+            html = output_path.read_text(encoding="utf-8")
+
+        self.assertIn('<div class="table-chunks" data-total-rows="501">', html)
+        self.assertEqual(html.count('<details class="table-chunk">'), 3)
+        self.assertNotIn('<details class="table-chunk" open', html)
+        self.assertIn("第 1-250 行（共 501 行）", html)
+        self.assertIn("第 251-500 行（共 501 行）", html)
+        self.assertIn("第 501-501 行（共 501 行）", html)
+        self.assertEqual(html.count('<th class="align-right">序号</th>'), 3)
+        self.assertEqual(html.count("<tbody>"), 3)
+        self.assertEqual(html.count("<tr>"), 504)
+        self.assertIn("value-1", html)
+        self.assertIn("value-501", html)
+        self.assertIn('addEventListener("beforeprint"', html)
+        self.assertIn('querySelectorAll("details.table-chunk")', html)
+        self.assertIn("chunk.open = true", html)
+        self.assertIn('addEventListener("afterprint"', html)
+        self.assertIn("chunk.open = wasOpen", html)
+
     def test_regression_result_is_reported_without_probabilities(self):
         target_date = pd.Timestamp("2025-06-02")
         result = ExperimentResult(

@@ -16,6 +16,87 @@ from .formatting import (
     _split_markdown_table_row,
 )
 
+_HTML_TABLE_INLINE_ROW_LIMIT = 500
+_HTML_TABLE_CHUNK_ROWS = 250
+
+
+def _render_html_table(
+    headers: list[str],
+    alignments: list[str],
+    rows: list[list[str]],
+) -> str:
+    """把已解析的 Markdown 表格渲染为一个可横向滚动的 HTML 表格。
+
+    参数：
+        headers: Markdown 表头单元格，内容尚未经过 HTML 转义。
+        alignments: Markdown 分隔行中的对齐标记，与表头位置一一对应；末尾冒号
+            表示该列右对齐。
+        rows: 按原始顺序解析出的数据行，每行包含尚未转义的单元格文本。
+
+    返回：
+        带横向滚动容器、表头和全部数据行的 HTML 片段。
+    """
+
+    parts = ['<div class="table-scroll"><table><thead><tr>']
+    for cell, alignment in zip(headers, alignments):
+        align_class = " align-right" if alignment.endswith(":") else ""
+        parts.append(
+            f'<th class="{align_class.strip()}">'
+            f"{_render_inline_markdown(cell, allow_breaks=True)}</th>"
+        )
+    parts.append("</tr></thead><tbody>")
+    for cells in rows:
+        parts.append("<tr>")
+        for position, cell in enumerate(cells):
+            alignment = alignments[position] if position < len(alignments) else ""
+            align_class = " align-right" if alignment.endswith(":") else ""
+            parts.append(
+                f'<td class="{align_class.strip()}">'
+                f"{_render_inline_markdown(cell, allow_breaks=True)}</td>"
+            )
+        parts.append("</tr>")
+    parts.append("</tbody></table></div>")
+    return "\n".join(parts)
+
+
+def _render_html_table_chunks(
+    headers: list[str],
+    alignments: list[str],
+    rows: list[list[str]],
+) -> str:
+    """渲染 Markdown 表格，并把超长表拆成默认折叠的分块。
+
+    短表维持原有单表结构。超过内联阈值时，每个分块重复表头并使用原生
+    ``details`` 折叠，避免浏览器打开报告时一次性布局数千个带粘性样式的单元格；
+    数据行顺序和内容保持不变。
+
+    参数：
+        headers: Markdown 表头单元格，内容尚未经过 HTML 转义。
+        alignments: Markdown 分隔行中的对齐标记，与表头位置一一对应。
+        rows: 按原始顺序解析出的全部数据行。
+
+    返回：
+        短表的普通 HTML 表格，或包含全部数据行的折叠分块 HTML 片段。
+    """
+
+    total_rows = len(rows)
+    if total_rows <= _HTML_TABLE_INLINE_ROW_LIMIT:
+        return _render_html_table(headers, alignments, rows)
+
+    parts = [f'<div class="table-chunks" data-total-rows="{total_rows}">']
+    for start in range(0, total_rows, _HTML_TABLE_CHUNK_ROWS):
+        stop = min(start + _HTML_TABLE_CHUNK_ROWS, total_rows)
+        parts.extend(
+            [
+                '<details class="table-chunk">',
+                f"<summary>第 {start + 1}-{stop} 行（共 {total_rows} 行）</summary>",
+                _render_html_table(headers, alignments, rows[start:stop]),
+                "</details>",
+            ]
+        )
+    parts.append("</div>")
+    return "\n".join(parts)
+
 
 def _markdown_report_body(
     markdown_text: str,
@@ -89,30 +170,12 @@ def _markdown_report_body(
         ):
             headers = _split_markdown_table_row(line)
             alignments = _split_markdown_table_row(lines[index + 1])
-            body.append('<div class="table-scroll"><table><thead><tr>')
-            for cell, alignment in zip(headers, alignments):
-                align_class = " align-right" if alignment.endswith(":") else ""
-                body.append(
-                    f'<th class="{align_class.strip()}">'
-                    f"{_render_inline_markdown(cell, allow_breaks=True)}</th>"
-                )
-            body.append("</tr></thead><tbody>")
+            rows: list[list[str]] = []
             index += 2
             while index < len(lines) and lines[index].strip().startswith("|"):
-                cells = _split_markdown_table_row(lines[index])
-                body.append("<tr>")
-                for position, cell in enumerate(cells):
-                    alignment = (
-                        alignments[position] if position < len(alignments) else ""
-                    )
-                    align_class = " align-right" if alignment.endswith(":") else ""
-                    body.append(
-                        f'<td class="{align_class.strip()}">'
-                        f"{_render_inline_markdown(cell, allow_breaks=True)}</td>"
-                    )
-                body.append("</tr>")
+                rows.append(_split_markdown_table_row(lines[index]))
                 index += 1
-            body.append("</tbody></table></div>")
+            body.append(_render_html_table_chunks(headers, alignments, rows))
             continue
 
         if stripped.startswith("- "):
@@ -193,6 +256,24 @@ def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
     body, headings, document_title = _markdown_report_body(markdown_text)
     navigation = _render_table_of_contents(headings)
     source_name = escape(output_path.with_suffix(".md").name, quote=True)
+    print_chunk_script = ""
+    if 'class="table-chunks"' in body:
+        print_chunk_script = """<script>
+const tableChunkPrintState = new Map();
+window.addEventListener("beforeprint", () => {
+  tableChunkPrintState.clear();
+  document.querySelectorAll("details.table-chunk").forEach((chunk) => {
+    tableChunkPrintState.set(chunk, chunk.open);
+    chunk.open = true;
+  });
+});
+window.addEventListener("afterprint", () => {
+  tableChunkPrintState.forEach((wasOpen, chunk) => {
+    chunk.open = wasOpen;
+  });
+  tableChunkPrintState.clear();
+});
+</script>"""
     html = f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -206,11 +287,12 @@ def render_markdown_report_html(markdown_text: str, output_path: Path) -> None:
 details.toc-group{{display:flex;flex-direction:column;gap:4px}}details.toc-group>summary{{display:flex;align-items:center;gap:6px;padding:0 8px 0 6px;border-radius:7px;list-style:none;cursor:pointer}}details.toc-group>summary::-webkit-details-marker{{display:none}}details.toc-group>summary::before{{content:"▸";color:#94a3b8;font-size:11px}}details.toc-group[open]>summary::before{{content:"▾"}}details.toc-group>summary:hover{{background:#1e293b}}details.toc-group>summary a{{flex:1;padding-left:4px}}details.toc-group>summary:hover a{{color:#fff}}.toc-count{{padding:1px 7px;border-radius:999px;background:#1e293b;color:#94a3b8;font-size:11px}}.toc-children{{display:flex;flex-direction:column;gap:4px}}.source{{display:block;margin-top:24px;padding:9px 12px;border:1px solid #334155;border-radius:8px;color:#bfdbfe;text-align:center;text-decoration:none;font-size:12px}}
 main{{min-width:0;padding:34px}}article{{max-width:1500px;margin:0 auto;padding:38px 42px 70px;background:var(--panel);border:1px solid #e7edf5;border-radius:16px;box-shadow:var(--shadow)}}h1{{margin:0 0 22px;font-size:30px;line-height:1.25}}h2{{margin:42px 0 16px;padding-bottom:9px;border-bottom:2px solid var(--line);font-size:22px}}h3{{margin:30px 0 12px;font-size:18px}}h4{{margin:25px 0 10px;color:#334155}}.heading-anchor{{margin-left:-20px;padding-right:6px;color:#94a3b8;text-decoration:none;opacity:0}}h1:hover .heading-anchor,h2:hover .heading-anchor,h3:hover .heading-anchor,h4:hover .heading-anchor{{opacity:1}}p{{margin:10px 0;color:#334155}}ul{{margin:8px 0 20px;padding-left:22px}}code{{padding:.12em .38em;border-radius:5px;background:#eef2f7;color:#be123c;font-family:"Cascadia Code",Consolas,monospace;font-size:.9em}}pre{{overflow:auto;padding:18px;border-radius:10px;background:#111827;color:#e5e7eb}}pre code{{padding:0;background:transparent;color:inherit}}img{{display:block;max-width:100%;height:auto;margin:18px auto;border:1px solid var(--line);border-radius:10px;background:#fff}}
 .table-scroll{{max-width:100%;margin:14px 0 24px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#fff}}table{{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45}}th,td{{min-width:108px;padding:10px 12px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);vertical-align:top;white-space:nowrap}}th{{position:sticky;top:0;z-index:2;background:#eaf1fb;color:#1e3a5f;font-weight:700}}th:first-child,td:first-child{{position:sticky;left:0;z-index:1;min-width:120px;background:#f8fafc}}th:first-child{{z-index:3;background:#dfeafb}}tbody tr:nth-child(even) td{{background:#f8fafc}}tbody tr:nth-child(even) td:first-child{{background:#eef2f7}}tbody tr:hover td{{background:#fff7ed}}tbody tr:hover td:first-child{{background:#ffedd5}}tr:last-child td{{border-bottom:0}}th:last-child,td:last-child{{border-right:0}}.align-right{{text-align:right;font-variant-numeric:tabular-nums}}
+.table-chunks{{margin:14px 0 24px}}details.table-chunk{{margin:8px 0;border:1px solid var(--line);border-radius:8px;background:#fff}}details.table-chunk>summary{{padding:10px 14px;cursor:pointer;color:#1e3a5f;font-size:13px;font-weight:700}}details.table-chunk[open]>summary{{border-bottom:1px solid var(--line);background:var(--brand-soft)}}details.table-chunk .table-scroll{{margin:0;border:0;border-radius:0}}
 @media(max-width:900px){{.layout{{display:block}}aside{{position:relative;width:auto;height:auto;padding:18px}}nav{{display:none}}.source{{margin-top:8px}}main{{padding:12px}}article{{padding:24px 18px;border-radius:10px}}h1{{font-size:25px}}h2{{font-size:20px}}}}
-@media print{{body{{background:#fff}}.layout{{display:block}}aside{{display:none}}main{{padding:0}}article{{max-width:none;padding:0;border:0;box-shadow:none}}.table-scroll{{overflow:visible}}th,td{{white-space:normal}}}}
+@media print{{body{{background:#fff}}.layout{{display:block}}aside{{display:none}}main{{padding:0}}article{{max-width:none;padding:0;border:0;box-shadow:none}}.table-scroll{{overflow:visible}}th,td{{white-space:normal}}details.table-chunk>summary{{display:none}}details.table-chunk>.table-scroll{{display:block}}}}
 </style>
 </head>
-<body><div class="layout"><aside><h2>报告目录</h2><nav>{navigation}</nav><a class="source" href="{source_name}">查看原始 Markdown</a></aside><main><article>{body}</article></main></div></body>
+<body><div class="layout"><aside><h2>报告目录</h2><nav>{navigation}</nav><a class="source" href="{source_name}">查看原始 Markdown</a></aside><main><article>{body}</article></main></div>{print_chunk_script}</body>
 </html>"""
     output_path.write_text(html, encoding="utf-8")
 
