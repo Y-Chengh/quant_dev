@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from .factors import DEFAULT_FEATURES
@@ -13,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 TARGET_TYPES = ("close", "open", "inday")
 DEFAULT_TARGET = "inday"
+DEFAULT_LABEL_RETURN_THRESHOLD = 0.005
+_LABEL_RETURN_THRESHOLD_ULPS = 8.0
 
 PREVIOUS_RETURN_COLUMNS = (
     "previous_close_to_close_return",
@@ -44,9 +48,51 @@ class DatasetSplit:
     validation: pd.DataFrame
 
 
+def validate_label_return_threshold(value: float) -> float:
+    """校验并规范化正类标签使用的收益率阈值。
+
+    参数：
+        value: 目标收益率的非负有限阈值，单位为一；例如 ``0.005`` 表示 0.5%。
+
+    返回：
+        转换为 ``float`` 的合法收益率阈值。
+    """
+
+    threshold = float(value)
+    if not math.isfinite(threshold) or threshold < 0.0:
+        raise ValueError("label_return_threshold 必须是非负有限收益率")
+    return threshold
+
+
+def returns_exceed_label_threshold(
+    target_returns: pd.Series | np.ndarray,
+    label_return_threshold: float,
+) -> np.ndarray:
+    """按统一浮点容差判断目标收益率是否严格超过标签阈值。
+
+    参数：
+        target_returns: 待判断的一维目标收益率序列，单位为一；非有限值返回
+            ``False``，由数据集或实验入口按各自契约过滤或拒绝。
+        label_return_threshold: 二分类正类的非负有限收益率阈值，单位为一。
+
+    返回：
+        与输入等长的布尔数组；仅明显高于阈值而非浮点舍入误差的值为 ``True``。
+    """
+
+    threshold = validate_label_return_threshold(label_return_threshold)
+    values = np.asarray(target_returns, dtype=float)
+    tolerance = (
+        _LABEL_RETURN_THRESHOLD_ULPS
+        * np.finfo(float).eps
+        * max(1.0, abs(threshold))
+    )
+    return np.isfinite(values) & (values - threshold > tolerance)
+
+
 def _with_forward_targets(
     daily: pd.DataFrame,
     target: str = DEFAULT_TARGET,
+    label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD,
 ) -> pd.DataFrame:
     """在按证券排序的副本上附加指定口径的未来收益目标列。
 
@@ -54,6 +100,8 @@ def _with_forward_targets(
         daily: 每行为一个证券交易日的日频行情表。
         target: 收益口径；``close`` 和 ``open`` 分别使用后两个有效交易日的
             收盘价和开盘价，``inday`` 使用下一有效交易日的开盘价与收盘价。
+        label_return_threshold: 二分类正类的最低目标收益率，单位为一；目标收益率
+            必须严格大于该值才标记为 1，缺省 ``0.005`` 表示 0.5%。
 
     返回：
         附有目标起止日期、收益、方向标签及报告辅助收益列的排序副本。
@@ -61,6 +109,7 @@ def _with_forward_targets(
 
     if target not in TARGET_TYPES:
         raise ValueError(f"target 必须是 {TARGET_TYPES} 之一，实际为 {target!r}")
+    label_return_threshold = validate_label_return_threshold(label_return_threshold)
     required = {"code", "trade_date", "open", "close"}
     missing = required.difference(daily.columns)
     if missing:
@@ -85,13 +134,20 @@ def _with_forward_targets(
         data["target_return"] = target_price / entry_price - 1
     # t 日收盘相对 t-1 日收盘属于目标日收盘后才可见的报告结果，不作为模型特征。
     data["target_close_to_previous_close_return"] = next_close / data["close"] - 1
-    data["label"] = (data["target_return"] > 0).astype("Int8")
+    data["label"] = pd.array(
+        returns_exceed_label_threshold(
+            data["target_return"],
+            label_return_threshold,
+        ),
+        dtype="Int8",
+    )
     return data
 
 
 def build_forward_targets(
     daily: pd.DataFrame,
     target: str = DEFAULT_TARGET,
+    label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD,
 ) -> pd.DataFrame:
     """构建指定口径的未来收益及方向标签。
 
@@ -102,13 +158,15 @@ def build_forward_targets(
         daily: 含证券、交易日及开收盘价的日频行情表。
         target: 收益口径；可选 ``close``、``open`` 或 ``inday``，缺省保持原有的
             下一有效交易日开盘至收盘口径。
+        label_return_threshold: 二分类正类的最低目标收益率，单位为一；目标收益率
+            严格大于该值时标签为 1，缺省为 ``0.005``。
 
     返回：
         不含特征列的目标表；``target_date`` 是买入日，``target_end_date`` 是
         收益实现并可用于训练的卖出日。
     """
 
-    data = _with_forward_targets(daily, target)
+    data = _with_forward_targets(daily, target, label_return_threshold)
     columns = [
         "trade_date",
         "target_date",
@@ -118,7 +176,11 @@ def build_forward_targets(
         "label",
     ]
     return (
-        data.loc[data["target_end_date"].notna(), columns]
+        data.loc[
+            data["target_end_date"].notna()
+            & np.isfinite(data["target_return"]),
+            columns,
+        ]
         .rename(columns={"trade_date": "feature_date"})
         .sort_values(["target_date", "code"])
         .reset_index(drop=True)
@@ -131,6 +193,7 @@ def build_direction_dataset(
     feature_columns: list[str] | None = None,
     args: argparse.Namespace | None = None,
     target: str = DEFAULT_TARGET,
+    label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD,
 ) -> pd.DataFrame:
     """用 D 日收盘后的特征预测指定口径的未来收益方向或涨跌幅。
 
@@ -144,6 +207,8 @@ def build_direction_dataset(
         args: 为兼容调用链保留的命令行命名空间，不参与目标计算。
         target: 收益口径；可选 ``close``、``open`` 或 ``inday``，缺省为
             下一有效交易日开盘至收盘。
+        label_return_threshold: 二分类正类的最低目标收益率，单位为一；目标收益率
+            严格大于该值时标签为 1，缺省 ``0.005`` 表示 0.5%。
 
     返回：
         按目标日期和证券排序的监督学习样本，包含模型特征、目标及前日行情上下文。
@@ -155,7 +220,11 @@ def build_direction_dataset(
     missing = set(feature_columns).difference(daily_features.columns)
     if missing:
         raise ValueError(f"缺少因子列: {sorted(missing)}")
-    data = _with_forward_targets(daily_features, target)
+    data = _with_forward_targets(
+        daily_features,
+        target,
+        label_return_threshold,
+    )
     columns = [
         "trade_date",
         "target_date",
@@ -167,7 +236,11 @@ def build_direction_dataset(
         "label",
     ]
     return (
-        data.loc[data["target_end_date"].notna(), columns]
+        data.loc[
+            data["target_end_date"].notna()
+            & np.isfinite(data["target_return"]),
+            columns,
+        ]
         .rename(columns={"trade_date": "feature_date"})
         .sort_values(["target_date", "code"])
         .reset_index(drop=True)

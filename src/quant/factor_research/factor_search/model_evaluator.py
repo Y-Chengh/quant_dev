@@ -51,7 +51,11 @@ class ModelCandidateEvaluator:
         daily = context.daily.copy()
         daily[candidate.factor_id] = values.to_numpy(dtype=float)
         features = [*context.fixed_features, candidate.factor_id]
-        dataset = build_direction_dataset(daily, feature_columns=features)
+        dataset = build_direction_dataset(
+            daily,
+            feature_columns=features,
+            label_return_threshold=context.label_return_threshold,
+        )
         if context.holdout_end is not None:
             # 保留全部训练历史，但禁止验证结果越过 SearchContext 声明的最终日期。
             dataset = dataset.loc[
@@ -63,6 +67,7 @@ class ModelCandidateEvaluator:
             model_factory=self.model_factory,
             training_mode=self.training_mode,
             task=self.task,
+            label_return_threshold=context.label_return_threshold,
         )
         result = experiment.run(dataset)
         return {f"model_{name}": float(value) for name, value in result.metrics.items()}

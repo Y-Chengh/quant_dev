@@ -403,6 +403,33 @@ class FactorSearchExecutionTest(unittest.TestCase):
         self.assertTrue(np.isfinite(result.leaderboard.iloc[0]["model_auc"]))
         self.assertTrue(result.errors.empty)
 
+    def test_model_evaluation_uses_context_label_return_threshold(self):
+        """模型复验应继承搜索上下文的自定义收益阈值而非回退到默认值。"""
+
+        daily = _search_daily()
+        dates = daily["trade_date"].drop_duplicates().sort_values()
+        context = SearchContext.from_daily(
+            daily,
+            fixed_features=["fixed"],
+            selection_start=dates.iloc[1],
+            holdout_start=dates.iloc[8],
+            label_return_threshold=0.02,
+        )
+        evaluator = ModelCandidateEvaluator(
+            SimpleDecisionTreeModelFactory(max_depth=1, min_samples_leaf=1),
+            training_mode="single",
+        )
+
+        result = FactorGridSearch().run(
+            context,
+            PipelineGrid(["close"], [[op("cs_rank")]]),
+            model_evaluator=evaluator,
+            model_top_k=1,
+        )
+
+        self.assertEqual(context.label_return_threshold, 0.02)
+        self.assertEqual(result.leaderboard.iloc[0]["model_positive_rate"], 0.25)
+
     def test_model_evaluation_respects_context_holdout_end(self):
         """模型复验样本必须截断在上下文声明的 holdout 结束日期。"""
 

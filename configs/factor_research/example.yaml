@@ -16,6 +16,7 @@ commission_bps: 1
 
 # 模型设置
 task: regression
+label_return_threshold: 0.005  # classification 正类阈值；严格大于 0.5% 时标签为 1
 
 # model: logistic_regression
 # regression_alpha: 1.0

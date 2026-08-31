@@ -353,6 +353,7 @@ class GridSearchReportTests(unittest.TestCase):
             selection_start="2025-01-02",
             holdout_start="2025-01-08",
             holdout_end="2025-01-10",
+            label_return_threshold=0.0125,
         )
         space = PipelineGrid(
             sources=["close", "volume"],
@@ -460,6 +461,7 @@ class GridSearchReportTests(unittest.TestCase):
                 (output_dir / "run_metadata.json").read_text(encoding="utf-8")
             )
             self.assertFalse(metadata["equivalence_deduplication_enabled"])
+            self.assertEqual(metadata["label_return_threshold"], 0.0125)
             self.assertEqual(metadata["rolling_ic_window"], 60)
             self.assertEqual(metadata["rolling_ic_min_periods"], 20)
             self.assertEqual(metadata["rolling_ic_short_window"], 20)
@@ -476,7 +478,8 @@ class GridSearchReportTests(unittest.TestCase):
                 report_path.read_text(encoding="utf-8"),
             )
             self.assertIn(
-                "--training-mode single --validation-start '2025-01-08'",
+                "--training-mode single --label-return-threshold 0.0125 "
+                "--validation-start '2025-01-08'",
                 report_path.read_text(encoding="utf-8"),
             )
             self.assertIn(

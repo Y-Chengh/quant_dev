@@ -33,7 +33,8 @@ python -m quant.cli.factor_demo --model gradient_boosting_tree --help
 python -m quant.cli.factor_demo --model lightgbm --help
 ```
 
-任务类型由 `--task` 控制：`classification`（默认）执行涨跌二分类，
+任务类型由 `--task` 控制：`classification`（默认）判断目标收益是否严格大于
+`--label-return-threshold`（默认 `0.005`，即 0.5%），
 `regression` 预测所选目标口径的连续涨跌幅。回归任务当前需选择
 `--model lightgbm`。LightGBM 的 `--objective` 默认随任务选择 `binary` 或
 `regression`，也可显式指定与任务兼容的目标函数。
@@ -52,8 +53,9 @@ python -m quant.cli.factor_demo --model lightgbm --help
 | `--slippage-bps-candidates` | 一个或多个 `[0, 10000)` 数值 | 空 | 仅用于对比的单边滑点列表。只在 Top N 回测中额外画出各档滑点的净值曲线并列出指标，不改变选股、`--slippage-bps` 及其余全部结果；与基准或彼此重复的取值会被去重。 |
 | `--commission-bps` | `[0, 10000)` | `0` | 单边手续费率，单位为基点；买卖两边分别收取一次。 |
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
-| `--task` | `classification`、`regression` | `classification` | 选择涨跌二分类或连续涨跌幅预测。回归任务可搭配 `lightgbm` 或用于因子口径核对的 `factor_passthrough`。 |
+| `--task` | `classification`、`regression` | `classification` | 选择收益阈值二分类或连续涨跌幅预测。回归任务可搭配 `lightgbm` 或用于因子口径核对的 `factor_passthrough`。 |
 | `--target` | `close`、`open`、`inday` | `inday` | 目标收益口径：`close` 为下一交易日收盘买入、再下一交易日收盘卖出；`open` 为下一交易日开盘买入、再下一交易日开盘卖出；`inday` 为下一交易日开盘买入、当日收盘卖出。 |
+| `--label-return-threshold` | 非负有限比例 | `0.005` | 二分类标签阈值；目标收益率严格大于该值时标签为 1。使用小数表示，`0.005` 即 0.5%；回归训练目标仍是原始连续收益率。 |
 | `--model` | `simple_decision_tree`、`gradient_boosting_tree`、`lightgbm`、`factor_passthrough` | `simple_decision_tree` | 方向预测模型；其取值决定后续可使用的模型专属参数。 |
 | `--factors` | 零个或多个已注册因子名 | 全部已注册因子 | 指定本次训练使用的正式因子。显式写出空的 `--factors` 可只使用 `--factor-expressions`；两者不能同时为空。 |
 | `--factor-expressions` | 一个或多个 DSL 字符串 | 空 | 直接加载搜索报告中的 `canonical`/`expression_str`，并按稳定 `fg_...` ID 加入模型。PowerShell 应使用外层单引号；内部单引号写成两个，或直接复制搜索报告生成的命令。 |

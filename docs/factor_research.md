@@ -1,8 +1,8 @@
-# 日频方向预测研究框架
+# 日频收益阈值分类与回归研究框架
 
 该模块使用某交易日收盘及之前可见的数据，预测可配置目标的上涨或下跌，或直接预测连续涨跌幅。`--target close` 使用下一交易日收盘至再下一交易日收盘收益，`--target open` 使用下一交易日开盘至再下一交易日开盘收益，`--target inday` 使用下一交易日开盘至收盘收益。框架用于离线研究，并提供验证集 Top N 等权回测及双边滑点、手续费估算；它不模拟盘口成交量、涨跌停、停牌或部分成交等实盘约束。
 
-使用 `--task classification`（默认）执行涨跌二分类；使用 `--task regression --model lightgbm` 预测连续涨跌幅。LightGBM 可通过 `--objective` 选择与任务兼容的目标函数，例如分类使用 `binary`，回归使用 `regression`、`regression_l1` 或 `huber`。
+使用 `--task classification`（默认）判断目标收益是否严格大于 `--label-return-threshold`；阈值默认是 `0.005`，即 0.5%。使用 `--task regression --model lightgbm` 时仍预测原始连续涨跌幅，不对训练目标做阈值化。LightGBM 可通过 `--objective` 选择与任务兼容的目标函数，例如分类使用 `binary`，回归使用 `regression`、`regression_l1` 或 `huber`。
 
 ## 快速运行
 

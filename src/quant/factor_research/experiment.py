@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from .dataset import REPORT_RETURN_COLUMNS, split_by_date
+from .dataset import (
+    DEFAULT_LABEL_RETURN_THRESHOLD,
+    REPORT_RETURN_COLUMNS,
+    returns_exceed_label_threshold,
+    split_by_date,
+    validate_label_return_threshold,
+)
 from .factors import DEFAULT_FEATURES
 from .metrics import (
     classification_metrics,
@@ -41,6 +47,7 @@ class ExperimentResult:
     daily_accuracy_trend: pd.DataFrame
     task: str = "classification"
     daily_ic_trend: pd.DataFrame = field(default_factory=pd.DataFrame)
+    label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD
 
 
 class DirectionExperiment:
@@ -55,6 +62,7 @@ class DirectionExperiment:
         training_mode: str = "rolling",
         task: str = "classification",
         progress: str = "never",
+        label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD,
     ):
         """保存训练验证配置，并校验训练方式、任务与模型工厂的兼容性。
 
@@ -66,9 +74,11 @@ class DirectionExperiment:
             args: 命令行参数命名空间，仅用于透传调试开关，不参与建模口径。
             model_factory: 模型工厂；缺省构造简单决策树工厂，注入后实验不关心具体算法。
             training_mode: ``rolling`` 为逐日扩展窗口重训，``single`` 为固定训练集只拟合一次。
-            task: ``classification`` 为涨跌二分类，``regression`` 为连续涨跌幅。
+            task: ``classification`` 为收益阈值二分类，``regression`` 为连续涨跌幅。
             progress: 训练验证进度条模式，取 :data:`PROGRESS_MODES` 之一。缺省 ``never``
                 保持库层调用（含搜索的并行 worker）静默，由命令行显式开启为 ``auto``。
+            label_return_threshold: 正类标签对应的最低目标收益率，单位为一；目标收益率
+                严格大于该值才算达标，缺省 ``0.005`` 表示 0.5%。
 
         返回：
             无返回值；任一配置非法时直接抛出 ``ValueError``。
@@ -94,6 +104,9 @@ class DirectionExperiment:
         self.training_mode = training_mode
         self.task = task
         self.progress = progress
+        self.label_return_threshold = validate_label_return_threshold(
+            label_return_threshold
+        )
         # 保留原有树参数作为默认配置；注入工厂后，实验流程不再关心具体算法。
         self.model_factory = (
             model_factory
@@ -125,6 +138,7 @@ class DirectionExperiment:
         if "target_end_date" not in dataset.columns:
             dataset = dataset.copy()
             dataset["target_end_date"] = dataset["target_date"]
+        self._validate_label_consistency(dataset)
         dataset = self._filter_required_finite_features(dataset)
         split = split_by_date(dataset, self.validation_start)
         validation_dates = pd.Index(split.validation["target_date"].drop_duplicates().sort_values())
@@ -176,7 +190,43 @@ class DirectionExperiment:
             daily_accuracy_trend=daily_accuracy_trend(predictions),
             task=self.task,
             daily_ic_trend=daily_ic,
+            label_return_threshold=self.label_return_threshold,
         )
+
+    def _validate_label_consistency(self, dataset: pd.DataFrame) -> None:
+        """拒绝与本次收益阈值不一致或不属于二元集合的标签。
+
+        参数：
+            dataset: 含连续目标收益率及预先生成二分类标签的监督学习样本；标签必须
+                等于目标收益率严格大于 ``label_return_threshold`` 的比较结果。
+
+        返回：
+            无返回值；发现非法标签或阈值口径不一致时抛出 ``ValueError``。
+        """
+
+        required = {"target_return", "label"}
+        missing = required.difference(dataset.columns)
+        if missing:
+            raise ValueError(f"数据集缺少目标列: {sorted(missing)}")
+        target_return = pd.to_numeric(dataset["target_return"], errors="coerce")
+        finite_target = np.isfinite(target_return.to_numpy(dtype=float))
+        if not finite_target.all():
+            raise ValueError(
+                "数据集 target_return 必须全部是有限数值: "
+                f"invalid_rows={int((~finite_target).sum())}"
+            )
+        label = pd.to_numeric(dataset["label"], errors="coerce")
+        expected = returns_exceed_label_threshold(
+            target_return,
+            self.label_return_threshold,
+        ).astype(int)
+        inconsistent = label.isna() | ~label.isin((0, 1)) | label.ne(expected)
+        if inconsistent.any():
+            raise ValueError(
+                "数据集 label 与 label_return_threshold 不一致: "
+                f"threshold={self.label_return_threshold} "
+                f"mismatched_rows={int(inconsistent.sum())}"
+            )
 
     def _filter_required_finite_features(
         self,
@@ -342,7 +392,10 @@ class DirectionExperiment:
         if not np.isfinite(predicted_return).all():
             raise ValueError("回归模型预测包含 NaN 或无穷值")
         predictions["predicted_return"] = predicted_return
-        predictions["prediction"] = (predicted_return > 0).astype(int)
+        predictions["prediction"] = returns_exceed_label_threshold(
+            predicted_return,
+            self.label_return_threshold,
+        ).astype(int)
 
     def _single_fit(
         self,

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from quant.factor_research.dataset import DEFAULT_LABEL_RETURN_THRESHOLD
 from quant.factor_research.factors import aggregate_daily_bars, build_daily_features
 
 from .context import SearchContext
@@ -20,6 +21,7 @@ def prepare_search_context(
     selection_start: str | pd.Timestamp | None = None,
     holdout_start: str | pd.Timestamp | None = None,
     holdout_end: str | pd.Timestamp | None = None,
+    label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD,
 ) -> SearchContext:
     """从分钟行情准备一次性搜索上下文。
 
@@ -33,6 +35,8 @@ def prepare_search_context(
         selection_start: 候选筛选区间的首个目标日期；为空时不限制起点。
         holdout_start: 样本外报告区间的首个目标日期；为空时不划分 holdout。
         holdout_end: 样本外报告区间的最后一个目标日期，包含该日；为空时不限制结束日。
+        label_return_threshold: 二分类正类的最低目标收益率，单位为一；严格大于
+            该值时标签为 1，缺省 ``0.005`` 表示 0.5%。
     """
 
     fixed = tuple(fixed_features)
@@ -47,4 +51,5 @@ def prepare_search_context(
         selection_start=selection_start,
         holdout_start=holdout_start,
         holdout_end=holdout_end,
+        label_return_threshold=label_return_threshold,
     )

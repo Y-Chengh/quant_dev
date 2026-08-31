@@ -169,6 +169,7 @@ def write_grid_search_report(
     )
     enriched_metadata = {
         **dict(metadata),
+        "label_return_threshold": context.label_return_threshold,
         "objective": result.objective,
         "generated_candidates": len(result.candidates),
         "leaderboard_rows": len(leaderboard),

@@ -22,7 +22,11 @@ from quant.factor_research.data_sources import (
     data_source_argument_names,
     data_source_from_args,
 )
-from quant.factor_research.dataset import TARGET_TYPES, build_direction_dataset
+from quant.factor_research.dataset import (
+    DEFAULT_LABEL_RETURN_THRESHOLD,
+    TARGET_TYPES,
+    build_direction_dataset,
+)
 from quant.factor_research.experiment import (
     PREDICTION_TASKS,
     TRAINING_MODES,
@@ -79,6 +83,22 @@ def _cost_bps(value: str) -> float:
     converted = float(value)
     if not math.isfinite(converted) or not 0.0 <= converted < 10_000.0:
         raise argparse.ArgumentTypeError("必须是 [0, 10000) 范围内的有限数值")
+    return converted
+
+
+def _nonnegative_ratio(value: str) -> float:
+    """解析标签阈值使用的非负比例。
+
+    参数：
+        value: 命令行或 YAML 中的比例小数，例如 ``0.005`` 表示 0.5 个百分点。
+
+    返回：
+        非负有限比例。
+    """
+
+    converted = float(value)
+    if not math.isfinite(converted) or converted < 0.0:
+        raise argparse.ArgumentTypeError("必须是非负有限比例")
     return converted
 
 
@@ -366,7 +386,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--task",
         choices=PREDICTION_TASKS,
         default="classification",
-        help="预测任务：classification 为涨跌二分类，regression 为连续涨跌幅",
+        help="预测任务：classification 为收益阈值二分类，regression 为连续涨跌幅",
     )
     parser.add_argument(
         "--target",
@@ -376,6 +396,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "预测收益口径：close 为下一交易日收盘至再下一交易日收盘，"
             "open 为下一交易日开盘至再下一交易日开盘，"
             "inday 为下一交易日开盘至收盘"
+        ),
+    )
+    parser.add_argument(
+        "--label-return-threshold",
+        type=_nonnegative_ratio,
+        default=DEFAULT_LABEL_RETURN_THRESHOLD,
+        help=(
+            "二分类正类的目标收益率阈值，单位为一；严格大于该值时标签为 1，"
+            "默认 0.005（0.5%%），回归训练目标不受影响"
         ),
     )
     parser.add_argument("--codes", nargs="+", help="股票代码列表，默认取代码表前20只")
@@ -561,6 +590,11 @@ def main() -> None:
     logger.info("验证集开始: %s", validation_start.strftime("%Y-%m-%d"))
     logger.info("训练方式: %s", args.training_mode)
     logger.info("预测任务: %s", args.task)
+    logger.info(
+        "正类标签收益阈值: %.6f (%.4f%%)",
+        getattr(args, "label_return_threshold", DEFAULT_LABEL_RETURN_THRESHOLD),
+        getattr(args, "label_return_threshold", DEFAULT_LABEL_RETURN_THRESHOLD) * 100,
+    )
     logger.info("股票数量: %d", len(codes))
     bars = source.load_bars(codes, start, end)
     logger.info("行情行数: %d", len(bars))
@@ -592,6 +626,11 @@ def main() -> None:
         feature_columns=model_features,
         args=args,
         target=getattr(args, "target", "inday"),
+        label_return_threshold=getattr(
+            args,
+            "label_return_threshold",
+            DEFAULT_LABEL_RETURN_THRESHOLD,
+        ),
     )
     logger.info("方向预测数据集行数: %d，开始模型训练验证", len(dataset))
     result = DirectionExperiment(
@@ -602,6 +641,11 @@ def main() -> None:
         training_mode=args.training_mode,
         task=args.task,
         progress=args.progress,
+        label_return_threshold=getattr(
+            args,
+            "label_return_threshold",
+            DEFAULT_LABEL_RETURN_THRESHOLD,
+        ),
     ).run(dataset)
     logger.info("验证指标: %s", result.metrics)
     score_column = (

@@ -10,17 +10,26 @@ import pandas as pd
 
 import quant.factor_research.factors as factors_module
 from quant.cli.factor_demo import (
+    parse_args,
     resolve_ic_chart_path,
     resolve_run_output_paths,
     resolve_window,
 )
-from quant.factor_research.dataset import build_direction_dataset, split_by_date
+from quant.factor_research.dataset import (
+    DEFAULT_LABEL_RETURN_THRESHOLD,
+    build_direction_dataset,
+    returns_exceed_label_threshold,
+    split_by_date,
+)
 from quant.factor_research.experiment import DirectionExperiment
 from quant.factor_research.factor_dsl import ExpressionNode
 from quant.factor_research.factor_dsl.frame import DailyFactorFrame
 from quant.factor_research.factor_factories import FACTOR_FACTORIES
 from quant.factor_research.factors import build_daily_features
 from quant.factor_research.models import DirectionModel, DirectionModelFactory
+from quant.factor_research.models.factor_passthrough import (
+    FactorPassthroughModelFactory,
+)
 from quant.factor_research.reporting import write_evaluation_report
 
 
@@ -101,6 +110,237 @@ class FactorResearchTest(unittest.TestCase):
             [33 / 29 - 1, 36 / 41 - 1, 50 / 33 - 1, 66 / 36 - 1],
         )
         self.assertEqual(len(dataset), 4)
+
+    def test_label_uses_default_half_percent_strict_return_threshold(self):
+        """默认标签应只把下一交易日收益严格大于 0.5% 的样本记为正类。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dates = pd.bdate_range("2025-02-03", periods=4)
+        daily_features = pd.DataFrame(
+            {
+                "code": ["A", "B"] * 4,
+                "trade_date": [date for date in dates for _ in range(2)],
+                "open": [100.0, 10.0] * 4,
+                "close": [
+                    100.0,
+                    10.0,
+                    100.4,
+                    10.04,
+                    100.5,
+                    10.05,
+                    100.6,
+                    10.06,
+                ],
+                "test_feature": range(8),
+            }
+        )
+
+        dataset = build_direction_dataset(daily_features, ["test_feature"])
+
+        self.assertEqual(DEFAULT_LABEL_RETURN_THRESHOLD, 0.005)
+        np.testing.assert_allclose(
+            dataset["target_return"],
+            [0.004, 0.004, 0.005, 0.005, 0.006, 0.006],
+        )
+        self.assertLess(dataset.loc[2, "target_return"], 0.005)
+        self.assertGreater(dataset.loc[3, "target_return"], 0.005)
+        pd.testing.assert_series_equal(
+            dataset["label"],
+            pd.Series([0, 0, 0, 0, 1, 1], dtype="Int8", name="label"),
+        )
+
+    def test_label_return_threshold_is_configurable_and_validated(self):
+        """自定义阈值应严格比较，负数和非有限阈值应被库层拒绝。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dates = pd.bdate_range("2025-03-03", periods=3)
+        daily_features = pd.DataFrame(
+            {
+                "code": ["A"] * 3,
+                "trade_date": dates,
+                "open": [1.0] * 3,
+                "close": [1.0, 1.25, 1.5],
+                "test_feature": range(3),
+            }
+        )
+
+        dataset = build_direction_dataset(
+            daily_features,
+            ["test_feature"],
+            label_return_threshold=0.25,
+        )
+
+        pd.testing.assert_series_equal(
+            dataset["label"],
+            pd.Series([0, 1], dtype="Int8", name="label"),
+        )
+        with self.assertRaisesRegex(ValueError, "label_return_threshold"):
+            DirectionExperiment(
+                dates[1],
+                feature_columns=["test_feature"],
+                label_return_threshold=0.0,
+            ).run(dataset)
+        for invalid in (-0.001, np.nan, np.inf):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "label_return_threshold"):
+                    build_direction_dataset(
+                        daily_features,
+                        ["test_feature"],
+                        label_return_threshold=invalid,
+                    )
+
+        np.testing.assert_array_equal(
+            returns_exceed_label_threshold(
+                np.array([np.nan, np.inf, -np.inf]),
+                0.25,
+            ),
+            [False, False, False],
+        )
+
+        for invalid_target in (np.nan, np.inf, -np.inf, "invalid"):
+            with self.subTest(invalid_target=invalid_target):
+                invalid_dataset = dataset.copy()
+                invalid_dataset["target_return"] = invalid_dataset[
+                    "target_return"
+                ].astype(object)
+                invalid_dataset.loc[0, "target_return"] = invalid_target
+                invalid_dataset.loc[0, "label"] = 0
+                with self.assertRaisesRegex(ValueError, "target_return"):
+                    DirectionExperiment(
+                        dates[1],
+                        feature_columns=["test_feature"],
+                        label_return_threshold=0.25,
+                    ).run(invalid_dataset)
+
+    def test_dataset_excludes_non_finite_forward_returns(self):
+        """目标结束日存在但收益为 NaN 或无穷时不得生成训练样本。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dates = pd.bdate_range("2025-03-10", periods=4)
+        daily_features = pd.DataFrame(
+            {
+                "code": ["A"] * 4,
+                "trade_date": dates,
+                "open": [1.0, 0.0, 1.0, 1.0],
+                "close": [1.0, 1.0, np.nan, 2.0],
+                "test_feature": range(4),
+            }
+        )
+
+        dataset = build_direction_dataset(daily_features, ["test_feature"])
+
+        self.assertEqual(dataset["target_date"].tolist(), [dates[3]])
+        np.testing.assert_allclose(dataset["target_return"], [1.0])
+
+    def test_cli_and_yaml_configure_label_return_threshold(self):
+        """CLI 与扁平 YAML 均应支持阈值，且命令行继续优先于 YAML。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        self.assertEqual(
+            parse_args([]).label_return_threshold,
+            DEFAULT_LABEL_RETURN_THRESHOLD,
+        )
+        with TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "threshold.yaml"
+            config_path.write_text(
+                "label_return_threshold: 0.0125\n",
+                encoding="utf-8",
+            )
+            yaml_args = parse_args(["--config", str(config_path)])
+            cli_args = parse_args(
+                [
+                    "--config",
+                    str(config_path),
+                    "--label-return-threshold",
+                    "0.02",
+                ]
+            )
+
+        self.assertEqual(yaml_args.label_return_threshold, 0.0125)
+        self.assertEqual(cli_args.label_return_threshold, 0.02)
+        with patch("sys.stderr"):
+            with self.assertRaises(SystemExit):
+                parse_args(["--label-return-threshold", "-0.001"])
+
+    def test_regression_derived_label_uses_configured_return_threshold(self):
+        """回归输出转为日报达标标记时应与数据集标签阈值保持一致。
+
+        返回：
+            无；断言失败时由测试框架报告差异。
+        """
+
+        dates = pd.bdate_range("2025-04-01", periods=4)
+        upward_rounded_boundary = 10.05 / 10.0 - 1.0
+        downward_rounded_boundary = 100.5 / 100.0 - 1.0
+        dataset = pd.DataFrame(
+            {
+                "feature_date": [
+                    dates[0],
+                    dates[1],
+                    dates[2],
+                    dates[2],
+                    dates[2],
+                ],
+                "target_date": [
+                    dates[1],
+                    dates[2],
+                    dates[3],
+                    dates[3],
+                    dates[3],
+                ],
+                "target_end_date": [
+                    dates[1],
+                    dates[2],
+                    dates[3],
+                    dates[3],
+                    dates[3],
+                ],
+                "code": ["A", "A", "A", "B", "C"],
+                "signal": [
+                    0.0,
+                    0.0,
+                    upward_rounded_boundary,
+                    downward_rounded_boundary,
+                    0.006,
+                ],
+                "target_return": [
+                    0.0,
+                    0.0,
+                    upward_rounded_boundary,
+                    downward_rounded_boundary,
+                    0.006,
+                ],
+                "label": pd.Series([0, 0, 0, 0, 1], dtype="Int8"),
+            }
+        )
+
+        result = DirectionExperiment(
+            dates[3],
+            feature_columns=["signal"],
+            model_factory=FactorPassthroughModelFactory(),
+            training_mode="single",
+            task="regression",
+            label_return_threshold=0.005,
+        ).run(dataset)
+
+        np.testing.assert_allclose(
+            result.predictions["predicted_return"],
+            [upward_rounded_boundary, downward_rounded_boundary, 0.006],
+        )
+        np.testing.assert_array_equal(result.predictions["prediction"], [0, 0, 1])
+        self.assertEqual(result.label_return_threshold, 0.005)
 
     def test_configurable_targets_use_the_requested_future_prices_by_code(self):
         """三种目标应按证券独立位移，并准确记录收益实现日期。
@@ -456,6 +696,7 @@ class FactorResearchTest(unittest.TestCase):
         self.assertTrue(result.daily_accuracy_trend["accuracy"].between(0.0, 1.0).all())
         self.assertTrue(pd.isna(result.daily_accuracy_trend["accuracy_change"].iloc[0]))
         with TemporaryDirectory() as report_dir:
+            result.label_return_threshold = 0.0125
             report_path = Path(report_dir) / "evaluation.md"
             chart_path = Path(report_dir) / "evaluation_accuracy.svg"
             ic_chart_path = resolve_ic_chart_path(chart_path)
@@ -468,6 +709,13 @@ class FactorResearchTest(unittest.TestCase):
                 ic_chart_path=ic_chart_path,
             )
             report = report_path.read_text(encoding="utf-8")
+            self.assertIn("# 收益阈值分类评估报告", report)
+            self.assertIn(
+                "收益达标阈值：目标收益率严格大于 1.25% (`0.012500`)",
+                report,
+            )
+            self.assertIn("实际收益达标比例", report)
+            self.assertIn("预测收益达标比例", report)
             self.assertIn("ROC AUC", report)
             self.assertIn("| IC |", report)
             self.assertIn("| Rank IC |", report)

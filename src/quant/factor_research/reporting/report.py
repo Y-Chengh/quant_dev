@@ -290,12 +290,15 @@ def write_evaluation_report(
         (
             "# 涨跌幅预测评估报告"
             if result.task == "regression"
-            else "# 方向预测评估报告"
+            else "# 收益阈值分类评估报告"
         ),
         "",
         f"- 运行 ID：`{run_id}`",
         f"- 生成时间：{datetime.now().astimezone().strftime('%Y-%m-%d %H:%M:%S %Z')}",
         f"- 验证区间：{pd.Timestamp(daily_summary['target_date'].min()).date()} 至 {pd.Timestamp(daily_summary['target_date'].max()).date()}",
+        "- 收益达标阈值：目标收益率严格大于 "
+        f"{_format_percentage(result.label_return_threshold)} "
+        f"(`{_format_number(result.label_return_threshold)}`)",
         "",
         "## 汇总指标",
         "",
@@ -510,7 +513,7 @@ def write_evaluation_report(
             "",
             "## 每日预估汇总",
             "",
-            "| 目标日期 | 样本数 | 实际上涨比例 | 预测上涨比例 | 准确率 | 较前日变化 |",
+            "| 目标日期 | 样本数 | 实际收益达标比例 | 预测收益达标比例 | 准确率 | 较前日变化 |",
             "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
     )

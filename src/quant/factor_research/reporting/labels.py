@@ -4,7 +4,7 @@ from __future__ import annotations
 
 METRIC_LABELS = {
     "samples": "样本数",
-    "positive_rate": "实际上涨比例",
+    "positive_rate": "实际收益达标比例",
     "accuracy": "准确率",
     "balanced_accuracy": "平衡准确率",
     "auc": "ROC AUC",

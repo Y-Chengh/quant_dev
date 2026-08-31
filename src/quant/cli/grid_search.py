@@ -12,6 +12,7 @@ import pandas as pd
 
 from quant.config import default_market_database
 from quant.factor_research.data import load_market_service
+from quant.factor_research.dataset import DEFAULT_LABEL_RETURN_THRESHOLD
 from quant.factor_research.factor_search import (
     FactorGeneticSearch,
     GeneticProgressEvent,
@@ -43,6 +44,7 @@ GENETIC_MAX_EVALUATIONS = 500
 GENETIC_RANDOM_SEED = 20260809
 GENETIC_FREE_NODE_COUNT = 3
 GENETIC_LENGTH_PENALTY = 0.001
+LABEL_RETURN_THRESHOLD = DEFAULT_LABEL_RETURN_THRESHOLD
 
 
 def print_genetic_progress(event: GeneticProgressEvent) -> None:
@@ -226,6 +228,7 @@ def main() -> None:
         selection_start=SELECTION_START,
         holdout_start=HOLDOUT_START,
         holdout_end=HOLDOUT_END,
+        label_return_threshold=LABEL_RETURN_THRESHOLD,
     )
     genetic_config = build_genetic_search_config()
     search = FactorGeneticSearch(
@@ -258,6 +261,7 @@ def main() -> None:
             "selection_start": SELECTION_START,
             "holdout_start": HOLDOUT_START,
             "holdout_end": HOLDOUT_END,
+            "label_return_threshold": LABEL_RETURN_THRESHOLD,
             "bar_rows": len(bars),
             "search_algorithm": "genetic_programming",
             "search": {

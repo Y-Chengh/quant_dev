@@ -8,7 +8,11 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from quant.factor_research.dataset import build_forward_targets
+from quant.factor_research.dataset import (
+    DEFAULT_LABEL_RETURN_THRESHOLD,
+    build_forward_targets,
+    validate_label_return_threshold,
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +31,7 @@ class SearchContext:
     holdout_mask: np.ndarray
     holdout_start: pd.Timestamp | None
     holdout_end: pd.Timestamp | None
+    label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD
 
     @classmethod
     def from_daily(
@@ -37,6 +42,7 @@ class SearchContext:
         selection_start: str | pd.Timestamp | None = None,
         holdout_start: str | pd.Timestamp | None = None,
         holdout_end: str | pd.Timestamp | None = None,
+        label_return_threshold: float = DEFAULT_LABEL_RETURN_THRESHOLD,
     ) -> SearchContext:
         """校验日频表的数据契约，一次性构建目标、行映射和日期区间掩码。
 
@@ -46,6 +52,8 @@ class SearchContext:
             selection_start: 筛选区间首个目标日期；为空时从最早目标开始。
             holdout_start: 样本外区间首个目标日期，也是筛选区间的排他上界；为空时不划分 holdout。
             holdout_end: 样本外区间最后一个目标日期，包含该日；为空时不限制结束日。
+            label_return_threshold: 二分类正类的最低目标收益率，单位为一；严格大于
+                该值时标签为 1，缺省 ``0.005`` 表示 0.5%。
         """
 
         required = {"code", "trade_date", "open", "close"}
@@ -70,7 +78,11 @@ class SearchContext:
         # (code, trade_date) 是后续 MultiIndex 映射的唯一业务主键。
         if prepared.duplicated(["code", "trade_date"]).any():
             raise ValueError("搜索日频数据存在重复的 (code, trade_date)")
-        targets = build_forward_targets(prepared)
+        threshold = validate_label_return_threshold(label_return_threshold)
+        targets = build_forward_targets(
+            prepared,
+            label_return_threshold=threshold,
+        )
 
         daily_keys = pd.MultiIndex.from_frame(prepared[["code", "trade_date"]])
         target_keys = pd.MultiIndex.from_frame(targets[["code", "feature_date"]])
@@ -116,6 +128,7 @@ class SearchContext:
             holdout_mask=holdout,
             holdout_start=cutoff,
             holdout_end=end,
+            label_return_threshold=threshold,
         )
 
     def align_factor_values(self, values: pd.Series | np.ndarray) -> np.ndarray:

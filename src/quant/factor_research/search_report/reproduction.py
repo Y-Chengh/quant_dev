@@ -36,6 +36,8 @@ def _reproduction_command(
         "regression",
         "--training-mode",
         "single",
+        "--label-return-threshold",
+        str(context.label_return_threshold),
         "--validation-start",
         _powershell_single_quoted(context.holdout_start.strftime("%Y-%m-%d")),
     ]
