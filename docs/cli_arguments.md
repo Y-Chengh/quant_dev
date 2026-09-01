@@ -51,6 +51,8 @@ python -m quant.cli.factor_demo --model lightgbm --help
 | `--backtest-top-n` | 正整数 | `10` | 每个验证交易日按模型分数降序选择并等权买入的最多证券数；当日有效证券不足时全部买入。 |
 | `--slippage-bps` | `[0, 10000)` | `0` | 单边滑点，单位为基点；买入价上浮、卖出价下调，买卖两边分别应用一次。 |
 | `--slippage-bps-candidates` | 一个或多个 `[0, 10000)` 数值 | 空 | 仅用于对比的单边滑点列表。只在 Top N 回测中额外画出各档滑点的净值曲线并列出指标，不改变选股、`--slippage-bps` 及其余全部结果；与基准或彼此重复的取值会被去重。 |
+| `--training-sample-filters` | `limit_down_sell`、`limit_up_buy` | 两者都启用 | 按每条样本的目标买入日和卖出日标记训练资格；明确涨停无法买入、跌停或停牌无法卖出的样本不参与拟合，但仍保留在验证预测截面。传空列表可关闭。 |
+| `--training-sample-filter-missing-policy` | `error`、`exclude`、`allow` | `allow` | 训练样本成交上下文无法判定时的处理方式；默认保留未知样本，只剔除能够确认不可成交的记录。 |
 | `--commission-bps` | `[0, 10000)` | `0` | 单边手续费率，单位为基点；买卖两边分别收取一次。 |
 | `--validation-start` | 日期 | 研究终点向前 1 年 | 滚动验证开始日。该日之前的数据作为初始训练历史，此后按目标交易日逐日扩展训练。必须满足 `start < validation-start <= end`。 |
 | `--task` | `classification`、`regression` | `classification` | 选择收益阈值二分类或连续涨跌幅预测。回归任务可搭配 `lightgbm` 或用于因子口径核对的 `factor_passthrough`。 |

@@ -268,6 +268,7 @@ class YamlConfigReportingTest(unittest.TestCase):
                 symbol_limit=1,
                 training_mode="rolling",
                 task="classification",
+                target="inday",
                 factors=["return_1d"],
                 factor_cache_dir=root / "cache",
                 no_factor_cache=True,
@@ -282,6 +283,7 @@ class YamlConfigReportingTest(unittest.TestCase):
                 metadata=lambda: {},
                 list_symbols=lambda limit: ["000001.SZ"],
                 load_bars=lambda codes, start, end: pd.DataFrame({"close": [1.0]}),
+                load_execution_context=lambda codes, start, end: pd.DataFrame(),
                 build_features=lambda bars, feature_columns, cache_dir, factor_expressions: (
                     pd.DataFrame({"return_1d": [0.1]})
                 ),
@@ -303,13 +305,41 @@ class YamlConfigReportingTest(unittest.TestCase):
                     patch.object(
                         factor_demo,
                         "build_direction_dataset",
-                        return_value=pd.DataFrame({"return_1d": [0.1]}),
+                        return_value=pd.DataFrame(
+                            {
+                                "return_1d": [0.1],
+                                "target_date": [pd.Timestamp("2025-06-02")],
+                            }
+                        ),
                     )
                 )
                 stack.enter_context(
                     patch.object(factor_demo, "DirectionExperiment", return_value=experiment)
                 )
+                training_marker = stack.enter_context(
+                    patch.object(
+                        factor_demo,
+                        "mark_training_sample_eligibility",
+                        return_value=(
+                            pd.DataFrame(
+                                {
+                                    "return_1d": [0.1],
+                                    "target_date": [pd.Timestamp("2025-06-02")],
+                                    "training_sample_eligible": [True],
+                                }
+                            ),
+                            pd.DataFrame(),
+                        ),
+                    )
+                )
                 stack.enter_context(patch.object(factor_demo, "model_factory_from_args"))
+                stack.enter_context(
+                    patch.object(
+                        factor_demo,
+                        "run_top_n_intraday_backtest",
+                        return_value=SimpleNamespace(metrics={}),
+                    )
+                )
                 report_writer = stack.enter_context(
                     patch.object(factor_demo, "write_evaluation_report")
                 )
@@ -325,6 +355,12 @@ class YamlConfigReportingTest(unittest.TestCase):
                 factor_demo.main()
 
         self.assertEqual(report_writer.call_args.kwargs["yaml_config"], yaml_config)
+        self.assertEqual(training_marker.call_args.kwargs["entry_timing"], "open")
+        self.assertEqual(training_marker.call_args.kwargs["exit_timing"], "close")
+        self.assertEqual(
+            training_marker.call_args.kwargs["training_cutoff"],
+            pd.Timestamp("2025-06-02"),
+        )
         self.assertTrue(
             report_writer.call_args.kwargs["ic_chart_path"].name.endswith(
                 "_ic_trend.svg"

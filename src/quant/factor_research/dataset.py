@@ -26,6 +26,8 @@ REPORT_RETURN_COLUMNS = (
     *PREVIOUS_RETURN_COLUMNS,
     "target_close_to_previous_close_return",
 )
+TRAINING_SAMPLE_ELIGIBLE_COLUMN = "training_sample_eligible"
+TRAINING_SAMPLE_FILTER_REASON_COLUMN = "training_sample_filter_reason"
 DATASET_RESERVED_COLUMNS = frozenset(
     {
         "trade_date",
@@ -35,6 +37,8 @@ DATASET_RESERVED_COLUMNS = frozenset(
         "code",
         "target_return",
         "label",
+        TRAINING_SAMPLE_ELIGIBLE_COLUMN,
+        TRAINING_SAMPLE_FILTER_REASON_COLUMN,
         *REPORT_RETURN_COLUMNS,
     }
 )

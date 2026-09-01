@@ -10,6 +10,7 @@ import pandas as pd
 from .dataset import (
     DEFAULT_LABEL_RETURN_THRESHOLD,
     REPORT_RETURN_COLUMNS,
+    TRAINING_SAMPLE_ELIGIBLE_COLUMN,
     returns_exceed_label_threshold,
     split_by_date,
     validate_label_return_threshold,
@@ -139,6 +140,7 @@ class DirectionExperiment:
             dataset = dataset.copy()
             dataset["target_end_date"] = dataset["target_date"]
         self._validate_label_consistency(dataset)
+        self._validate_training_sample_eligibility(dataset)
         dataset = self._filter_required_finite_features(dataset)
         split = split_by_date(dataset, self.validation_start)
         validation_dates = pd.Index(split.validation["target_date"].drop_duplicates().sort_values())
@@ -148,9 +150,11 @@ class DirectionExperiment:
             )
         else:
             predictions, model, importance = self._single_fit(
-                split.train.loc[
-                    split.train["target_end_date"] < self.validation_start
-                ],
+                self._eligible_training_samples(
+                    split.train.loc[
+                        split.train["target_end_date"] < self.validation_start
+                    ]
+                ),
                 split.validation,
             )
 
@@ -192,6 +196,40 @@ class DirectionExperiment:
             daily_ic_trend=daily_ic,
             label_return_threshold=self.label_return_threshold,
         )
+
+    @staticmethod
+    def _validate_training_sample_eligibility(dataset: pd.DataFrame) -> None:
+        """校验可选训练资格列必须是完整布尔值。
+
+        参数：
+            dataset: 待训练验证的数据集；没有资格列时沿用全部历史样本。
+
+        返回：
+            无返回值；资格列含缺失或非布尔值时抛出 ``ValueError``。
+        """
+
+        if TRAINING_SAMPLE_ELIGIBLE_COLUMN not in dataset.columns:
+            return
+        eligible = dataset[TRAINING_SAMPLE_ELIGIBLE_COLUMN]
+        if not pd.api.types.is_bool_dtype(eligible.dtype) or eligible.isna().any():
+            raise ValueError(
+                f"{TRAINING_SAMPLE_ELIGIBLE_COLUMN} 必须是不含缺失值的布尔列"
+            )
+
+    @staticmethod
+    def _eligible_training_samples(frame: pd.DataFrame) -> pd.DataFrame:
+        """返回允许进入模型拟合的历史样本。
+
+        参数：
+            frame: 已满足目标实现日期约束的候选历史样本。
+
+        返回：
+            按可选资格列过滤后的历史样本；没有资格列时原样返回。
+        """
+
+        if TRAINING_SAMPLE_ELIGIBLE_COLUMN not in frame.columns:
+            return frame
+        return frame.loc[frame[TRAINING_SAMPLE_ELIGIBLE_COLUMN]]
 
     def _validate_label_consistency(self, dataset: pd.DataFrame) -> None:
         """拒绝与本次收益阈值不一致或不属于二元集合的标签。
@@ -403,6 +441,8 @@ class DirectionExperiment:
         validation_frame: pd.DataFrame,
     ) -> tuple[pd.DataFrame, DirectionModel, np.ndarray | None]:
         """只使用验证起始日前的训练集拟合一次，并预测完整验证集。"""
+        if train_frame.empty:
+            raise ValueError("训练样本成交过滤后为空，无法执行单次训练")
         timings = ElapsedRecorder()
         nan_fill_value = -10000.0
         model = self.model_factory.create()
@@ -554,12 +594,17 @@ class DirectionExperiment:
                             position / total_dates * 100,
                         )
                 # A label is available at T only after T closes, so training must end before T.
-                train_frame = dataset.loc[dataset["target_end_date"] < target_date]
+                train_frame = self._eligible_training_samples(
+                    dataset.loc[dataset["target_end_date"] < target_date]
+                )
                 predict_frame = dataset.loc[dataset["target_date"] == target_date]
-                if train_frame.empty or predict_frame.empty:
-                    # 跳过的日期同样占用一个进度步，否则末帧到不了 100%。
-                    progress.advance(detail=date_text)
-                    continue
+                if train_frame.empty:
+                    raise ValueError(
+                        "训练样本成交过滤后为空，无法执行滚动训练: "
+                        f"target_date={date_text}"
+                    )
+                if predict_frame.empty:
+                    raise ValueError(f"滚动验证日期没有预测样本: target_date={date_text}")
 
                 if logger.isEnabledFor(logging.DEBUG):
                     # 监控na占比

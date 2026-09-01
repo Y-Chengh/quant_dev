@@ -2,6 +2,14 @@
 
 该模块使用某交易日收盘及之前可见的数据，预测可配置目标的上涨或下跌，或直接预测连续涨跌幅。`--target close` 使用下一交易日收盘至再下一交易日收盘收益，`--target open` 使用下一交易日开盘至再下一交易日开盘收益，`--target inday` 使用下一交易日开盘至收盘收益。框架用于离线研究，并提供验证集 Top N 等权回测及双边滑点、手续费估算；它不模拟盘口成交量、涨跌停、停牌或部分成交等实盘约束。
 
+训练默认使用与回测相同的涨跌停判定公式，按每条样本的 `target_date` 检查买入、按
+`target_end_date` 检查卖出，明确涨停无法买入或跌停/停牌无法卖出的样本不参与模型
+拟合。该资格只作用于历史训练窗口，不会提前缩小验证日的预测截面；滚动训练仍要求
+`target_end_date < T`，因此判定所需的买卖状态在预测日 `T` 前已经发生。可通过
+`--training-sample-filters` 和 `--training-sample-filter-missing-policy` 调整口径。数据源
+必须保留停牌日并提供停牌状态，才能识别计划买卖日停牌；QMT 日线示例因此显式设置
+`include_suspended: true`，分钟库缺少的整日停牌记录无法事后推断。
+
 使用 `--task classification`（默认）判断目标收益是否严格大于 `--label-return-threshold`；阈值默认是 `0.005`，即 0.5%。使用 `--task regression --model lightgbm` 时仍预测原始连续涨跌幅，不对训练目标做阈值化。LightGBM 可通过 `--objective` 选择与任务兼容的目标函数，例如分类使用 `binary`，回归使用 `regression`、`regression_l1` 或 `huber`。
 
 ## 快速运行

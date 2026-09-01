@@ -13,6 +13,11 @@ training_mode: single  # rolling: 逐日扩展训练；single: 固定训练集�
 backtest_top_n: 10
 slippage_bps: 3
 commission_bps: 1
+# 训练样本按目标持有期检查买卖可执行性；无法判定时保留，只剔除明确涨跌停或停牌。
+training_sample_filters:
+  - limit_up_buy
+  - limit_down_sell
+training_sample_filter_missing_policy: allow
 
 # 模型设置
 task: regression

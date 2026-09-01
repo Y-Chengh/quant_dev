@@ -7,6 +7,7 @@
 # 数据源设置
 data_source: qmt_daily
 adjust: hfq          # 后复权：历史取值不随新的分红送转改变，也不会让因子缓存整体失效
+include_suspended: true # 保留停牌日，训练过滤才能识别计划买卖日无法成交
 # adjust_anchor:     # 只在 adjust: qfq 时需要；不填则用库中记录的基准日
 # daily_database:    # 缺省按 QMT_DAILY_DB_PATH 环境变量解析
 # no_auto_sync: true # 关掉启动时的自动增量检查
@@ -24,6 +25,10 @@ target: close         # D 日特征预测 D+1 收盘买入、D+2 收盘卖出的
 backtest_top_n: 10
 slippage_bps: 3
 commission_bps: 1
+training_sample_filters:
+  - limit_up_buy
+  - limit_down_sell
+training_sample_filter_missing_policy: allow
 
 # 模型设置
 task: regression

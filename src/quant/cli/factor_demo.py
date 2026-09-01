@@ -14,7 +14,10 @@ from uuid import uuid4
 import pandas as pd
 import yaml
 
-from quant.factor_research.backtesting import run_top_n_intraday_backtest
+from quant.factor_research.backtesting import (
+    available_execution_filters,
+    run_top_n_intraday_backtest,
+)
 from quant.factor_research.data_sources import (
     add_data_source_selection_argument,
     add_selected_data_source_arguments,
@@ -45,6 +48,7 @@ from quant.factor_research.models.registry import (
 from quant.factor_research.progress import PROGRESS_MODES
 from quant.factor_research.reporting import write_evaluation_report
 from quant.factor_research.timing import log_elapsed
+from quant.factor_research.training_samples import mark_training_sample_eligibility
 
 DEFAULT_LOOKBACK_YEARS = 3
 DEFAULT_VALIDATION_YEARS = 1
@@ -444,6 +448,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="回测单边手续费基点数，买卖两边分别收取，默认 0",
     )
 
+    parser.add_argument(
+        "--training-sample-filters",
+        nargs="*",
+        choices=available_execution_filters(),
+        default=["limit_up_buy", "limit_down_sell"],
+        help="训练样本成交过滤器；缺省剔除涨停无法买入和跌停无法卖出的样本",
+    )
+    parser.add_argument(
+        "--training-sample-filter-missing-policy",
+        choices=("error", "exclude", "allow"),
+        default="allow",
+        help="训练样本成交状态无法判定时的处理方式，缺省 allow",
+    )
+
     add_model_selection_argument(parser)
     add_selected_model_arguments(parser, selected.model)
     parser.add_argument(
@@ -631,6 +649,55 @@ def main() -> None:
             "label_return_threshold",
             DEFAULT_LABEL_RETURN_THRESHOLD,
         ),
+    )
+    training_sample_filters = tuple(
+        getattr(args, "training_sample_filters", ()) or ()
+    )
+    entry_timing = "close" if args.target == "close" else "open"
+    exit_timing = "close" if args.target in {"close", "inday"} else "open"
+    execution_options = {
+        "execution_limit_tolerance": getattr(
+            args, "execution_limit_tolerance", 0.000001
+        ),
+        "execution_price_tick": getattr(args, "execution_price_tick", 0.01),
+        "execution_apply_st_limit": getattr(
+            args, "execution_apply_st_limit", False
+        ),
+    }
+    logger.info("开始加载研究区间成交上下文: symbols=%d", len(codes))
+    execution_context = source.load_execution_context(codes, start, end)
+    logger.info(
+        "研究区间成交上下文加载完成: rows=%d",
+        0 if execution_context is None else len(execution_context),
+    )
+    if execution_context is None:
+        raise ValueError(
+            f"数据源 {source.name!r} 不支持持仓模拟或训练样本成交过滤；"
+            "请提供执行上下文实现"
+        )
+    dataset, training_filter_stats = mark_training_sample_eligibility(
+        dataset,
+        execution_context,
+        training_sample_filters,
+        entry_timing=entry_timing,
+        exit_timing=exit_timing,
+        training_cutoff=(
+            validation_start
+            if args.training_mode == "single"
+            else pd.to_datetime(dataset["target_date"]).max()
+        ),
+        missing_policy=getattr(
+            args, "training_sample_filter_missing_policy", "allow"
+        ),
+        options=execution_options,
+    )
+    eligible_training_samples = int(dataset["training_sample_eligible"].sum())
+    logger.info(
+        "训练样本成交过滤完成: total=%d eligible=%d excluded=%d stats=%s",
+        len(dataset),
+        eligible_training_samples,
+        len(dataset) - eligible_training_samples,
+        training_filter_stats.to_dict(orient="records"),
     )
     logger.info("方向预测数据集行数: %d，开始模型训练验证", len(dataset))
     result = DirectionExperiment(
